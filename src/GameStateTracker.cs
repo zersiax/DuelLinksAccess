@@ -78,7 +78,9 @@ namespace DuelLinksAccess
                 // Priority: dialog > dialogbase > content > base
                 // Skip known container names that don't represent actual screens
                 string goName = null;
-                if (!string.IsNullOrEmpty(dialogName) && dialogName != "DialogManager")
+                if (!string.IsNullOrEmpty(dialogName)
+                    && dialogName != "DialogManager"
+                    && dialogName != "TutorialArrow")
                     goName = dialogName;
                 else if (!string.IsNullOrEmpty(dialogBaseName)
                     && dialogBaseName != "DialogManager")
@@ -316,7 +318,7 @@ namespace DuelLinksAccess
         /// </summary>
         private static GameScreen ClassifyScreen(string goName)
         {
-            if (goName.Contains("Home"))
+            if (goName.Contains("Home") || goName == "Single")
                 return GameScreen.Home;
 
             if (goName.Contains("Title"))
@@ -335,12 +337,6 @@ namespace DuelLinksAccess
 
             if (goName.Contains("CardDetail"))
                 return GameScreen.CardDetail;
-
-            // TutorialArrow is a non-interactive pointing overlay during duels.
-            // Classify as Duel so the screen stays Duel (DuelHandler active,
-            // ScreenButtonHandler won't scan the duel hierarchy for junk).
-            if (goName == "TutorialArrow")
-                return GameScreen.Duel;
 
             if (goName.Contains("Dialog") || goName.Contains("Confirm")
                 || goName.Contains("AgeVerification") || goName.Contains("Tutorial"))
