@@ -933,8 +933,7 @@ namespace DuelLinksAccess
         /// For targeted attacks:
         ///   1. TapDownField on attacker → 2. OnSelectAttacked on target → 3. TapUpField
         /// For direct attacks:
-        ///   1. TapDownField on attacker → 2. OnSelectAttacked with position=0 (player)
-        ///   → 3. TapUpField with position=0
+        ///   Uses OnDoCardCommand to let the game engine resolve the attack as direct.
         /// </summary>
         private static IEnumerator AttackDragSequence(
             int atkPlayer, int atkLocate, int atkSlot,
@@ -948,6 +947,9 @@ namespace DuelLinksAccess
                 yield break;
             }
 
+            // Dump attack state before anything
+            LogAttackState(worker, "before TapDownField");
+
             // Step 1: TapDown on attacker (sets attackingMonster)
             DebugLogger.Log(LogCategory.Game, "FieldNav",
                 $"Attack step 1: TapDownField({atkPlayer}, {atkLocate}, {atkSlot})");
@@ -957,34 +959,49 @@ namespace DuelLinksAccess
             worker.selectAttacked = true;
             worker.startTargeting = true;
 
+            LogAttackState(worker, "after TapDownField + force flags");
+
             for (int i = 0; i < 5; i++)
                 yield return null;
 
             if (directAttack)
             {
-                // Direct attack: target the opponent player, not a monster zone.
-                // Position 0 represents the player/field directly.
+                // Direct attack: no opponent monsters to target.
+                // DLL_DuelGetAttackTargetMask returns 0x80 (bit 7) for direct attacks,
+                // vs 0x4 (bit 2 = LocateMonster) for targeted attacks.
+                // The mask bit positions map to the position parameter in OnSelectAttacked.
+                // So direct attack uses position=7, targeted uses position=2.
+                const int DirectAttackPosition = 7;
+
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"Attack step 2 (direct): OnSelectAttacked({PlayerOpp}, 0, 0)");
-                worker.OnSelectAttacked(PlayerOpp, 0, 0);
+                    $"Attack step 2 (direct): OnSelectAttacked({PlayerOpp}, {DirectAttackPosition}, 0)");
+                worker.OnSelectAttacked(PlayerOpp, DirectAttackPosition, 0);
+
+                LogAttackState(worker, "after OnSelectAttacked (direct pos=7)");
 
                 for (int i = 0; i < 5; i++)
                     yield return null;
 
+                LogAttackState(worker, "after wait (direct)");
+
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"Attack step 3 (direct): TapUpField({PlayerOpp}, 0, 0)");
-                worker.OnTapUpField(PlayerOpp, 0, 0);
+                    $"Attack step 3 (direct): TapUpField({PlayerOpp}, {DirectAttackPosition}, 0)");
+                worker.OnTapUpField(PlayerOpp, DirectAttackPosition, 0);
+
+                LogAttackState(worker, "after TapUpField (direct)");
 
                 ScreenReader.Say(Loc.Get("duel_direct_attack"));
             }
             else
             {
-                // Targeted attack: drag to specific opponent monster
+                // Targeted attack: select the specific opponent monster
                 int tgtSlot = targetSlot;
 
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
                     $"Attack step 2: OnSelectAttacked({PlayerOpp}, {LocateMonster}, {tgtSlot})");
                 worker.OnSelectAttacked(PlayerOpp, LocateMonster, tgtSlot);
+
+                LogAttackState(worker, "after OnSelectAttacked");
 
                 for (int i = 0; i < 5; i++)
                     yield return null;
@@ -992,6 +1009,50 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
                     $"Attack step 3: TapUpField({PlayerOpp}, {LocateMonster}, {tgtSlot})");
                 worker.OnTapUpField(PlayerOpp, LocateMonster, tgtSlot);
+
+                LogAttackState(worker, "after TapUpField (targeted)");
+            }
+        }
+
+        /// <summary>Dumps all attack-related worker2d fields for diagnostics.</summary>
+        private static void LogAttackState(
+            Il2CppYgomGame.Duel.RunEffectWorker2D worker, string label)
+        {
+            try
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"=== AttackState ({label}) ===");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  attackingMonster={worker.attackingMonster}");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  attackedMonster={worker.attackedMonster}");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  selectAttacked={worker.selectAttacked}");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  startTargeting={worker.startTargeting}");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  autoAttack={worker.autoAttack}");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  attackDrag={worker.attackDrag}");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  isTapDowned={worker.isTapDowned}");
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  curInputType={worker.curInputType}");
+
+                // Query engine for valid attack targets (bitmask)
+                try
+                {
+                    int targetMask = Il2CppYgomGame.Duel.Engine.DLL_DuelGetAttackTargetMask(
+                        PlayerMe, LocateMonster);
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"  attackTargetMask={targetMask} (0x{targetMask:X})");
+                }
+                catch { /* DLL method may not be available in all states */ }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"  LogAttackState error: {ex.Message}");
             }
         }
 
