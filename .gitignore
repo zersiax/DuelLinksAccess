@@ -1,0 +1,32 @@
+# Build output
+bin/
+obj/
+
+# Decompiled game code
+decompiled/
+
+# Template/docs (not part of mod source)
+docs/
+docs-de/
+templates/
+CLAUDE.md
+CLAUDE.de.md
+project_status.md
+
+# Claude Code
+.claude/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Local files
+*.zip
+nul
