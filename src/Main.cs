@@ -169,6 +169,20 @@ namespace DuelLinksAccess
                 return true;
             }
 
+            // F3 = Dump tutorial progress (debug)
+            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F3))
+            {
+                DumpTutorialProgress();
+                return true;
+            }
+
+            // F4 = Try to advance stuck tutorial (debug)
+            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F4))
+            {
+                TryAdvanceTutorial();
+                return true;
+            }
+
             // Ctrl+R = Repeat last announcement
             if (Input.GetKey(KeyCode.LeftControl) && InputManager.TryConsumeKeyDown(KeyCode.R))
             {
@@ -226,6 +240,128 @@ namespace DuelLinksAccess
             {
                 ScreenReader.Say(last);
             }
+        }
+
+        /// <summary>
+        /// Dumps tutorial progress for all known tutorial types.
+        /// Called by F3 in debug mode to diagnose progression blocks.
+        /// </summary>
+        private void DumpTutorialProgress()
+        {
+            try
+            {
+                MelonLogger.Msg("=== Tutorial Progress Dump ===");
+                string summary = "Tutorials in progress: ";
+                int inProgressCount = 0;
+
+                var values = System.Enum.GetValues(
+                    typeof(Il2CppYgomGame.Utility.TutorialUtil.Type));
+
+                foreach (Il2CppYgomGame.Utility.TutorialUtil.Type t in values)
+                {
+                    try
+                    {
+                        bool inProgress = Il2CppYgomGame.Utility.TutorialUtil
+                            .IsTutorialProgress(t);
+                        string progress = Il2CppYgomGame.Utility.TutorialUtil
+                            .GetTutorialProgress(t);
+
+                        if (inProgress || !string.IsNullOrEmpty(progress))
+                        {
+                            MelonLogger.Msg(
+                                $"  {t} ({(int)t}): inProgress={inProgress}, progress=\"{progress}\"");
+                            if (inProgress)
+                            {
+                                summary += $"{t}, ";
+                                inProgressCount++;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (inProgressCount == 0)
+                    summary = "No tutorials in progress.";
+                else
+                    summary = summary.TrimEnd(',', ' ') + ".";
+
+                // Also dump TutorialManager state
+                try
+                {
+                    string waitTarget = Il2CppYgomSystem.Utility.TutorialManager.waitTarget;
+                    string queueName = Il2CppYgomSystem.Utility.TutorialManager.QUEUE_NAME;
+                    string queuePath = Il2CppYgomSystem.Utility.TutorialManager.QUEUE_PATH;
+                    string tutParam = Il2CppYgomSystem.Utility.TutorialManager.TUTORIAL_PARAM;
+
+                    MelonLogger.Msg($"TutorialManager.waitTarget: \"{waitTarget}\"");
+                    MelonLogger.Msg($"TutorialManager.QUEUE_NAME: \"{queueName}\"");
+                    MelonLogger.Msg($"TutorialManager.QUEUE_PATH: \"{queuePath}\"");
+                    MelonLogger.Msg($"TutorialManager.TUTORIAL_PARAM: \"{tutParam}\"");
+
+                    if (!string.IsNullOrEmpty(waitTarget))
+                        summary += $" Waiting for: {waitTarget}.";
+                }
+                catch (System.Exception ex)
+                {
+                    MelonLogger.Msg($"TutorialManager read error: {ex.Message}");
+                }
+
+                MelonLogger.Msg($"Summary: {summary}");
+                ScreenReader.Say(summary);
+            }
+            catch (System.Exception ex)
+            {
+                MelonLogger.Msg($"Tutorial dump error: {ex.Message}");
+                ScreenReader.Say("Tutorial dump failed");
+            }
+        }
+
+        /// <summary>
+        /// Tries multiple approaches to advance a stuck tutorial.
+        /// Called by F4 in debug mode.
+        /// </summary>
+        private void TryAdvanceTutorial()
+        {
+            MelonLogger.Msg("=== Attempting to advance tutorial ===");
+
+            // Approach 1: Re-fetch tutorial data from server
+            try
+            {
+                MelonLogger.Msg("Calling TutorialManager.fetch()...");
+                Il2CppYgomSystem.Utility.TutorialManager.fetch();
+                MelonLogger.Msg("TutorialManager.fetch() called successfully");
+            }
+            catch (System.Exception ex)
+            {
+                MelonLogger.Msg($"fetch() failed: {ex.Message}");
+            }
+
+            // Approach 2: Try ShowFirstTimer(Boot) to re-trigger boot tutorial
+            try
+            {
+                MelonLogger.Msg("Calling TutorialUtil.ShowFirstTimer(Boot)...");
+                var handle = Il2CppYgomGame.Utility.TutorialUtil.ShowFirstTimer(
+                    Il2CppYgomGame.Utility.TutorialUtil.Type.Boot);
+                MelonLogger.Msg($"ShowFirstTimer returned handle: {handle != null}");
+            }
+            catch (System.Exception ex)
+            {
+                MelonLogger.Msg($"ShowFirstTimer() failed: {ex.Message}");
+            }
+
+            // Approach 3: Try StartTutorialDuel (might re-enter the tutorial flow)
+            try
+            {
+                MelonLogger.Msg("Calling TutorialViewController.StartTutorialDuel()...");
+                Il2CppYgomGame.Menu.TutorialViewController.StartTutorialDuel();
+                MelonLogger.Msg("StartTutorialDuel() called successfully");
+            }
+            catch (System.Exception ex)
+            {
+                MelonLogger.Msg($"StartTutorialDuel() failed: {ex.Message}");
+            }
+
+            ScreenReader.Say("Tutorial advance attempted. Check log for details.");
         }
 
         #endregion

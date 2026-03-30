@@ -78,13 +78,20 @@ namespace DuelLinksAccess
                 // Priority: dialog > dialogbase > content > base
                 // Skip known container names that don't represent actual screens
                 string goName = null;
+                bool fromDialogManager = false;
                 if (!string.IsNullOrEmpty(dialogName)
                     && dialogName != "DialogManager"
                     && dialogName != "TutorialArrow")
+                {
                     goName = dialogName;
+                    fromDialogManager = true;
+                }
                 else if (!string.IsNullOrEmpty(dialogBaseName)
                     && dialogBaseName != "DialogManager")
+                {
                     goName = dialogBaseName;
+                    fromDialogManager = true;
+                }
                 else if (!string.IsNullOrEmpty(contentName))
                     goName = contentName;
                 else if (!string.IsNullOrEmpty(baseName)
@@ -114,6 +121,13 @@ namespace DuelLinksAccess
                 }
 
                 var newScreen = ClassifyScreen(goName);
+
+                // Any VC from the dialog/dialogbase manager that doesn't match
+                // a known pattern should still be treated as Dialog
+                // (e.g. Mission, reward screens, etc.)
+                if (newScreen == GameScreen.Other && fromDialogManager)
+                    newScreen = GameScreen.Dialog;
+
                 SetScreen(newScreen);
             }
             catch

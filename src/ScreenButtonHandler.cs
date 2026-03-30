@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using MelonLoader;
 using UnityEngine;
@@ -168,6 +169,20 @@ namespace DuelLinksAccess
                 // Find clickable buttons
                 FindButtons(_screenRoot);
 
+                // Also scan the header/footer area (separate from content VC)
+                var headerRoot = GetHeaderRoot();
+                if (headerRoot != null && headerRoot != _screenRoot)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Also scanning header: {headerRoot.name}");
+                    FindSliders(headerRoot);
+                    FindButtons(headerRoot);
+                }
+
+                // Post-process: remove duplicates and junk
+                DeduplicateItems();
+                FilterItems();
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Found {_items.Count} items");
 
@@ -195,6 +210,93 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"[ScreenBtn] Scan error: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Gets the header/footer root GameObject from the "base" manager.
+        /// Footer navigation buttons live here, separate from the content VC.
+        /// </summary>
+        private GameObject GetHeaderRoot()
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return null;
+
+                return GetTopViewGameObject(namedManager, "base");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Removes duplicate items where a child GO shares a label with a parent GO.
+        /// Keeps the child (more specific) since it typically has the actual click handler.
+        /// Parent containers often have bare Selectables for visual state only.
+        /// </summary>
+        private void DeduplicateItems()
+        {
+            var toRemove = new HashSet<int>();
+
+            for (int i = 0; i < _items.Count; i++)
+            {
+                if (toRemove.Contains(i)) continue;
+                for (int j = i + 1; j < _items.Count; j++)
+                {
+                    if (toRemove.Contains(j)) continue;
+                    if (_items[i].Label != _items[j].Label) continue;
+
+                    try
+                    {
+                        // If j is a child of i, remove the PARENT (i)
+                        if (_items[j].Go.transform.IsChildOf(_items[i].Go.transform))
+                        {
+                            toRemove.Add(i);
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Dedup: removing parent \"{_items[i].Label}\" ({_items[i].Go.name}), keeping child ({_items[j].Go.name})");
+                            break;
+                        }
+                        // If i is a child of j, remove the PARENT (j)
+                        else if (_items[i].Go.transform.IsChildOf(_items[j].Go.transform))
+                        {
+                            toRemove.Add(j);
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Dedup: removing parent \"{_items[j].Label}\" ({_items[j].Go.name}), keeping child ({_items[i].Go.name})");
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (toRemove.Count > 0)
+            {
+                for (int i = _items.Count - 1; i >= 0; i--)
+                {
+                    if (toRemove.Contains(i))
+                        _items.RemoveAt(i);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Removes items that are likely notification badges, decorative elements,
+        /// or other non-functional UI clutter.
+        /// </summary>
+        private void FilterItems()
+        {
+            _items.RemoveAll(item =>
+            {
+                // Remove purely numeric labels (notification badges like "99", "1")
+                if (item.Type == ItemType.Button && item.Label.All(char.IsDigit))
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Filter: removing numeric \"{item.Label}\" ({item.Go.name})");
+                    return true;
+                }
+                return false;
+            });
         }
 
         /// <summary>
@@ -440,33 +542,84 @@ namespace DuelLinksAccess
 
         private string GetLabel(GameObject go)
         {
-            // Try YgomTextAccessor first (game's text system)
+            // Try YgomButton.textLabel first (explicit label reference)
             try
             {
-                var yta = go.GetComponentInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
-                if (yta != null)
+                var ygomBtn = go.GetComponent<Il2CppYgomSystem.UI.YgomButton>();
+                if (ygomBtn != null && ygomBtn.textLabel != null)
                 {
-                    string t = StripRichText(yta.text);
-                    if (!string.IsNullOrEmpty(t) && t.Length >= 1)
-                        return t;
+                    // textLabel is a Graphic — try to get text from it
+                    var textComp = ygomBtn.textLabel.GetComponent<Text>();
+                    if (textComp != null)
+                    {
+                        string t = StripRichText(textComp.text);
+                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
+                            return t;
+                    }
+                    var ytaComp = ygomBtn.textLabel.GetComponent<Il2CppYgomSystem.UI.YgomTextAccessor>();
+                    if (ytaComp != null)
+                    {
+                        string t = StripRichText(ytaComp.text);
+                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
+                            return t;
+                    }
                 }
             }
             catch { }
 
-            // Fall back to Unity Text
+            // Try YgomTextAccessor in children (game's text system)
             try
             {
-                var text = go.GetComponentInChildren<Text>(true);
-                if (text != null)
+                var ytas = go.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
+                if (ytas != null)
                 {
-                    string t = StripRichText(text.text);
-                    if (!string.IsNullOrEmpty(t) && t.Length >= 1)
-                        return t;
+                    foreach (var yta in ytas)
+                    {
+                        if (yta == null) continue;
+                        if (yta.gameObject == null || !yta.gameObject.activeInHierarchy) continue;
+                        string t = StripRichText(yta.text);
+                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
+                            return t;
+                    }
                 }
             }
             catch { }
 
-            return go.name;
+            // Fall back to Unity Text in children
+            try
+            {
+                var texts = go.GetComponentsInChildren<Text>(true);
+                if (texts != null)
+                {
+                    foreach (var text in texts)
+                    {
+                        if (text == null) continue;
+                        if (text.gameObject == null || !text.gameObject.activeInHierarchy) continue;
+                        string t = StripRichText(text.text);
+                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
+                            return t;
+                    }
+                }
+            }
+            catch { }
+
+            // Last resort: clean up the GO name
+            return CleanGoName(go.name);
+        }
+
+        /// <summary>
+        /// Cleans up a GameObject name for use as a fallback label.
+        /// Removes common suffixes like (Clone), Button, etc.
+        /// </summary>
+        private static string CleanGoName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+
+            // Remove (Clone) suffix
+            if (name.EndsWith("(Clone)"))
+                name = name.Substring(0, name.Length - 7).TrimEnd();
+
+            return name;
         }
 
         private string GetSliderLabel(Slider slider)
@@ -562,6 +715,12 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
+                // If TutorialArrow is active, dismiss it instead of rescanning
+                if (IsTutorialArrowActive())
+                {
+                    DismissTutorialArrow();
+                    return;
+                }
                 _scanned = false;
                 _scanDelay = 0.3f;
                 _scanAttempts = 0;
@@ -654,6 +813,14 @@ namespace DuelLinksAccess
         {
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
+            // Dismiss TutorialArrow if present — it blocks navigation
+            if (IsTutorialArrowActive())
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    "TutorialArrow active — dismissing before activation");
+                DismissTutorialArrow();
+            }
+
             var item = _items[_focusIndex];
 
             try
@@ -661,42 +828,157 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Activating: {item.Label} ({item.Go.name})");
 
-                // Try Unity Button onClick
-                var button = item.Go.GetComponent<Button>();
-                if (button != null)
+                // Strategy 1: OnPointerClick via ExecuteEvents (standard Unity buttons)
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+                bool handled = UnityEngine.EventSystems.ExecuteEvents.Execute(
+                    item.Go, eventData,
+                    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+
+                // Strategy 2: Try On{GoName}Button() on the content ViewController.
+                // Many game screens wire world/map buttons to VC methods by convention.
+                if (!handled)
                 {
-                    button.onClick.Invoke();
-                    ScreenReader.Say(item.Label);
-                    return;
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"ExecuteEvents found no handler on {item.Go.name}, trying VC method");
+                    handled = TryCallVcMethod(item.Go.name);
                 }
 
-                // Try YgomButton
-                var ygomBtn = item.Go.GetComponent<Il2CppYgomSystem.UI.YgomButton>();
-                if (ygomBtn != null)
+                // Strategy 3: onClick.Invoke as last resort
+                if (!handled)
                 {
-                    ygomBtn.onClick.Invoke();
-                    ScreenReader.Say(item.Label);
-                    return;
+                    var button = item.Go.GetComponent<Button>();
+                    if (button != null)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Trying onClick.Invoke on {item.Go.name}");
+                        button.onClick.Invoke();
+                        handled = true;
+                    }
                 }
 
-                // Try ScaleTransitionButton
-                var stBtn = item.Go.GetComponent<Il2CppYgomSystem.UI.ScaleTransitionButton>();
-                if (stBtn != null)
-                {
-                    stBtn.onClick.Invoke();
+                if (handled)
                     ScreenReader.Say(item.Label);
-                    return;
-                }
-
-                // Generic pointer click via ExecuteEvents
-                ClickGameObject(item.Go);
-                ScreenReader.Say(item.Label);
+                else
+                    ScreenReader.Say(Loc.Get("screen_click_error"));
             }
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[ScreenBtn] Activate error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("screen_click_error"));
             }
+        }
+
+        /// <summary>
+        /// Tries to call a matching method on the content ViewController for a button.
+        /// Searches for On{GoName}Button() or On{GoName}() on the VC via reflection.
+        /// This is the generic pattern used by many game screens (e.g. SingleViewController
+        /// has OnGateButton, OnShopButton, OnLaboButton, OnColosseumButton).
+        ///
+        /// IL2CPP note: GetStackTopViewController() returns the base ViewController type.
+        /// We must find the actual derived type (e.g. SingleViewController) by searching
+        /// loaded assemblies, then create a properly-typed wrapper around the same pointer.
+        /// </summary>
+        private bool TryCallVcMethod(string goName)
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return false;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("content", out mgr) || mgr == null)
+                    return false;
+
+                var topVc = mgr.GetStackTopViewController();
+                if (topVc == null || topVc.gameObject == null) return false;
+
+                string vcGoName = topVc.gameObject.name;
+                var actualType = FindVcType(vcGoName);
+                if (actualType == null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"No VC type found for GO '{vcGoName}'");
+                    return false;
+                }
+
+                string cleanName = goName.Replace("(Clone)", "").Trim();
+
+                // Try On{Name}Button() first, then On{Name}()
+                string[] methodNames = {
+                    $"On{cleanName}Button",
+                    $"On{cleanName}"
+                };
+
+                foreach (var methodName in methodNames)
+                {
+                    var method = actualType.GetMethod(methodName,
+                        BindingFlags.Public | BindingFlags.Instance,
+                        null, Type.EmptyTypes, null);
+
+                    if (method != null)
+                    {
+                        // Create a wrapper of the actual derived type around the same pointer
+                        var ctor = actualType.GetConstructor(new[] { typeof(IntPtr) });
+                        if (ctor == null) continue;
+
+                        var castVc = ctor.Invoke(new object[] { topVc.Pointer });
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Calling {actualType.Name}.{methodName}()");
+                        method.Invoke(castVc, null);
+                        return true;
+                    }
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"No matching method on {actualType.Name} for {cleanName}");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] VC method error: {ex.Message}");
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Cache of VC GO name → actual managed Type for derived ViewControllers.
+        /// </summary>
+        private static readonly Dictionary<string, Type> _vcTypeCache = new();
+
+        /// <summary>
+        /// Finds the actual derived ViewController type for a given GO name.
+        /// Searches loaded assemblies for {GoName}ViewController with an IntPtr constructor
+        /// (the standard IL2CPP interop wrapper pattern).
+        /// </summary>
+        private static Type FindVcType(string vcGoName)
+        {
+            if (_vcTypeCache.TryGetValue(vcGoName, out var cached))
+                return cached;
+
+            string targetName = vcGoName + "ViewController";
+
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    foreach (var type in asm.GetTypes())
+                    {
+                        if (type.Name != targetName) continue;
+                        if (type.GetConstructor(new[] { typeof(IntPtr) }) == null) continue;
+
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Found VC type: {type.FullName} for GO '{vcGoName}'");
+                        _vcTypeCache[vcGoName] = type;
+                        return type;
+                    }
+                }
+                catch { }
+            }
+
+            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                $"No VC type found matching '{targetName}'");
+            _vcTypeCache[vcGoName] = null;
+            return null;
         }
 
         /// <summary>
@@ -770,6 +1052,80 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"GoBack error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region TutorialArrow
+
+        /// <summary>
+        /// Checks if TutorialArrow is the top VC on the dialog stack.
+        /// TutorialArrow overlays block navigation until dismissed.
+        /// </summary>
+        private static bool IsTutorialArrowActive()
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return false;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("dialog", out mgr)) return false;
+
+                var topVc = mgr?.GetStackTopViewController();
+                if (topVc?.gameObject == null) return false;
+
+                string name = topVc.gameObject.name;
+                return name == "TutorialArrow" || name == "TutorialArrowPart";
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Dismisses the TutorialArrow by calling OnPointerClick on the
+        /// TutorialArrowViewController at the screen center.
+        /// </summary>
+        private static void DismissTutorialArrow()
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("dialog", out mgr)) return;
+
+                var topVc = mgr?.GetStackTopViewController();
+                if (topVc?.gameObject == null) return;
+
+                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                if (arrowVc == null)
+                {
+                    // Fallback: generic pointer click
+                    var fallbackData = new UnityEngine.EventSystems.PointerEventData(
+                        UnityEngine.EventSystems.EventSystem.current);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        topVc.gameObject, fallbackData,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "TutorialArrow dismissed via fallback click");
+                    return;
+                }
+
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+                eventData.position = new Vector2(
+                    Screen.width / 2f, Screen.height / 2f);
+
+                arrowVc.OnPointerClick(eventData);
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    "TutorialArrow dismissed via OnPointerClick");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"DismissTutorialArrow error: {ex.Message}");
             }
         }
 

@@ -126,11 +126,12 @@ namespace DuelLinksAccess
 
             try
             {
-                // Find the dialog root — HtjsonDialog content lives under DialogManager
-                GameObject dialogRoot = GetManagerRoot("dialog");
+                // Find the TOP dialog VC — scan only the active dialog, not
+                // the entire manager (which may contain multiple stacked dialogs)
+                GameObject dialogRoot = GetTopVcRoot("dialog");
                 if (dialogRoot == null)
                 {
-                    MelonLogger.Msg("[Dialog] No dialog manager root found");
+                    MelonLogger.Msg("[Dialog] No top dialog VC found");
                     return;
                 }
 
@@ -149,6 +150,31 @@ namespace DuelLinksAccess
 
                 // Find clickable buttons in the dialog hierarchy
                 FindButtons(dialogRoot);
+
+                // If top VC has nothing (empty overlay like TutorialArrowPart),
+                // dismiss it and fall back to scanning the full manager root
+                if (_items.Count == 0 && string.IsNullOrEmpty(dialogText))
+                {
+                    if (IsTutorialArrowOnTop())
+                        DismissTutorialArrow();
+
+                    var managerRoot = GetManagerRoot("dialog");
+                    if (managerRoot != null && managerRoot != dialogRoot)
+                    {
+                        MelonLogger.Msg($"[Dialog] Top VC empty, falling back to manager root");
+                        dialogRoot = managerRoot;
+
+                        dialogText = ReadDialogText(dialogRoot);
+                        if (!string.IsNullOrEmpty(dialogText))
+                        {
+                            ScreenReader.Say(dialogText);
+                            MelonLogger.Msg($"[Dialog] Text: {dialogText.Substring(0, Math.Min(200, dialogText.Length))}");
+                        }
+
+                        FindSliders(dialogRoot);
+                        FindButtons(dialogRoot);
+                    }
+                }
 
                 MelonLogger.Msg($"[Dialog] Found {_items.Count} interactive items");
 
@@ -461,6 +487,10 @@ namespace DuelLinksAccess
             }
         }
 
+        /// <summary>
+        /// Gets the manager's own gameObject — includes ALL stacked dialogs.
+        /// Used as fallback when the top VC is an empty overlay.
+        /// </summary>
         private GameObject GetManagerRoot(string managerName)
         {
             try
@@ -471,6 +501,57 @@ namespace DuelLinksAccess
                 Il2CppYgomSystem.UI.ViewControllerManager mgr;
                 if (!namedManager.TryGetValue(managerName, out mgr)) return null;
                 return mgr?.gameObject;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets the top ViewController's gameObject from a named manager.
+        /// Unlike GetManagerRoot, this returns only the active dialog — not the
+        /// entire manager hierarchy. Critical for layered dialogs (e.g.
+        /// TutorialDuelMessage on top of Mission).
+        /// </summary>
+        private GameObject GetTopVcRoot(string managerName)
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return null;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue(managerName, out mgr)) return null;
+                if (mgr == null) return null;
+
+                var topVc = mgr.GetStackTopViewController();
+                if (topVc?.gameObject == null) return null;
+
+                return topVc.gameObject;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets the top ViewController component from a named manager.
+        /// Used for calling SendBack() to dismiss dialogs.
+        /// </summary>
+        private Il2CppYgomSystem.UI.ViewController GetTopVc(string managerName)
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return null;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue(managerName, out mgr)) return null;
+                if (mgr == null) return null;
+
+                return mgr.GetStackTopViewController();
             }
             catch
             {
@@ -532,8 +613,8 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
-                // Re-read dialog text
-                var root = GetManagerRoot("dialog");
+                // Re-read dialog text from the active dialog VC
+                var root = GetTopVcRoot("dialog");
                 if (root != null)
                 {
                     string text = ReadDialogText(root);
@@ -609,39 +690,16 @@ namespace DuelLinksAccess
 
             var item = _items[_focusIndex];
 
+            // If TutorialArrow is on top, route through its ipclick handler.
+            // The tutorial system requires clicks to go through the arrow's
+            // routing — direct clicks on the target button don't register.
+            if (IsTutorialArrowOnTop() && ActivateViaTutorialArrow(item.Label))
+                return;
+
             try
             {
                 MelonLogger.Msg($"[Dialog] Activating: {item.Label} ({item.Go.name})");
 
-                // Try multiple click methods
-                // 1. Unity Button onClick
-                var button = item.Go.GetComponent<Button>();
-                if (button != null)
-                {
-                    button.onClick.Invoke();
-                    ScreenReader.Say(item.Label);
-                    return;
-                }
-
-                // 2. YgomButton
-                var ygomBtn = item.Go.GetComponent<Il2CppYgomSystem.UI.YgomButton>();
-                if (ygomBtn != null)
-                {
-                    ygomBtn.onClick.Invoke();
-                    ScreenReader.Say(item.Label);
-                    return;
-                }
-
-                // 3. ScaleTransitionButton
-                var stBtn = item.Go.GetComponent<Il2CppYgomSystem.UI.ScaleTransitionButton>();
-                if (stBtn != null)
-                {
-                    stBtn.onClick.Invoke();
-                    ScreenReader.Say(item.Label);
-                    return;
-                }
-
-                // 4. Generic pointer click via ExecuteEvents
                 var eventData = new UnityEngine.EventSystems.PointerEventData(
                     UnityEngine.EventSystems.EventSystem.current);
                 UnityEngine.EventSystems.ExecuteEvents.Execute(
@@ -657,20 +715,27 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Dismisses a text-only dialog by simulating a click on the dialog root.
+        /// Dismisses a text-only dialog. Tries SendBack on the top VC first
+        /// (proper VC dismiss — works for TutorialDuelMessage etc.), then
+        /// falls back to click simulation on the dialog root.
         /// </summary>
         private void DismissDialog()
         {
             try
             {
-                if (_dialogRoot == null)
+                // Strategy 1: SendBack on the top VC (proper ViewController dismiss)
+                var topVc = GetTopVc("dialog");
+                if (topVc != null)
                 {
-                    _dialogRoot = GetManagerRoot("dialog");
+                    MelonLogger.Msg($"[Dialog] Dismissing via SendBack on {topVc.gameObject?.name}");
+                    topVc.SendBack();
+                    return;
                 }
 
+                // Strategy 2: Click on the stored dialog root
                 if (_dialogRoot != null)
                 {
-                    MelonLogger.Msg("[Dialog] Dismissing text-only dialog via click");
+                    MelonLogger.Msg("[Dialog] Dismissing via click on dialog root");
                     var eventData = new UnityEngine.EventSystems.PointerEventData(
                         UnityEngine.EventSystems.EventSystem.current);
                     UnityEngine.EventSystems.ExecuteEvents.Execute(
@@ -681,6 +746,107 @@ namespace DuelLinksAccess
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[Dialog] DismissDialog error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region TutorialArrow
+
+        /// <summary>
+        /// Checks if a TutorialArrow overlay is the top dialog VC.
+        /// These overlays have no content but block interaction with dialogs underneath.
+        /// </summary>
+        private bool IsTutorialArrowOnTop()
+        {
+            try
+            {
+                var topGo = GetTopVcRoot("dialog");
+                if (topGo == null) return false;
+                string name = topGo.name;
+                return name == "TutorialArrow" || name == "TutorialArrowPart";
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Routes a click through the TutorialArrow's ipclick handler.
+        /// The tutorial system requires clicks to go through this routing —
+        /// direct clicks on the target don't satisfy the tutorial condition.
+        /// </summary>
+        private bool ActivateViaTutorialArrow(string label)
+        {
+            try
+            {
+                var topVc = GetTopVc("dialog");
+                if (topVc == null) return false;
+
+                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                if (arrowVc == null) return false;
+
+                var ipclick = arrowVc.ipclick;
+                if (ipclick == null || ipclick.Length == 0)
+                {
+                    MelonLogger.Msg("[Dialog] TutorialArrow has no ipclick handlers");
+                    return false;
+                }
+
+                MelonLogger.Msg($"[Dialog] Routing click through TutorialArrow ipclick ({ipclick.Length} handler(s))");
+
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+
+                for (int i = 0; i < ipclick.Length; i++)
+                {
+                    var handler = ipclick[i];
+                    if (handler == null) continue;
+
+                    handler.OnPointerClick(eventData);
+                    MelonLogger.Msg($"[Dialog] Invoked ipclick[{i}]");
+                }
+
+                ScreenReader.Say(label);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ActivateViaTutorialArrow error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Dismisses a TutorialArrow overlay via OnPointerClick or fallback click.
+        /// </summary>
+        private void DismissTutorialArrow()
+        {
+            try
+            {
+                var topVc = GetTopVc("dialog");
+                if (topVc?.gameObject == null) return;
+
+                MelonLogger.Msg($"[Dialog] Dismissing TutorialArrow: {topVc.gameObject.name}");
+
+                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                if (arrowVc != null)
+                {
+                    var eventData = new UnityEngine.EventSystems.PointerEventData(
+                        UnityEngine.EventSystems.EventSystem.current);
+                    eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
+                    arrowVc.OnPointerClick(eventData);
+                    return;
+                }
+
+                // Fallback: generic pointer click
+                var fallbackData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+                UnityEngine.EventSystems.ExecuteEvents.Execute(
+                    topVc.gameObject, fallbackData,
+                    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] DismissTutorialArrow error: {ex.Message}");
             }
         }
 
