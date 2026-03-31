@@ -19,6 +19,7 @@ namespace DuelLinksAccess
         #region Fields
 
         private string _lastDialogName = "";
+        private int _lastDialogInstanceId = -1;
         private bool _scanned;
         private float _scanDelay;
         private int _scanAttempts;
@@ -29,6 +30,10 @@ namespace DuelLinksAccess
         private bool _textMode;
         private string _lastDialogText = "";
         private GameObject _dialogRoot;
+
+        // Post-activation rescan: after clicking a button that may open a
+        // stacked dialog, we rescan after a delay to detect the new content
+        private float _postActivationRescanDelay = -1f;
 
         #endregion
 
@@ -59,30 +64,60 @@ namespace DuelLinksAccess
                 if (_lastDialogName != "")
                 {
                     _lastDialogName = "";
+                    _lastDialogInstanceId = -1;
                     _scanned = false;
                     _textMode = false;
                     _lastDialogText = "";
                     _dialogRoot = null;
                     _items.Clear();
+                    _postActivationRescanDelay = -1f;
                 }
                 return;
             }
 
             string currentName = GameStateTracker.LastViewControllerName;
 
-            // New dialog appeared — start delayed scan
-            if (currentName != _lastDialogName)
+            // Check if the top VC instance changed (stacked dialog push/pop).
+            // Name alone isn't enough — two HtjsonDialogs have the same name.
+            int currentInstanceId = GetTopVcInstanceId("dialog");
+            bool vcChanged = currentName != _lastDialogName
+                || (currentInstanceId != _lastDialogInstanceId && currentInstanceId != -1);
+
+            // New dialog appeared or stacked dialog changed — start delayed scan
+            if (vcChanged)
             {
                 _lastDialogName = currentName;
+                _lastDialogInstanceId = currentInstanceId;
                 _scanned = false;
                 _textMode = false;
                 _lastDialogText = "";
                 _scanDelay = 2.0f;
                 _scanAttempts = 0;
+                _postActivationRescanDelay = -1f;
                 // Don't announce "Dialog" during duels — the dialog text
                 // itself will be read once scanned
                 if (!DuelEventAnnouncer.InDuel)
                     ScreenReader.Say(Loc.Get("screen_dialog"));
+            }
+
+            // Post-activation rescan: after clicking a button, check if a new
+            // dialog was pushed on top (e.g. Privacy Notice opens policy viewer)
+            if (_postActivationRescanDelay >= 0f)
+            {
+                _postActivationRescanDelay -= Time.deltaTime;
+                if (_postActivationRescanDelay <= 0f)
+                {
+                    _postActivationRescanDelay = -1f;
+                    int newId = GetTopVcInstanceId("dialog");
+                    if (newId != _lastDialogInstanceId && newId != -1)
+                    {
+                        MelonLogger.Msg("[Dialog] Post-activation: stacked dialog detected, rescanning");
+                        _lastDialogInstanceId = newId;
+                        _scanned = false;
+                        _scanDelay = 0.5f;
+                        _scanAttempts = 0;
+                    }
+                }
             }
 
             if (!_scanned)
@@ -137,9 +172,16 @@ namespace DuelLinksAccess
 
                 MelonLogger.Msg($"[Dialog] Scanning dialog root: {dialogRoot.name}");
 
-                // Read and announce dialog text first (Say to interrupt "Dialog" announcement)
+                // Log the actual VC type + full dialog stack for diagnostics
+                LogDialogVcType(dialogRoot.name);
+
+                // Diagnostics: dump toggles, button interactable states, and special VCs
+                DumpDialogDiagnostics(dialogRoot);
+
+                // Read and announce dialog text first (Say to interrupt "Dialog" announcement).
+                // Skip re-announcing identical text on retry scans.
                 string dialogText = ReadDialogText(dialogRoot);
-                if (!string.IsNullOrEmpty(dialogText))
+                if (!string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                 {
                     ScreenReader.Say(dialogText);
                     MelonLogger.Msg($"[Dialog] Text: {dialogText.Substring(0, Math.Min(200, dialogText.Length))}");
@@ -165,7 +207,7 @@ namespace DuelLinksAccess
                         dialogRoot = managerRoot;
 
                         dialogText = ReadDialogText(dialogRoot);
-                        if (!string.IsNullOrEmpty(dialogText))
+                        if (!string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                         {
                             ScreenReader.Say(dialogText);
                             MelonLogger.Msg($"[Dialog] Text: {dialogText.Substring(0, Math.Min(200, dialogText.Length))}");
@@ -201,6 +243,71 @@ namespace DuelLinksAccess
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[Dialog] ScanDialog error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Dumps diagnostic info for the dialog: toggles, button states, special VCs.
+        /// Helps debug cases where buttons appear but don't respond (e.g. Privacy Notice).
+        /// </summary>
+        private void DumpDialogDiagnostics(GameObject root)
+        {
+            try
+            {
+                // Check for PolicySettingsDialogViewController anywhere in the hierarchy
+                var policyVc = root.GetComponentInChildren<Il2CppYgomGame.Settings.PolicySettingsDialogViewController>(true);
+                if (policyVc != null)
+                {
+                    MelonLogger.Msg($"[Dialog][Diag] PolicySettingsDialogVC FOUND");
+                    MelonLogger.Msg($"[Dialog][Diag]   optionCheck GO: {(policyVc.optionCheck != null ? policyVc.optionCheck.name : "null")}");
+                    MelonLogger.Msg($"[Dialog][Diag]   optionDesc GO: {(policyVc.optionDesc != null ? policyVc.optionDesc.name : "null")}");
+                    if (policyVc.optionCheck != null)
+                    {
+                        var toggle = policyVc.optionCheck.GetComponent<Toggle>();
+                        if (toggle != null)
+                            MelonLogger.Msg($"[Dialog][Diag]   optionCheck Toggle: isOn={toggle.isOn}, interactable={toggle.interactable}");
+                        else
+                            MelonLogger.Msg($"[Dialog][Diag]   optionCheck has no Toggle component");
+                    }
+                }
+
+                // Also check the manager root (PolicyVC may not be on top VC)
+                var managerRoot = GetManagerRoot("dialog");
+                if (managerRoot != null && managerRoot != root)
+                {
+                    var policyVc2 = managerRoot.GetComponentInChildren<Il2CppYgomGame.Settings.PolicySettingsDialogViewController>(true);
+                    if (policyVc2 != null && policyVc2 != policyVc)
+                        MelonLogger.Msg($"[Dialog][Diag] PolicySettingsDialogVC found on manager root (not top VC)");
+                }
+
+                // Dump all Toggles in the dialog
+                var toggles = root.GetComponentsInChildren<Toggle>(true);
+                if (toggles != null && toggles.Length > 0)
+                {
+                    MelonLogger.Msg($"[Dialog][Diag] Found {toggles.Length} Toggle(s):");
+                    foreach (var t in toggles)
+                    {
+                        if (t == null) continue;
+                        MelonLogger.Msg($"[Dialog][Diag]   Toggle: {t.gameObject.name} isOn={t.isOn} interactable={t.interactable} path={GetGameObjectPath(t.gameObject)}");
+                    }
+                }
+
+                // Dump all Buttons with their interactable state
+                var buttons = root.GetComponentsInChildren<Button>(true);
+                if (buttons != null && buttons.Length > 0)
+                {
+                    MelonLogger.Msg($"[Dialog][Diag] Found {buttons.Length} Button(s):");
+                    foreach (var b in buttons)
+                    {
+                        if (b == null) continue;
+                        string label = GetLabel(b.gameObject);
+                        MelonLogger.Msg($"[Dialog][Diag]   Button: \"{label}\" ({b.gameObject.name}) interactable={b.interactable} path={GetGameObjectPath(b.gameObject)}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog][Diag] Error: {ex.Message}");
             }
         }
 
@@ -537,6 +644,32 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Gets the instance ID of the top ViewController in a named manager.
+        /// Used to detect stacked dialog changes (same name, different instance).
+        /// </summary>
+        private int GetTopVcInstanceId(string managerName)
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return -1;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue(managerName, out mgr)) return -1;
+                if (mgr == null) return -1;
+
+                var topVc = mgr.GetStackTopViewController();
+                if (topVc?.gameObject == null) return -1;
+
+                return topVc.gameObject.GetInstanceID();
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>
         /// Gets the top ViewController component from a named manager.
         /// Used for calling SendBack() to dismiss dialogs.
         /// </summary>
@@ -700,12 +833,51 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"[Dialog] Activating: {item.Label} ({item.Go.name})");
 
-                var eventData = new UnityEngine.EventSystems.PointerEventData(
-                    UnityEngine.EventSystems.EventSystem.current);
-                UnityEngine.EventSystems.ExecuteEvents.Execute(
-                    item.Go, eventData,
-                    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                // Diagnostics: log interactable state and toggle status at activation time
+                var selectable = item.Go.GetComponent<Selectable>();
+                if (selectable != null)
+                    MelonLogger.Msg($"[Dialog]   Selectable interactable={selectable.interactable}");
+                else
+                    MelonLogger.Msg($"[Dialog]   No Selectable component on button GO");
+
+                var btn = item.Go.GetComponent<Button>();
+                if (btn != null)
+                    MelonLogger.Msg($"[Dialog]   Button component: interactable={btn.interactable}, onClick listeners={btn.onClick.GetPersistentEventCount()}");
+
+                // Check for any Toggle on or near this button
+                var toggle = item.Go.GetComponent<Toggle>();
+                if (toggle != null)
+                    MelonLogger.Msg($"[Dialog]   Toggle on button: isOn={toggle.isOn}, interactable={toggle.interactable}");
+                var parentToggle = item.Go.GetComponentInParent<Toggle>();
+                if (parentToggle != null)
+                    MelonLogger.Msg($"[Dialog]   Parent Toggle: isOn={parentToggle.isOn}, interactable={parentToggle.interactable}");
+
+                // Special case: Privacy Notice "I've confirmed" button has no click
+                // handlers — must call PolicySettingsDialogViewController.OnConfirm() directly
+                if (TryActivateSpecialDialog(item))
+                    return;
+
+                // Try Button.onClick.Invoke() first — works for runtime-added
+                // listeners (Htjson buttons) where ExecuteEvents fails
+                if (btn != null)
+                {
+                    MelonLogger.Msg($"[Dialog] Using Button.onClick.Invoke()");
+                    btn.onClick.Invoke();
+                }
+                else
+                {
+                    var eventData = new UnityEngine.EventSystems.PointerEventData(
+                        UnityEngine.EventSystems.EventSystem.current);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        item.Go, eventData,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                }
+
                 ScreenReader.Say(item.Label);
+
+                // Schedule a post-activation rescan to detect stacked dialogs
+                // (e.g. clicking "Privacy Notice" opens a new dialog on top)
+                _postActivationRescanDelay = 1.5f;
             }
             catch (Exception ex)
             {
@@ -715,19 +887,112 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Dismisses a text-only dialog. Tries SendBack on the top VC first
-        /// (proper VC dismiss — works for TutorialDuelMessage etc.), then
-        /// falls back to click simulation on the dialog root.
+        /// Handles dialogs where standard click simulation doesn't work.
+        /// Returns true if this method handled the activation.
+        /// </summary>
+        private bool TryActivateSpecialDialog(DialogItem item)
+        {
+            try
+            {
+                // Privacy Notice: "I've confirmed" has no click handlers.
+                // Must call PolicySettingsDialogViewController.OnConfirm() directly.
+                if (item.Label == "I've confirmed")
+                {
+                    // Walk the dialog manager VC stack to find PolicySettingsDialogVC.
+                    // FindObjectOfType fails for this IL2CPP type.
+                    var policyVc = FindVcInStack<
+                        Il2CppYgomGame.Settings.PolicySettingsDialogViewController>("dialog");
+                    if (policyVc != null)
+                    {
+                        MelonLogger.Msg("[Dialog] Calling PolicySettingsDialogVC.OnConfirm()");
+                        policyVc.OnConfirm();
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    MelonLogger.Msg("[Dialog] PolicySettingsDialogVC not found in stack, falling back to click");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] TryActivateSpecialDialog error: {ex.Message}");
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Walks the VC stack in a named manager and returns the first VC
+        /// that can be cast to the requested type. Used when FindObjectOfType
+        /// fails for IL2CPP types.
+        /// </summary>
+        private T FindVcInStack<T>(string managerName) where T : Il2CppSystem.Object
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return null;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue(managerName, out mgr)) return null;
+                if (mgr == null) return null;
+
+                int count = mgr.GetStackCount();
+                MelonLogger.Msg($"[Dialog] Searching VC stack ({count} entries) for {typeof(T).Name}");
+
+                for (int i = 0; i < count; i++)
+                {
+                    var vc = mgr.GetStackViewController(i);
+                    if (vc == null) continue;
+
+                    MelonLogger.Msg($"[Dialog]   Stack[{i}]: {vc.gameObject?.name} ({vc.GetIl2CppType()?.Name})");
+
+                    var cast = vc.TryCast<T>();
+                    if (cast != null)
+                    {
+                        MelonLogger.Msg($"[Dialog]   Found {typeof(T).Name} at stack index {i}");
+                        return cast;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] FindVcInStack error: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Dismisses a text-only dialog. For TutorialDuelMessage, uses OnPointerClick
+        /// to simulate a real tap — SendBack skips the tutorial advancement callback.
+        /// For other dialogs, uses SendBack (proper VC dismiss), then falls back to
+        /// click simulation on the dialog root.
         /// </summary>
         private void DismissDialog()
         {
             try
             {
-                // Strategy 1: SendBack on the top VC (proper ViewController dismiss)
                 var topVc = GetTopVc("dialog");
                 if (topVc != null)
                 {
-                    MelonLogger.Msg($"[Dialog] Dismissing via SendBack on {topVc.gameObject?.name}");
+                    string vcName = topVc.gameObject?.name ?? "";
+
+                    // TutorialDuelMessage must be dismissed via OnPointerClick, not
+                    // SendBack. The tutorial system passes a callback via Open() that
+                    // only fires on proper dismissal — SendBack bypasses it, leaving
+                    // the tutorial (and stage advancement) stuck.
+                    if (vcName == "TutorialDuelMessage")
+                    {
+                        MelonLogger.Msg("[Dialog] Dismissing TutorialDuelMessage via OnPointerClick");
+                        var eventData = new UnityEngine.EventSystems.PointerEventData(
+                            UnityEngine.EventSystems.EventSystem.current);
+                        eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            topVc.gameObject, eventData,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                        return;
+                    }
+
+                    // Other dialogs: SendBack (proper ViewController dismiss)
+                    MelonLogger.Msg($"[Dialog] Dismissing via SendBack on {vcName}");
                     topVc.SendBack();
                     return;
                 }
@@ -770,9 +1035,12 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Routes a click through the TutorialArrow's ipclick handler.
-        /// The tutorial system requires clicks to go through this routing —
-        /// direct clicks on the target don't satisfy the tutorial condition.
+        /// Routes a click through the TutorialArrow by tapping the arrow VC itself.
+        /// Clicks the TutorialArrow's ipclick target directly. The tutorial system
+        /// requires clicks to route through the arrow — but arrowVc.OnPointerClick
+        /// silently fails when the click position doesn't hit the physicTarget.
+        /// Calling ipclick handlers directly bypasses that position check.
+        /// Returns false so ActivateCurrentItem still runs btn.onClick as backup.
         /// </summary>
         private bool ActivateViaTutorialArrow(string label)
         {
@@ -791,22 +1059,46 @@ namespace DuelLinksAccess
                     return false;
                 }
 
-                MelonLogger.Msg($"[Dialog] Routing click through TutorialArrow ipclick ({ipclick.Length} handler(s))");
-
                 var eventData = new UnityEngine.EventSystems.PointerEventData(
                     UnityEngine.EventSystems.EventSystem.current);
+                eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
 
+                // Click ipclick handlers directly — bypasses arrow's position check
                 for (int i = 0; i < ipclick.Length; i++)
                 {
-                    var handler = ipclick[i];
-                    if (handler == null) continue;
+                    try
+                    {
+                        var handler = ipclick[i];
+                        if (handler == null) continue;
 
-                    handler.OnPointerClick(eventData);
-                    MelonLogger.Msg($"[Dialog] Invoked ipclick[{i}]");
+                        var button = handler.TryCast<Il2CppYgomSystem.UI.YgomButton>();
+                        if (button != null)
+                        {
+                            MelonLogger.Msg($"[Dialog] Clicking ipclick[{i}] YgomButton on {button.gameObject?.name ?? "?"}");
+                            button.OnPointerClick(eventData);
+                            ScreenReader.Say(label);
+                            return false;
+                        }
+
+                        var mb = handler.TryCast<MonoBehaviour>();
+                        if (mb?.gameObject != null)
+                        {
+                            MelonLogger.Msg($"[Dialog] Clicking ipclick[{i}] {mb.GetType().Name} on {mb.gameObject.name}");
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(
+                                mb.gameObject, eventData,
+                                UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                            ScreenReader.Say(label);
+                            return false;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Msg($"[Dialog] ipclick[{i}] error: {ex.Message}");
+                    }
                 }
 
-                ScreenReader.Say(label);
-                return true;
+                MelonLogger.Msg("[Dialog] All ipclick handlers failed, falling through");
+                return false;
             }
             catch (Exception ex)
             {
@@ -847,6 +1139,63 @@ namespace DuelLinksAccess
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[Dialog] DismissTutorialArrow error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region Diagnostics
+
+        /// <summary>
+        /// Logs the VC type and full dialog stack for diagnostics.
+        /// Helps identify unknown dialog types when debugging stuck screens.
+        /// </summary>
+        private static void LogDialogVcType(string goName)
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("dialog", out mgr)) return;
+
+                var topVc = mgr?.GetStackTopViewController();
+                if (topVc == null) return;
+
+                // Log the actual C# type of the VC
+                string typeName = topVc.GetType()?.Name ?? "?";
+                MelonLogger.Msg($"[Dialog][Type] {goName} -> VC type: {typeName}");
+
+                // Check for TutorialArrow/Part overlay
+                bool isArrow = goName == "TutorialArrow" || goName == "TutorialArrowPart";
+                if (isArrow)
+                {
+                    var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                    if (arrowVc != null)
+                    {
+                        var ipclick = arrowVc.ipclick;
+                        var target = arrowVc.physicTarget;
+                        MelonLogger.Msg($"[Dialog][Type]   Arrow: ipclick={ipclick?.Length ?? 0}, physicTarget={target?.gameObject?.name ?? "null"}");
+                    }
+                }
+
+                // Log the full dialog stack
+                // Walk content manager too for context
+                foreach (string mgrName in new[] { "dialog", "dialogbase", "content" })
+                {
+                    Il2CppYgomSystem.UI.ViewControllerManager m;
+                    if (namedManager.TryGetValue(mgrName, out m))
+                    {
+                        var vc = m?.GetStackTopViewController();
+                        if (vc?.gameObject != null)
+                            MelonLogger.Msg($"[Dialog][Stack] {mgrName} = {vc.gameObject.name} (type: {vc.GetType()?.Name})");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog][Type] Error: {ex.Message}");
             }
         }
 

@@ -84,6 +84,7 @@ namespace DuelLinksAccess
             // ===== SCREEN CHANGES =====
             _english["screen_home"] = "Home screen";
             _english["screen_title"] = "Title screen";
+            _english["title_press_enter"] = "Title screen. Press Enter to continue.";
             _english["screen_duel"] = "";
             _english["screen_deck"] = "Deck editor";
             _english["screen_shop"] = "Shop";
@@ -117,6 +118,11 @@ namespace DuelLinksAccess
             // ===== DUEL: GENERAL =====
             _english["duel_started"] = "Duel started";
             _english["duel_ended"] = "Duel ended";
+            _english["duel_result_button"] = "Press Enter: {0}";
+            _english["duel_result_screen"] = "{0}. Press Enter to continue";
+            _english["duel_result_win"] = "You win";
+            _english["duel_result_lose"] = "You lose";
+            _english["duel_result_draw"] = "Draw";
             _english["duel_not_in_duel"] = "Not in a duel";
             _english["duel_status"] = "Turn {0}, {1}. {2}. Your LP: {3}. Opponent LP: {4}";
             _english["duel_status_error"] = "Could not read duel status";

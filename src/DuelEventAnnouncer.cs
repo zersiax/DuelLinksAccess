@@ -17,6 +17,9 @@ namespace DuelLinksAccess
         /// <summary>Whether a duel is currently in progress.</summary>
         public static bool InDuel { get; private set; }
 
+        /// <summary>Whether the duel has ended but we're still on the result screen.</summary>
+        public static bool DuelEnded { get; private set; }
+
         // Throttle duplicate messages
         private static string _lastMessage = "";
         private static float _lastMessageTime;
@@ -28,9 +31,34 @@ namespace DuelLinksAccess
         private static int _lastMyLP = -1;
         private static int _lastOppLP = -1;
 
+        // Deferred announcements — engine hasn't updated state yet when
+        // RunEffect fires, so we read values next frame
+        private static bool _pendingPhaseAnnouncement;
+        private static int _pendingLPDamagePlayer = -1;
+
         #endregion
 
         #region Public Methods
+
+        /// <summary>
+        /// Called each frame from Main.OnUpdate(). Handles deferred announcements
+        /// that need the engine to finish updating before we read state.
+        /// </summary>
+        public static void Update()
+        {
+            if (_pendingPhaseAnnouncement)
+            {
+                _pendingPhaseAnnouncement = false;
+                AnnouncePhaseChange();
+            }
+
+            if (_pendingLPDamagePlayer >= 0)
+            {
+                int player = _pendingLPDamagePlayer;
+                _pendingLPDamagePlayer = -1;
+                AnnounceLPDamage(player);
+            }
+        }
 
         /// <summary>
         /// Called from Harmony postfix on DuelClient.RunEffect.
@@ -47,6 +75,7 @@ namespace DuelLinksAccess
             {
                 case Il2CppYgomGame.Duel.Engine.ViewType.DuelStart:
                     InDuel = true;
+                    DuelEnded = false;
                     _lastTurnPlayer = -1;
                     _lastPhase = -1;
                     _lastMyLP = -1;
@@ -57,6 +86,7 @@ namespace DuelLinksAccess
                 case Il2CppYgomGame.Duel.Engine.ViewType.DuelEnd:
                     Announce(Loc.Get("duel_ended"));
                     InDuel = false;
+                    DuelEnded = true;
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.TurnChange:
@@ -64,11 +94,14 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.PhaseChange:
-                    AnnouncePhaseChange();
+                    // Defer to next frame — engine hasn't updated the phase yet
+                    // when RunEffect fires, causing an off-by-one announcement
+                    _pendingPhaseAnnouncement = true;
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeDamage:
-                    AnnounceLPDamage(param1);
+                    // Defer to next frame — engine hasn't updated LP yet
+                    _pendingLPDamagePlayer = param1;
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeSet:
@@ -177,11 +210,14 @@ namespace DuelLinksAccess
         public static void Reset()
         {
             InDuel = false;
+            DuelEnded = false;
             _lastMessage = "";
             _lastTurnPlayer = -1;
             _lastPhase = -1;
             _lastMyLP = -1;
             _lastOppLP = -1;
+            _pendingPhaseAnnouncement = false;
+            _pendingLPDamagePlayer = -1;
         }
 
         #endregion

@@ -163,6 +163,24 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Scanning: {_screenRoot.name}");
 
+                // Log VC type for diagnostics (helps identify unknown screens)
+                try
+                {
+                    var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                    if (namedMgr != null)
+                    {
+                        Il2CppYgomSystem.UI.ViewControllerManager contentMgr;
+                        if (namedMgr.TryGetValue("content", out contentMgr))
+                        {
+                            var vc = contentMgr?.GetStackTopViewController();
+                            if (vc != null)
+                                MelonLoader.MelonLogger.Msg(
+                                    $"[ScreenBtn][Type] {_screenRoot.name} -> VC type: {vc.GetType()?.Name}");
+                        }
+                    }
+                }
+                catch { }
+
                 // Find sliders first
                 FindSliders(_screenRoot);
 
@@ -203,6 +221,10 @@ namespace DuelLinksAccess
                         ScreenReader.Say(text);
                         DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                             $"Text mode: {text.Substring(0, Math.Min(100, text.Length))}");
+                    }
+                    else if (_screenRoot.name.Contains("Scenario"))
+                    {
+                        DumpScenarioState(_screenRoot);
                     }
                 }
             }
@@ -813,15 +835,12 @@ namespace DuelLinksAccess
         {
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
-            // Dismiss TutorialArrow if present — it blocks navigation
-            if (IsTutorialArrowActive())
-            {
-                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                    "TutorialArrow active — dismissing before activation");
-                DismissTutorialArrow();
-            }
-
             var item = _items[_focusIndex];
+
+            // Route through TutorialArrow ipclick if present — direct clicks
+            // don't satisfy the tutorial condition (documented in game-api.md)
+            if (IsTutorialArrowActive() && ActivateViaTutorialArrow(item.Label))
+                return;
 
             try
             {
@@ -837,12 +856,17 @@ namespace DuelLinksAccess
 
                 // Strategy 2: Try On{GoName}Button() on the content ViewController.
                 // Many game screens wire world/map buttons to VC methods by convention.
+                // Always attempt this even if ExecuteEvents returned true — world buttons
+                // (Gate, Shop, Labo) have YgomButton children whose OnPointerClick only
+                // plays a sound effect without navigating. The actual navigation is done
+                // by the VC method (OnShopButton, OnGateButton, etc.).
                 if (!handled)
                 {
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                         $"ExecuteEvents found no handler on {item.Go.name}, trying VC method");
-                    handled = TryCallVcMethod(item.Go.name);
                 }
+                if (TryCallVcMethod(item.Go))
+                    handled = true;
 
                 // Strategy 3: onClick.Invoke as last resort
                 if (!handled)
@@ -875,11 +899,15 @@ namespace DuelLinksAccess
         /// This is the generic pattern used by many game screens (e.g. SingleViewController
         /// has OnGateButton, OnShopButton, OnLaboButton, OnColosseumButton).
         ///
+        /// If the initial GO name doesn't match, walks up the parent hierarchy to find
+        /// a meaningful name. This handles dedup'd buttons where the child "YgomButton"
+        /// was kept but the parent "Gate"/"Shop"/"Labo" has the name the VC method expects.
+        ///
         /// IL2CPP note: GetStackTopViewController() returns the base ViewController type.
         /// We must find the actual derived type (e.g. SingleViewController) by searching
         /// loaded assemblies, then create a properly-typed wrapper around the same pointer.
         /// </summary>
-        private bool TryCallVcMethod(string goName)
+        private bool TryCallVcMethod(GameObject buttonGo)
         {
             try
             {
@@ -902,36 +930,44 @@ namespace DuelLinksAccess
                     return false;
                 }
 
-                string cleanName = goName.Replace("(Clone)", "").Trim();
-
-                // Try On{Name}Button() first, then On{Name}()
-                string[] methodNames = {
-                    $"On{cleanName}Button",
-                    $"On{cleanName}"
-                };
-
-                foreach (var methodName in methodNames)
+                // Try the button's GO name, then walk up parents to find a match.
+                // World buttons have a parent hierarchy like Gate > YgomButton,
+                // and the VC method is OnGateButton(), not OnYgomButtonButton().
+                var current = buttonGo.transform;
+                int maxDepth = 4;
+                while (current != null && maxDepth-- > 0)
                 {
-                    var method = actualType.GetMethod(methodName,
-                        BindingFlags.Public | BindingFlags.Instance,
-                        null, Type.EmptyTypes, null);
+                    string cleanName = current.gameObject.name.Replace("(Clone)", "").Trim();
 
-                    if (method != null)
+                    string[] methodNames = {
+                        $"On{cleanName}Button",
+                        $"On{cleanName}"
+                    };
+
+                    foreach (var methodName in methodNames)
                     {
-                        // Create a wrapper of the actual derived type around the same pointer
-                        var ctor = actualType.GetConstructor(new[] { typeof(IntPtr) });
-                        if (ctor == null) continue;
+                        var method = actualType.GetMethod(methodName,
+                            BindingFlags.Public | BindingFlags.Instance,
+                            null, Type.EmptyTypes, null);
 
-                        var castVc = ctor.Invoke(new object[] { topVc.Pointer });
-                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                            $"Calling {actualType.Name}.{methodName}()");
-                        method.Invoke(castVc, null);
-                        return true;
+                        if (method != null)
+                        {
+                            var ctor = actualType.GetConstructor(new[] { typeof(IntPtr) });
+                            if (ctor == null) continue;
+
+                            var castVc = ctor.Invoke(new object[] { topVc.Pointer });
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Calling {actualType.Name}.{methodName}()");
+                            method.Invoke(castVc, null);
+                            return true;
+                        }
                     }
+
+                    current = current.parent;
                 }
 
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                    $"No matching method on {actualType.Name} for {cleanName}");
+                    $"No matching VC method for {buttonGo.name} (checked parents)");
             }
             catch (Exception ex)
             {
@@ -1083,6 +1119,108 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Handles TutorialArrow overlay when activating a button.
+        /// For click-to-continue arrows (no ipclick): dismisses and returns true.
+        /// For pointing arrows: taps the arrow at the physicTarget's screen position
+        /// so the arrow VC recognizes it as a click on its target. This is how the
+        /// tutorial system expects interaction — it checks the click position against
+        /// the target collider. Using screen center silently fails.
+        /// After the arrow tap, also falls through to TryCallVcMethod (returns false)
+        /// in case the tutorial system blocks navigation.
+        /// </summary>
+        private bool ActivateViaTutorialArrow(string label)
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return false;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("dialog", out mgr)) return false;
+
+                var topVc = mgr?.GetStackTopViewController();
+                if (topVc == null) return false;
+
+                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                if (arrowVc == null) return false;
+
+                var ipclick = arrowVc.ipclick;
+                if (ipclick == null || ipclick.Length == 0)
+                {
+                    // No ipclick handlers — click-to-continue arrow, dismiss it
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "TutorialArrow has no ipclick, dismissing via OnPointerClick");
+                    var dismissData = new UnityEngine.EventSystems.PointerEventData(
+                        UnityEngine.EventSystems.EventSystem.current);
+                    arrowVc.OnPointerClick(dismissData);
+                    ScreenReader.Say(label);
+                    return true;
+                }
+
+                // Pointing arrow: click at the physicTarget's screen position.
+                // The arrow VC checks if the click position overlaps with the
+                // target collider — screen center doesn't hit it.
+                var physicTarget = arrowVc.physicTarget;
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+
+                if (physicTarget != null)
+                {
+                    // Use the arrow's own targetCamera — Camera.main is wrong
+                    // for 3D world targets like Collider_Cardshop
+                    var cam = arrowVc.targetCamera;
+                    if (cam == null) cam = Camera.main;
+
+                    if (cam != null)
+                    {
+                        Vector3 screenPos = cam.WorldToScreenPoint(
+                            physicTarget.transform.position);
+                        eventData.position = new Vector2(screenPos.x, screenPos.y);
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Clicking TutorialArrow at physicTarget " +
+                            $"({screenPos.x:F0}, {screenPos.y:F0}) via " +
+                            $"{cam.name} for {physicTarget.gameObject?.name}");
+                    }
+                    else
+                    {
+                        eventData.position = new Vector2(
+                            Screen.width / 2f, Screen.height / 2f);
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            "No camera for physicTarget, using screen center");
+                    }
+                }
+                else
+                {
+                    eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "No physicTarget, using screen center");
+                }
+
+                // RegistPointerCurrentRaycast populates raycast data that
+                // IsCollider needs — without it, OnPointerClick silently fails.
+                try { arrowVc.RegistPointerCurrentRaycast(eventData); }
+                catch (System.Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"RegistPointerCurrentRaycast error: {ex.Message}");
+                }
+
+                arrowVc.OnPointerClick(eventData);
+                ScreenReader.Say(label);
+
+                // Return false so ActivateCurrentItem also tries TryCallVcMethod
+                // as a backup in case the tutorial system blocks navigation.
+                return false;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"ActivateViaTutorialArrow error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Dismisses the TutorialArrow by calling OnPointerClick on the
         /// TutorialArrowViewController at the screen center.
         /// </summary>
@@ -1126,6 +1264,144 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"DismissTutorialArrow error: {ex.Message}");
+            }
+        }
+
+        #endregion
+
+        #region Diagnostics
+
+        /// <summary>
+        /// Dumps diagnostic info when ScenarioPlayerPart appears with no readable content.
+        /// Logs all text components, dialog manager state, and VC hierarchy to help
+        /// figure out how to read and dismiss this screen.
+        /// </summary>
+        private void DumpScenarioState(GameObject root)
+        {
+            MelonLogger.Msg("[ScenarioDiag] === ScenarioPlayerPart diagnostic dump ===");
+            MelonLogger.Msg($"[ScenarioDiag] Root GO: {root.name}, active: {root.activeInHierarchy}");
+
+            // Dump all Text components (including inactive)
+            try
+            {
+                var texts = root.GetComponentsInChildren<Text>(true);
+                MelonLogger.Msg($"[ScenarioDiag] Unity Text components: {texts?.Length ?? 0}");
+                if (texts != null)
+                {
+                    foreach (var t in texts)
+                    {
+                        if (t == null) continue;
+                        string content = t.text ?? "(null)";
+                        if (content.Length > 100) content = content.Substring(0, 100) + "...";
+                        MelonLogger.Msg($"[ScenarioDiag]   Text: \"{content}\" active={t.gameObject?.activeInHierarchy} go={t.gameObject?.name}");
+                    }
+                }
+            }
+            catch (Exception ex) { MelonLogger.Msg($"[ScenarioDiag] Text scan error: {ex.Message}"); }
+
+            // Dump all YgomTextAccessor components
+            try
+            {
+                var ytas = root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
+                MelonLogger.Msg($"[ScenarioDiag] YgomTextAccessor components: {ytas?.Length ?? 0}");
+                if (ytas != null)
+                {
+                    foreach (var yta in ytas)
+                    {
+                        if (yta == null) continue;
+                        string content = yta.text ?? "(null)";
+                        if (content.Length > 100) content = content.Substring(0, 100) + "...";
+                        MelonLogger.Msg($"[ScenarioDiag]   YTA: \"{content}\" active={yta.gameObject?.activeInHierarchy} go={yta.gameObject?.name}");
+                    }
+                }
+            }
+            catch (Exception ex) { MelonLogger.Msg($"[ScenarioDiag] YTA scan error: {ex.Message}"); }
+
+            // Dump child hierarchy (first 3 levels)
+            try
+            {
+                MelonLogger.Msg("[ScenarioDiag] Child hierarchy:");
+                DumpChildren(root.transform, 0, 3);
+            }
+            catch (Exception ex) { MelonLogger.Msg($"[ScenarioDiag] Hierarchy error: {ex.Message}"); }
+
+            // Check dialog manager for TutorialArrow state
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager != null)
+                {
+                    Il2CppYgomSystem.UI.ViewControllerManager dialogMgr;
+                    if (namedManager.TryGetValue("dialog", out dialogMgr) && dialogMgr != null)
+                    {
+                        var topVc = dialogMgr.GetStackTopViewController();
+                        if (topVc?.gameObject != null)
+                        {
+                            MelonLogger.Msg($"[ScenarioDiag] Dialog top VC: {topVc.gameObject.name}");
+                            var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                            if (arrowVc != null)
+                            {
+                                var ipclick = arrowVc.ipclick;
+                                MelonLogger.Msg($"[ScenarioDiag] TutorialArrow ipclick: {ipclick?.Length ?? 0} handler(s)");
+                                MelonLogger.Msg($"[ScenarioDiag] TutorialArrow physicTarget: {arrowVc.physicTarget?.name ?? "(null)"}");
+                                MelonLogger.Msg($"[ScenarioDiag] TutorialArrow dispTarget: {arrowVc.dispTarget?.name ?? "(null)"}");
+                            }
+                        }
+                        else
+                        {
+                            MelonLogger.Msg("[ScenarioDiag] Dialog top VC: (none)");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { MelonLogger.Msg($"[ScenarioDiag] Dialog check error: {ex.Message}"); }
+
+            // Try to get ScenarioPlayViewController from the root
+            try
+            {
+                var scenarioVc = root.GetComponent<Il2CppYgomGame.Scenario.ScenarioPlayViewController>();
+                if (scenarioVc != null)
+                {
+                    MelonLogger.Msg($"[ScenarioDiag] ScenarioPlayVC found! messageText GO: {scenarioVc.messageText?.name ?? "(null)"}, active: {scenarioVc.messageText?.activeInHierarchy}");
+                    MelonLogger.Msg($"[ScenarioDiag] npcMessage GO: {scenarioVc.npcMessage?.name ?? "(null)"}, active: {scenarioVc.npcMessage?.activeInHierarchy}");
+
+                    // Try reading text from messageText GO
+                    if (scenarioVc.messageText != null)
+                    {
+                        var msgText = scenarioVc.messageText.GetComponentInChildren<Text>(true);
+                        if (msgText != null)
+                            MelonLogger.Msg($"[ScenarioDiag] messageText.Text: \"{msgText.text}\"");
+                        var msgYta = scenarioVc.messageText.GetComponentInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
+                        if (msgYta != null)
+                            MelonLogger.Msg($"[ScenarioDiag] messageText.YTA: \"{msgYta.text}\"");
+                    }
+                }
+                else
+                {
+                    MelonLogger.Msg("[ScenarioDiag] No ScenarioPlayVC on root — checking children");
+                    var childVc = root.GetComponentInChildren<Il2CppYgomGame.Scenario.ScenarioPlayViewController>(true);
+                    MelonLogger.Msg($"[ScenarioDiag] ScenarioPlayVC in children: {(childVc != null ? "found" : "not found")}");
+                }
+            }
+            catch (Exception ex) { MelonLogger.Msg($"[ScenarioDiag] ScenarioVC error: {ex.Message}"); }
+        }
+
+        private void DumpChildren(Transform parent, int depth, int maxDepth)
+        {
+            if (depth >= maxDepth) return;
+            string indent = new string(' ', depth * 2);
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                try
+                {
+                    var child = parent.GetChild(i);
+                    if (child == null) continue;
+                    var go = child.gameObject;
+                    if (go == null) continue;
+                    MelonLogger.Msg($"[ScenarioDiag] {indent}- {go.name} (active={go.activeSelf})");
+                    DumpChildren(child, depth + 1, maxDepth);
+                }
+                catch { }
             }
         }
 

@@ -37,6 +37,10 @@ namespace DuelLinksAccess
         private bool _tutorialArrowAnnounced;
         private bool _tutorialArrowDismissAttempted;
 
+        // Post-duel result screen: DuelEndMessage.OnNextButton() is the OK click
+        private bool _duelResultScanned;
+        private Il2Cpp.DuelEndMessage _duelEndMessage;
+
         #endregion
 
         #region Properties
@@ -88,6 +92,8 @@ namespace DuelLinksAccess
                 _wasActive = true;
                 _tutorialArrowAnnounced = false;
                 _tutorialArrowDismissAttempted = false;
+                _duelResultScanned = false;
+                _duelEndMessage = null;
                 _eventLog.Clear();
                 _fieldNav.Reset();
             }
@@ -96,6 +102,14 @@ namespace DuelLinksAccess
             if (_eventLog.IsBrowsing)
             {
                 ProcessLogBrowsing();
+                return;
+            }
+
+            // Post-duel result screen takes priority — find DuelEndMessage and
+            // call OnNextButton() directly (bypasses TutorialArrow entirely).
+            if (DuelEventAnnouncer.DuelEnded)
+            {
+                HandleDuelResult();
                 return;
             }
 
@@ -114,23 +128,23 @@ namespace DuelLinksAccess
                         // Don't re-announce. Let the user interact with the field.
                         ScreenReader.Say(Loc.Get("duel_tutorial_arrow_pointing"));
                     }
-                    else
-                    {
-                        ScreenReader.Say(Loc.Get("duel_tutorial_arrow"));
-                    }
+                    // "Click-to-continue" arrows are auto-dismissed below —
+                    // no need to announce, it just adds noise
                 }
 
+                if (!_tutorialArrowDismissAttempted)
+                {
+                    // Auto-dismiss click-to-continue arrows silently
+                    _tutorialArrowDismissAttempted = true;
+                    _tutorialArrowAnnounced = false;
+                    DismissTutorialOverlay();
+                    return;
+                }
+
+                // Pointing arrow — Space re-attempts dismiss
                 if (InputManager.TryConsumeKeyDown(KeyCode.Space))
                 {
-                    if (!_tutorialArrowDismissAttempted)
-                    {
-                        // First attempt — try to dismiss
-                        _tutorialArrowDismissAttempted = true;
-                        _tutorialArrowAnnounced = false;
-                        DismissTutorialOverlay();
-                        return;
-                    }
-                    // Already tried and failed — ignore further Space presses
+                    DismissTutorialOverlay();
                     return;
                 }
             }
@@ -294,19 +308,112 @@ namespace DuelLinksAccess
                     return;
                 }
 
+                // Use physicTarget position for pointing arrows, screen center otherwise
                 var eventData = new UnityEngine.EventSystems.PointerEventData(
                     UnityEngine.EventSystems.EventSystem.current);
-                eventData.position = new UnityEngine.Vector2(
-                    UnityEngine.Screen.width / 2f, UnityEngine.Screen.height / 2f);
 
-                DebugLogger.Log(LogCategory.Game, "DuelHandler",
-                    "Calling TutorialArrowVC.OnPointerClick at screen center");
+                var physicTarget = arrowVc.physicTarget;
+                if (physicTarget != null)
+                {
+                    var cam = arrowVc.targetCamera;
+                    if (cam == null) cam = Camera.main;
+
+                    if (cam != null)
+                    {
+                        Vector3 sp = cam.WorldToScreenPoint(
+                            physicTarget.transform.position);
+                        eventData.position = new Vector2(sp.x, sp.y);
+                        DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                            $"Clicking arrow at physicTarget ({sp.x:F0}, {sp.y:F0}) via {cam.name}");
+                    }
+                    else
+                    {
+                        eventData.position = new Vector2(
+                            Screen.width / 2f, Screen.height / 2f);
+                        DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                            "No camera for physicTarget, using screen center");
+                    }
+                }
+                else
+                {
+                    eventData.position = new Vector2(
+                        Screen.width / 2f, Screen.height / 2f);
+                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                        "Clicking arrow at screen center (no physicTarget)");
+                }
+
                 arrowVc.OnPointerClick(eventData);
             }
             catch (System.Exception ex)
             {
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"DismissTutorialOverlay error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handles the post-duel result screen (YOU WIN/LOSE with OK button).
+        /// Finds the DuelEndMessage MonoBehaviour and calls OnNextButton() directly —
+        /// this is the exact method the game's OK button invokes. It sets
+        /// isNextButtonClicked=true, which TaskHUDDuelEnd.WaitWinLoseStep watches for.
+        /// </summary>
+        private void HandleDuelResult()
+        {
+            if (!_duelResultScanned)
+            {
+                _duelResultScanned = true;
+                _duelEndMessage = null;
+
+                try
+                {
+                    _duelEndMessage = UnityEngine.Object.FindObjectOfType<Il2Cpp.DuelEndMessage>();
+                    if (_duelEndMessage != null)
+                    {
+                        var result = _duelEndMessage.resultType;
+                        string resultText = result switch
+                        {
+                            Il2CppYgomGame.Duel.Engine.ResultType.Win => Loc.Get("duel_result_win"),
+                            Il2CppYgomGame.Duel.Engine.ResultType.Lose => Loc.Get("duel_result_lose"),
+                            Il2CppYgomGame.Duel.Engine.ResultType.Draw => Loc.Get("duel_result_draw"),
+                            _ => result.ToString()
+                        };
+                        ScreenReader.Say(Loc.Get("duel_result_screen", resultText));
+                        DebugLogger.Log(LogCategory.Game, "DuelResult",
+                            $"DuelEndMessage found, result={result}, nextClicked={_duelEndMessage.isNextButtonClicked}");
+                    }
+                    else
+                    {
+                        // DuelEndMessage not yet created — re-scan next frame
+                        _duelResultScanned = false;
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelResult", $"Scan error: {ex.Message}");
+                    _duelResultScanned = false;
+                }
+            }
+
+            if (_duelEndMessage == null) return;
+
+            // Enter/Space = click OK (call OnNextButton directly)
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
+                || InputManager.TryConsumeKeyDown(KeyCode.Space))
+            {
+                try
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelResult",
+                        "Calling DuelEndMessage.OnNextButton()");
+                    _duelEndMessage.OnNextButton();
+                    ScreenReader.Say("OK");
+                    _duelEndMessage = null;
+                }
+                catch (System.Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelResult",
+                        $"OnNextButton error: {ex.Message}");
+                }
             }
         }
 

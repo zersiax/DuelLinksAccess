@@ -486,7 +486,7 @@ namespace DuelLinksAccess
                     _currentZone = candidate;
                     _navIndex = 0;
                     AnnounceZone();
-                    ReadCurrentCard(verbose: false);
+                    ReadCurrentCard(verbose: false, queued: true);
                     return;
                 }
             }
@@ -506,7 +506,7 @@ namespace DuelLinksAccess
                 {
                     _navIndex = 0;
                     AnnounceZone();
-                    ReadCurrentCard(verbose: false);
+                    ReadCurrentCard(verbose: false, queued: true);
                 }
                 else
                 {
@@ -537,7 +537,7 @@ namespace DuelLinksAccess
 
         #region Card Reading
 
-        private void ReadCurrentCard(bool verbose)
+        private void ReadCurrentCard(bool verbose, bool queued = false)
         {
             RefreshCurrentZone();
             if (_zoneSlots.Count == 0)
@@ -630,7 +630,10 @@ namespace DuelLinksAccess
                     }
                 }
 
-                ScreenReader.Say(announcement);
+                if (queued)
+                    ScreenReader.SayQueued(announcement);
+                else
+                    ScreenReader.Say(announcement);
             }
             catch (Exception ex)
             {
