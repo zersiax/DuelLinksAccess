@@ -34,9 +34,6 @@ namespace DuelLinksAccess
         // Deferred announcements — engine hasn't updated state yet when
         // RunEffect fires, so we read values next frame
         private static bool _pendingPhaseAnnouncement;
-        private static int _pendingLPDamagePlayer = -1;
-        private static float _pendingLPDamageWait = 0f;
-        private const float LPDamageMaxWait = 1.5f; // timeout fallback
 
         #endregion
 
@@ -52,33 +49,6 @@ namespace DuelLinksAccess
             {
                 _pendingPhaseAnnouncement = false;
                 AnnouncePhaseChange();
-            }
-
-            if (_pendingLPDamagePlayer >= 0)
-            {
-                // Poll until DLL_DuelGetLP returns a different value from our
-                // last tracked LP — the engine updates after the damage animation
-                // plays, not when LifeDamage fires. Timeout after LPDamageMaxWait.
-                _pendingLPDamageWait += UnityEngine.Time.deltaTime;
-                int player = _pendingLPDamagePlayer;
-                try
-                {
-                    int currentLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(player);
-                    int lastLP = player == 0 ? _lastMyLP : _lastOppLP;
-                    bool changed = lastLP >= 0 && currentLP != lastLP;
-
-                    if (changed || _pendingLPDamageWait >= LPDamageMaxWait)
-                    {
-                        _pendingLPDamagePlayer = -1;
-                        AnnounceLPDamage(player);
-                    }
-                }
-                catch
-                {
-                    // Engine not available — announce with whatever we can read
-                    _pendingLPDamagePlayer = -1;
-                    AnnounceLPDamage(player);
-                }
             }
         }
 
@@ -122,10 +92,11 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeDamage:
-                    // Defer — poll each frame until DLL_DuelGetLP changes.
-                    // Engine updates LP during the damage animation, not immediately.
-                    _pendingLPDamagePlayer = param1;
-                    _pendingLPDamageWait = 0f;
+                    // LifeDamage fires twice per damage event (p3=257 then p3=256).
+                    // Only announce on first fire (p3 bit 0 set). p2 carries the
+                    // exact damage amount (negative = took damage, positive = gain).
+                    if ((param3 & 1) == 1)
+                        AnnounceLPDamage(param1, param2);
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeSet:
@@ -241,8 +212,6 @@ namespace DuelLinksAccess
             _lastMyLP = -1;
             _lastOppLP = -1;
             _pendingPhaseAnnouncement = false;
-            _pendingLPDamagePlayer = -1;
-            _pendingLPDamageWait = 0f;
         }
 
         #endregion
@@ -308,29 +277,40 @@ namespace DuelLinksAccess
             }
         }
 
-        private static void AnnounceLPDamage(int player)
+        /// <summary>
+        /// Announces LP change using the damage amount from LifeDamage p2.
+        /// Computes new LP from tracked value instead of polling DLL_DuelGetLP
+        /// (which lags behind during damage animations).
+        /// </summary>
+        private static void AnnounceLPDamage(int player, int damageAmount)
         {
             try
             {
-                int lp = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(player);
                 string who = player == 0 ? Loc.Get("duel_you") : Loc.Get("duel_opponent");
-
                 int lastLP = player == 0 ? _lastMyLP : _lastOppLP;
-                if (lastLP >= 0 && lastLP != lp)
+
+                // damageAmount is negative for damage, positive for recovery
+                int absDamage = Math.Abs(damageAmount);
+
+                if (lastLP >= 0)
                 {
-                    int diff = lastLP - lp;
-                    if (diff > 0)
-                        Announce(Loc.Get("duel_lp_damage", who, diff, lp));
+                    int newLP = Math.Max(0, lastLP + damageAmount);
+                    if (damageAmount < 0)
+                        Announce(Loc.Get("duel_lp_damage", who, absDamage, newLP));
                     else
-                        Announce(Loc.Get("duel_lp_recover", who, -diff, lp));
+                        Announce(Loc.Get("duel_lp_recover", who, absDamage, newLP));
+
+                    if (player == 0) _lastMyLP = newLP;
+                    else _lastOppLP = newLP;
                 }
                 else
                 {
+                    // No tracked LP yet — read from engine as fallback
+                    int lp = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(player);
                     Announce(Loc.Get("duel_lp_update", who, lp));
+                    if (player == 0) _lastMyLP = lp;
+                    else _lastOppLP = lp;
                 }
-
-                if (player == 0) _lastMyLP = lp;
-                else _lastOppLP = lp;
             }
             catch (Exception ex)
             {

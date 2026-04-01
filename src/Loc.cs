@@ -228,6 +228,7 @@ namespace DuelLinksAccess
             _english["duel_cmd_to_attack"] = "Change to attack";
             _english["duel_cmd_to_defense"] = "Change to defense";
             _english["duel_cmd_pendulum"] = "Pendulum summon";
+            _english["duel_cmd_select"] = "Select";
 
             // ===== DUEL: TARGET SELECTION =====
             _english["duel_select_target"] = "Select attack target";
@@ -239,6 +240,12 @@ namespace DuelLinksAccess
             _english["duel_card_select_item"] = "{0} of {1}: {2}";
             _english["duel_card_selected"] = "Selected";
             _english["duel_card_select_cancelled"] = "Selection cancelled";
+
+            // ===== DUEL: YES/NO DIALOG =====
+            _english["duel_yesno_prompt"] = "{0} Enter for Yes, Escape for No.";
+            _english["duel_yesno_generic"] = "Confirm? Enter for Yes, Escape for No.";
+            _english["duel_yes"] = "Yes";
+            _english["duel_no"] = "No";
 
             // ===== DUEL: PHASE ADVANCEMENT =====
             _english["duel_advancing_phase"] = "Moving to {0}";

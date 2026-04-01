@@ -41,6 +41,10 @@ namespace DuelLinksAccess
         private bool _duelResultScanned;
         private Il2Cpp.DuelEndMessage _duelEndMessage;
 
+        // Duel yes/no dialog (DuelCommonDialog) — tribute summon confirmation, etc.
+        private bool _yesNoDialogAnnounced;
+        private string _lastYesNoText = "";
+
         #endregion
 
         #region Properties
@@ -94,6 +98,8 @@ namespace DuelLinksAccess
                 _tutorialArrowDismissAttempted = false;
                 _duelResultScanned = false;
                 _duelEndMessage = null;
+                _yesNoDialogAnnounced = false;
+                _lastYesNoText = "";
                 _eventLog.Clear();
                 _fieldNav.Reset();
             }
@@ -157,6 +163,10 @@ namespace DuelLinksAccess
                     _tutorialArrowAnnounced = false;
                 }
             }
+
+            // Duel yes/no dialog (DuelCommonDialog) — tribute summon confirmation, etc.
+            // This is NOT a standard VC/Htjson dialog, it's a MonoBehaviour inside the duel.
+            if (HandleDuelYesNoDialog()) return;
 
             // Field navigation — most keys suppressed when a dialog overlay is active
             // so DialogHandler can handle duel dialogs (Yes/No, card selection).
@@ -348,6 +358,89 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"DismissTutorialOverlay error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Checks for and handles the duel yes/no dialog (DuelCommonDialog).
+        /// This dialog appears for tribute summon confirmation, effect activation prompts, etc.
+        /// It's a MonoBehaviour on the duel HUD, not a standard VC-based dialog.
+        /// Returns true if a yes/no dialog is active and input was consumed.
+        /// </summary>
+        private bool HandleDuelYesNoDialog()
+        {
+            if (!DuelEventAnnouncer.InDuel) return false;
+
+            try
+            {
+                var client = Il2CppYgomGame.Duel.DuelClient.instance;
+                var worker = client?.worker2d;
+                var dlg = worker?.yesnoDialog;
+
+                if (dlg == null || dlg.content == null || !dlg.content.activeSelf)
+                {
+                    // Dialog closed — reset tracking
+                    if (_yesNoDialogAnnounced)
+                    {
+                        _yesNoDialogAnnounced = false;
+                        _lastYesNoText = "";
+                    }
+                    return false;
+                }
+
+                // Dialog is active — read text if not yet announced
+                if (!_yesNoDialogAnnounced)
+                {
+                    _yesNoDialogAnnounced = true;
+                    string text = "";
+                    try { text = dlg.dlgText?.text ?? ""; } catch { }
+
+                    if (!string.IsNullOrEmpty(text) && text != _lastYesNoText)
+                    {
+                        _lastYesNoText = text;
+                        ScreenReader.Say(Loc.Get("duel_yesno_prompt", text));
+                    }
+                    else if (string.IsNullOrEmpty(text))
+                    {
+                        ScreenReader.Say(Loc.Get("duel_yesno_generic"));
+                    }
+
+                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                        $"DuelCommonDialog active: text='{text}'");
+                }
+
+                // Enter/Space = Yes
+                if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                    || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Space))
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                        "DuelCommonDialog: calling OnButton(0) (Yes)");
+                    dlg.OnButton(0);
+                    ScreenReader.Say(Loc.Get("duel_yes"));
+                    _yesNoDialogAnnounced = false;
+                    return true;
+                }
+
+                // Escape = No
+                if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                        "DuelCommonDialog: calling OnButton(1) (No)");
+                    dlg.OnButton(1);
+                    ScreenReader.Say(Loc.Get("duel_no"));
+                    _yesNoDialogAnnounced = false;
+                    return true;
+                }
+
+                // Consume other keys while dialog is active
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"DuelYesNo error: {ex.Message}");
+                return false;
             }
         }
 

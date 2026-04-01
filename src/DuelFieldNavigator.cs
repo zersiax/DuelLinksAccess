@@ -44,14 +44,19 @@ namespace DuelLinksAccess
         // Field slots are scanned as a range and classified by BasicVal.Type:
         //   Type != 0 → monster card
         //   Type == 0 → spell/trap card
+        //
+        // Confirmed locate assignments (same numbering for both players,
+        // differentiated by the player parameter):
+        //   2, 3, 4    → Monster zones (3 slots, Speed Duel)
+        //   9, 10, 11  → Spell/Trap zones (3 slots; 9 and 10 confirmed from
+        //                 CardSet events + RefreshZone scan; 11 presumed)
+        //   5-8        → Unknown (possibly field spell, pendulum, extra monster,
+        //                 or unused in Speed Duel format)
         private const int LocateHand = 13;
         private const int LocateGrave = 16;
         private const int LocateDeck = 15;
 
         // Field slot locate range to scan (each holds 0 or 1 card).
-        // 2-4 confirmed/expected for 3 monster zones.
-        // 5-7 expected for 3 spell/trap zones (needs confirmation with set spells).
-        // 8 may be field spell zone. Scanning wider to discover.
         private const int FieldLocateMin = 1;
         private const int FieldLocateMax = 12;
 
@@ -785,8 +790,16 @@ namespace DuelLinksAccess
                     string label = _commands[0].Label;
                     ScreenReader.Say(label);
 
-                    TapCardForZone(client, player, locate, slotIndex);
-                    MelonCoroutines.Start(AutoClickCommandButton(cmdType));
+                    if (IsTapOnlyCommand(cmdType))
+                    {
+                        // Decide/Select: just tap the card — no CardCommand popup
+                        TapFieldCard(client, player, locate, slotIndex);
+                    }
+                    else
+                    {
+                        TapCardForZone(client, player, locate, slotIndex);
+                        MelonCoroutines.Start(AutoClickCommandButton(cmdType));
+                    }
                 }
                 else
                 {
@@ -879,8 +892,16 @@ namespace DuelLinksAccess
                 return;
             }
 
-            TapCardForZone(client, player, locate, slotIndex);
-            MelonCoroutines.Start(AutoClickCommandButton(cmdType));
+            if (IsTapOnlyCommand(cmdType))
+            {
+                // Decide/Select: just tap the card — no CardCommand popup
+                TapFieldCard(client, player, locate, slotIndex);
+            }
+            else
+            {
+                TapCardForZone(client, player, locate, slotIndex);
+                MelonCoroutines.Start(AutoClickCommandButton(cmdType));
+            }
         }
 
         /// <summary>
@@ -889,6 +910,16 @@ namespace DuelLinksAccess
         private static bool NeedsTarget(Il2CppYgomGame.Duel.Engine.CommandType cmd)
         {
             return cmd == Il2CppYgomGame.Duel.Engine.CommandType.Attack;
+        }
+
+        /// <summary>
+        /// Checks whether a command should just tap the card directly via OnTapLocator
+        /// without opening the CardCommand popup. Used for tribute material selection
+        /// (Decide) where the game expects a direct field tap.
+        /// </summary>
+        private static bool IsTapOnlyCommand(Il2CppYgomGame.Duel.Engine.CommandType cmd)
+        {
+            return cmd == Il2CppYgomGame.Duel.Engine.CommandType.Decide;
         }
 
         /// <summary>
@@ -1749,6 +1780,7 @@ namespace DuelLinksAccess
             TryAdd(0x20, Il2CppYgomGame.Duel.Engine.CommandType.Reverse, "duel_cmd_flip_summon");
             TryAdd(0x200, Il2CppYgomGame.Duel.Engine.CommandType.TurnAtk, "duel_cmd_to_attack");
             TryAdd(0x400, Il2CppYgomGame.Duel.Engine.CommandType.TurnDef, "duel_cmd_to_defense");
+            TryAdd(0x1000, Il2CppYgomGame.Duel.Engine.CommandType.Decide, "duel_cmd_select");
         }
 
         /// <summary>
