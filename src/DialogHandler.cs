@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.UI;
@@ -30,6 +29,9 @@ namespace DuelLinksAccess
         private bool _textMode;
         private string _lastDialogText = "";
         private GameObject _dialogRoot;
+
+        // Passthrough: TutorialArrowPart with no content — let other handlers run
+        private bool _passthrough;
 
         // Post-activation rescan: after clicking a button that may open a
         // stacked dialog, we rescan after a delay to detect the new content
@@ -71,6 +73,7 @@ namespace DuelLinksAccess
                     _dialogRoot = null;
                     _items.Clear();
                     _postActivationRescanDelay = -1f;
+                    _passthrough = false;
                 }
                 return;
             }
@@ -94,6 +97,8 @@ namespace DuelLinksAccess
                 _scanDelay = 2.0f;
                 _scanAttempts = 0;
                 _postActivationRescanDelay = -1f;
+                _passthrough = false;
+                GameStateTracker.SkipTutorialArrowPart = false;
                 // Don't announce "Dialog" during duels — the dialog text
                 // itself will be read once scanned
                 if (!DuelEventAnnouncer.InDuel)
@@ -129,7 +134,7 @@ namespace DuelLinksAccess
                     ScanDialog();
 
                     // Retry if we found nothing in the dialog hierarchy
-                    if (_items.Count == 0 && _scanAttempts < 3)
+                    if (_items.Count == 0 && !_textMode && _scanAttempts < 3)
                     {
                         MelonLogger.Msg($"[Dialog] No dialog items found, retrying in 2s (attempt {_scanAttempts})");
                         _scanDelay = 2.0f;
@@ -137,6 +142,21 @@ namespace DuelLinksAccess
                     else
                     {
                         _scanned = true;
+
+                        // TutorialArrowPart with no content after all retries:
+                        // let other handlers take over (HandleOrphanedTutorialArrow
+                        // + ScreenButtonHandler for the underlying screen)
+                        if (_items.Count == 0 && !_textMode && IsTutorialArrowOnTop())
+                        {
+                            MelonLogger.Msg("[Dialog] TutorialArrowPart has no content, passing through to other handlers");
+                            _passthrough = true;
+                            // Tell GameStateTracker to skip this arrow so the screen
+                            // reclassifies from Dialog to the content VC (e.g. Home).
+                            // ForceReevaluate resets the debounce so the change applies
+                            // on the next frame instead of waiting 150ms.
+                            GameStateTracker.SkipTutorialArrowPart = true;
+                            GameStateTracker.ForceReevaluate();
+                        }
                     }
                 }
             }
@@ -148,7 +168,8 @@ namespace DuelLinksAccess
         /// Whether a dialog is currently being handled.
         /// </summary>
         public bool IsActive =>
-            GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Dialog;
+            GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Dialog
+            && !_passthrough;
 
         #endregion
 
@@ -300,7 +321,7 @@ namespace DuelLinksAccess
                     foreach (var b in buttons)
                     {
                         if (b == null) continue;
-                        string label = GetLabel(b.gameObject);
+                        string label = LabelExtractor.GetLabel(b.gameObject);
                         MelonLogger.Msg($"[Dialog][Diag]   Button: \"{label}\" ({b.gameObject.name}) interactable={b.interactable} path={GetGameObjectPath(b.gameObject)}");
                     }
                 }
@@ -327,7 +348,7 @@ namespace DuelLinksAccess
                     foreach (var text in ytas)
                     {
                         if (text == null) continue;
-                        string t = StripRichText(text.text);
+                        string t = LabelExtractor.StripRichText(text.text);
                         if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                         if (t.All(char.IsDigit)) continue;
                         if (!parts.Contains(t))
@@ -351,7 +372,7 @@ namespace DuelLinksAccess
                         foreach (var text in texts)
                         {
                             if (text == null) continue;
-                            string t = StripRichText(text.text);
+                            string t = LabelExtractor.StripRichText(text.text);
                             if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                             if (t.All(char.IsDigit)) continue;
                             if (!parts.Contains(t))
@@ -381,7 +402,7 @@ namespace DuelLinksAccess
                     var go = slider.gameObject;
                     if (go == null) continue;
 
-                    string label = GetSliderLabel(slider);
+                    string label = LabelExtractor.GetSliderLabel(slider);
                     _items.Add(new DialogItem
                     {
                         Go = go,
@@ -443,13 +464,13 @@ namespace DuelLinksAccess
                     if (selectable != null && selectable.interactable)
                     {
                         isButton = true;
-                        label = GetLabel(go);
+                        label = LabelExtractor.GetLabel(go);
                     }
                     else if (goName.Contains("btn") || goName.Contains("button")
                         || goName.Contains("close") || goName.Contains("ok"))
                     {
                         isButton = true;
-                        label = GetLabel(go);
+                        label = LabelExtractor.GetLabel(go);
                     }
 
                     if (!isButton) continue;
@@ -488,89 +509,6 @@ namespace DuelLinksAccess
             }
             catch { }
             return false;
-        }
-
-        private string GetSliderLabel(Slider slider)
-        {
-            // Look for a sibling or parent Text that describes the slider
-            try
-            {
-                var parent = slider.transform.parent;
-                if (parent != null)
-                {
-                    // Try YgomTextAccessor first
-                    var ytas = parent.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
-                    if (ytas != null)
-                    {
-                        foreach (var t in ytas)
-                        {
-                            if (t == null) continue;
-                            string txt = StripRichText(t.text);
-                            if (!string.IsNullOrEmpty(txt) && txt.Length >= 2
-                                && !txt.All(char.IsDigit))
-                                return txt;
-                        }
-                    }
-
-                    // Fall back to Unity Text
-                    var texts = parent.GetComponentsInChildren<Text>(true);
-                    if (texts != null)
-                    {
-                        foreach (var t in texts)
-                        {
-                            if (t == null) continue;
-                            string txt = StripRichText(t.text);
-                            if (!string.IsNullOrEmpty(txt) && txt.Length >= 2
-                                && !txt.All(char.IsDigit))
-                                return txt;
-                        }
-                    }
-                }
-            }
-            catch { }
-
-            // Fallback: use current value
-            int val = Mathf.RoundToInt(slider.value);
-            return Loc.Get("dialog_slider", val);
-        }
-
-        private string GetLabel(GameObject go)
-        {
-            // Try YgomTextAccessor first (game's text system)
-            try
-            {
-                var yta = go.GetComponentInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
-                if (yta != null)
-                {
-                    string t = StripRichText(yta.text);
-                    if (!string.IsNullOrEmpty(t) && t.Length >= 1)
-                        return t;
-                }
-            }
-            catch { }
-
-            // Fall back to Unity Text
-            try
-            {
-                var text = go.GetComponentInChildren<Text>(true);
-                if (text != null)
-                {
-                    string t = StripRichText(text.text);
-                    if (!string.IsNullOrEmpty(t) && t.Length >= 1)
-                        return t;
-                }
-            }
-            catch { }
-
-            return go.name;
-        }
-
-        private static readonly Regex RichTextRegex = new(@"<[^>]+>", RegexOptions.Compiled);
-
-        private string StripRichText(string text)
-        {
-            if (string.IsNullOrEmpty(text)) return text;
-            return RichTextRegex.Replace(text, "").Trim();
         }
 
         private string GetGameObjectPath(GameObject go)
@@ -774,6 +712,14 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+
+            if (!LabelExtractor.IsAlive(item.Go))
+            {
+                _items.RemoveAt(_focusIndex);
+                if (_focusIndex >= _items.Count) _focusIndex = Math.Max(0, _items.Count - 1);
+                return;
+            }
+
             int pos = _focusIndex + 1;
             int total = _items.Count;
 
@@ -822,6 +768,14 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+
+            if (!LabelExtractor.IsAlive(item.Go))
+            {
+                ScreenReader.Say(Loc.Get("dialog_click_error"));
+                _items.RemoveAt(_focusIndex);
+                if (_focusIndex >= _items.Count) _focusIndex = Math.Max(0, _items.Count - 1);
+                return;
+            }
 
             // If TutorialArrow is on top, route through its ipclick handler.
             // The tutorial system requires clicks to go through the arrow's

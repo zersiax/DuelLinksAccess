@@ -31,26 +31,35 @@ namespace DuelLinksAccess
         #region Constants
 
         // Zone identifiers for Engine DLL_ functions
-        // Discovered empirically via debug scan (NOT standard OCG constants):
-        //   locate=2  → Monster Zone (confirmed: opponent's Saggi found here)
-        //   locate=13 → Hand (confirmed: drawn Winged Dragon found here)
-        //   locate=15 → Deck (confirmed: 19 remaining cards)
-        //   locate=3  → Spell/Trap Zone (unconfirmed — needs testing with set spells)
-        //   locate=4  → Graveyard (unconfirmed — needs testing with destroyed cards)
+        // Discovered empirically via debug scan (NOT standard OCG constants).
+        // Each field SLOT is its own locate value (holds 0 or 1 card).
+        // Multi-card zones (hand, grave, deck) use a single locate with slot indices.
+        //
+        // Confirmed from log analysis:
+        //   locate=2,3   → field slots (monsters confirmed here)
+        //   locate=13    → Hand (multi-card)
+        //   locate=15    → Deck (multi-card)
+        //   locate=16    → Graveyard (multi-card, confirmed: destroyed Doron appeared here)
+        //
+        // Field slots are scanned as a range and classified by BasicVal.Type:
+        //   Type != 0 → monster card
+        //   Type == 0 → spell/trap card
         private const int LocateHand = 13;
-        private const int LocateMonster = 2;
-        private const int LocateSpell = 3;    // TODO: verify when spell/trap cards are set
-        private const int LocateGrave = 4;    // TODO: verify when cards are in graveyard
+        private const int LocateGrave = 16;
+        private const int LocateDeck = 15;
+
+        // Field slot locate range to scan (each holds 0 or 1 card).
+        // 2-4 confirmed/expected for 3 monster zones.
+        // 5-7 expected for 3 spell/trap zones (needs confirmation with set spells).
+        // 8 may be field spell zone. Scanning wider to discover.
+        private const int FieldLocateMin = 1;
+        private const int FieldLocateMax = 12;
 
         // Card position bitmasks returned by DLL_DuelGetCardFace
         private const int PosFaceUpAtk = 0x1;
         private const int PosFaceUpDef = 0x4;
         private const int PosFaceUp = PosFaceUpAtk | PosFaceUpDef;  // 0x5
         private const int PosDefense = PosFaceUpDef | 0x8;          // 0xC
-
-        // Speed Duel zone sizes
-        private const int MaxMonsterSlots = 3;
-        private const int MaxSpellSlots = 3;
 
         // Player identifiers (matches existing DuelEventAnnouncer convention)
         private const int PlayerMe = 0;
@@ -89,7 +98,8 @@ namespace DuelLinksAccess
         // Navigation state
         private Zone _currentZone = Zone.Hand;
         private int _navIndex;
-        private readonly List<int> _zoneSlots = new();
+        private readonly List<int> _zoneSlots = new();   // slot index within the locate
+        private readonly List<int> _zoneLocates = new(); // actual locate value per entry
         private bool _isNavigating;
 
         // Action menu state
@@ -141,6 +151,7 @@ namespace DuelLinksAccess
             _currentZone = Zone.Hand;
             _navIndex = 0;
             _zoneSlots.Clear();
+            _zoneLocates.Clear();
             _isNavigating = false;
             _awaitingTarget = false;
             _inCardSelect = false;
@@ -222,11 +233,9 @@ namespace DuelLinksAccess
             try
             {
                 int hand = GetCardCount(PlayerMe, LocateHand);
-                int myMon = CountOccupiedSlots(PlayerMe, LocateMonster, MaxMonsterSlots);
-                int mySp = CountOccupiedSlots(PlayerMe, LocateSpell, MaxSpellSlots);
+                CountFieldCards(PlayerMe, out int myMon, out int mySp);
                 int myGr = GetCardCount(PlayerMe, LocateGrave);
-                int oppMon = CountOccupiedSlots(PlayerOpp, LocateMonster, MaxMonsterSlots);
-                int oppSp = CountOccupiedSlots(PlayerOpp, LocateSpell, MaxSpellSlots);
+                CountFieldCards(PlayerOpp, out int oppMon, out int oppSp);
                 int oppGr = GetCardCount(PlayerOpp, LocateGrave);
 
                 return Loc.Get("duel_field_summary",
@@ -261,21 +270,33 @@ namespace DuelLinksAccess
                             MelonLoader.MelonLogger.Msg(
                                 $"  DLL_DuelGetCardNum(player={player}, locate={loc} [0x{loc:X2}]) = {count}");
 
-                            // For non-zero counts, also try getting the first card's unique ID
-                            try
+                            // For non-zero counts, dump each card's ID, name, and BasicVal.Type
+                            for (int s = 0; s < count && s < 5; s++)
                             {
-                                int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                                    player, loc, 0);
-                                uint cardId = uid > 0
-                                    ? Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid)
-                                    : 0;
-                                string name = cardId > 0 ? ResolveCardName(cardId) : "(no name)";
-                                MelonLoader.MelonLogger.Msg(
-                                    $"    -> slot 0: uid={uid}, cardId={cardId}, name={name}");
-                            }
-                            catch (Exception ex)
-                            {
-                                MelonLoader.MelonLogger.Msg($"    -> slot 0 error: {ex.Message}");
+                                try
+                                {
+                                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                                        player, loc, s);
+                                    uint cardId = uid > 0
+                                        ? Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid)
+                                        : 0;
+                                    string name = cardId > 0 ? ResolveCardName(cardId) : "(no name)";
+                                    string typeInfo = "";
+                                    try
+                                    {
+                                        var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
+                                        Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
+                                            player, loc, s, ref bv);
+                                        typeInfo = $", Type=0x{bv.Type:X4}, Atk={bv.Atk}, Def={bv.Def}, Lvl={bv.Level}, Rank={bv.Rank}";
+                                    }
+                                    catch { typeInfo = ", BasicVal=error"; }
+                                    MelonLoader.MelonLogger.Msg(
+                                        $"    -> slot {s}: uid={uid}, cardId={cardId}, name={name}{typeInfo}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    MelonLoader.MelonLogger.Msg($"    -> slot {s} error: {ex.Message}");
+                                }
                             }
                         }
                     }
@@ -299,8 +320,17 @@ namespace DuelLinksAccess
                             {
                                 uint cardId = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid);
                                 string name = cardId > 0 ? ResolveCardName(cardId) : "(no name)";
+                                string typeInfo = "";
+                                try
+                                {
+                                    var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
+                                    Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
+                                        player, pos, slot, ref bv);
+                                    typeInfo = $", Type=0x{bv.Type:X4}, Atk={bv.Atk}, Def={bv.Def}, Lvl={bv.Level}, Rank={bv.Rank}";
+                                }
+                                catch { typeInfo = ", BasicVal=error"; }
                                 MelonLoader.MelonLogger.Msg(
-                                    $"  GetCardUniqueID(player={player}, pos={pos} [0x{pos:X2}], slot={slot}) = uid {uid}, cardId={cardId}, name={name}");
+                                    $"  GetCardUniqueID(player={player}, pos={pos} [0x{pos:X2}], slot={slot}) = uid {uid}, cardId={cardId}, name={name}{typeInfo}");
                             }
                         }
                         catch { /* skip */ }
@@ -552,7 +582,7 @@ namespace DuelLinksAccess
 
             int slotIndex = _zoneSlots[_navIndex];
             int player = GetZonePlayer(_currentZone);
-            int locate = GetZoneLocate(_currentZone);
+            int locate = _zoneLocates[_navIndex];
 
             try
             {
@@ -571,8 +601,21 @@ namespace DuelLinksAccess
 
                 bool isHand = _currentZone == Zone.Hand;
                 bool isMyCard = player == PlayerMe;
-                bool isMonsterZone = _currentZone == Zone.MyMonster
-                    || _currentZone == Zone.OppMonster;
+                bool isFieldCard = IsFieldSlotZone(_currentZone);
+
+                // Determine actual card type from BasicVal (not zone label)
+                bool isMonster = false;
+                if (isFieldCard)
+                {
+                    try
+                    {
+                        var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
+                        Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
+                            player, locate, slotIndex, ref bv);
+                        isMonster = bv.Type != 0;
+                    }
+                    catch { isMonster = true; }
+                }
 
                 // --- Build announcement parts ---
                 var parts = new List<string>();
@@ -592,7 +635,7 @@ namespace DuelLinksAccess
                         ? Loc.Get("duel_face_up")
                         : Loc.Get("duel_face_down"));
 
-                    if (isMonsterZone)
+                    if (isMonster)
                     {
                         bool isDefense = (face & PosDefense) != 0;
                         parts.Add(isDefense
@@ -688,7 +731,7 @@ namespace DuelLinksAccess
 
             int slotIndex = _zoneSlots[_navIndex];
             int player = GetZonePlayer(_currentZone);
-            int locate = GetZoneLocate(_currentZone);
+            int locate = _zoneLocates[_navIndex];
 
             try
             {
@@ -768,6 +811,13 @@ namespace DuelLinksAccess
         /// </summary>
         private bool ProcessActionMenuInput()
         {
+            if (_commands.Count == 0)
+            {
+                _inActionMenu = false;
+                ScreenReader.Say(Loc.Get("duel_no_actions"));
+                return true;
+            }
+
             if (InputManager.IsKeyDownOrRepeat(KeyCode.UpArrow))
             {
                 _cmdIndex = (_cmdIndex - 1 + _commands.Count) % _commands.Count;
@@ -811,7 +861,7 @@ namespace DuelLinksAccess
             var cmdType = _commands[_cmdIndex].Type;
             int slotIndex = _zoneSlots[_navIndex];
             int player = GetZonePlayer(_currentZone);
-            int locate = GetZoneLocate(_currentZone);
+            int locate = _zoneLocates[_navIndex];
 
             CancelActionMenu();
 
@@ -925,10 +975,12 @@ namespace DuelLinksAccess
 
             int targetSlot = (!directAttack && _zoneSlots.Count > 0)
                 ? _zoneSlots[_navIndex] : 0;
+            int targetLocate = (!directAttack && _zoneLocates.Count > 0)
+                ? _zoneLocates[_navIndex] : 0;
 
             MelonCoroutines.Start(AttackDragSequence(
                 _attackerPlayer, _attackerLocate, _attackerSlot,
-                directAttack, targetSlot));
+                directAttack, targetLocate, targetSlot));
         }
 
         /// <summary>
@@ -940,7 +992,7 @@ namespace DuelLinksAccess
         /// </summary>
         private static IEnumerator AttackDragSequence(
             int atkPlayer, int atkLocate, int atkSlot,
-            bool directAttack, int targetSlot)
+            bool directAttack, int targetLocate, int targetSlot)
         {
             var client = Il2CppYgomGame.Duel.DuelClient.instance;
             var worker = client?.worker2d;
@@ -971,9 +1023,9 @@ namespace DuelLinksAccess
             {
                 // Direct attack: no opponent monsters to target.
                 // DLL_DuelGetAttackTargetMask returns 0x80 (bit 7) for direct attacks,
-                // vs 0x4 (bit 2 = LocateMonster) for targeted attacks.
+                // vs 0x4 (bit 2) for targeted attacks.
                 // The mask bit positions map to the position parameter in OnSelectAttacked.
-                // So direct attack uses position=7, targeted uses position=2.
+                // So direct attack uses position=7, targeted uses the target's locate value.
                 const int DirectAttackPosition = 7;
 
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
@@ -1001,8 +1053,8 @@ namespace DuelLinksAccess
                 int tgtSlot = targetSlot;
 
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"Attack step 2: OnSelectAttacked({PlayerOpp}, {LocateMonster}, {tgtSlot})");
-                worker.OnSelectAttacked(PlayerOpp, LocateMonster, tgtSlot);
+                    $"Attack step 2: OnSelectAttacked({PlayerOpp}, {targetLocate}, {tgtSlot})");
+                worker.OnSelectAttacked(PlayerOpp, targetLocate, tgtSlot);
 
                 LogAttackState(worker, "after OnSelectAttacked");
 
@@ -1010,8 +1062,8 @@ namespace DuelLinksAccess
                     yield return null;
 
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"Attack step 3: TapUpField({PlayerOpp}, {LocateMonster}, {tgtSlot})");
-                worker.OnTapUpField(PlayerOpp, LocateMonster, tgtSlot);
+                    $"Attack step 3: TapUpField({PlayerOpp}, {targetLocate}, {tgtSlot})");
+                worker.OnTapUpField(PlayerOpp, targetLocate, tgtSlot);
 
                 LogAttackState(worker, "after TapUpField (targeted)");
             }
@@ -1019,7 +1071,8 @@ namespace DuelLinksAccess
 
         /// <summary>Dumps all attack-related worker2d fields for diagnostics.</summary>
         private static void LogAttackState(
-            Il2CppYgomGame.Duel.RunEffectWorker2D worker, string label)
+            Il2CppYgomGame.Duel.RunEffectWorker2D worker, string label,
+            int atkLocate = 0)
         {
             try
             {
@@ -1046,7 +1099,7 @@ namespace DuelLinksAccess
                 try
                 {
                     int targetMask = Il2CppYgomGame.Duel.Engine.DLL_DuelGetAttackTargetMask(
-                        PlayerMe, LocateMonster);
+                        PlayerMe, atkLocate);
                     DebugLogger.Log(LogCategory.Game, "FieldNav",
                         $"  attackTargetMask={targetMask} (0x{targetMask:X})");
                 }
@@ -1299,14 +1352,23 @@ namespace DuelLinksAccess
                 string name = TryGetCardName(player, position, 0);
                 if (name != null) return name;
 
-                // Position might encode zone+slot together.
-                // Try common zone types and scan slots.
-                int[] zonesToTry = { LocateMonster, LocateSpell, LocateHand, LocateGrave };
-                foreach (int zone in zonesToTry)
+                // Scan field locate range and multi-card zones
+                int[] stackZones = { LocateHand, LocateGrave, LocateDeck };
+                // Field slots (each holds 0 or 1 card at slot 0)
+                for (int loc = FieldLocateMin; loc <= FieldLocateMax; loc++)
                 {
-                    int maxSlots = zone == LocateMonster || zone == LocateSpell
-                        ? MaxMonsterSlots : 10;
-                    for (int slot = 0; slot < maxSlots; slot++)
+                    name = TryGetCardName(player, loc, 0);
+                    if (name != null)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            $"ResolveCard: found card at player={player} locate={loc} slot=0");
+                        return name;
+                    }
+                }
+                // Stack zones (multi-card)
+                foreach (int zone in stackZones)
+                {
+                    for (int slot = 0; slot < 10; slot++)
                     {
                         name = TryGetCardName(player, zone, slot);
                         if (name != null)
@@ -1321,10 +1383,11 @@ namespace DuelLinksAccess
                 // Fallback: describe the position
                 string zoneName = position switch
                 {
-                    2 => player == PlayerMe ? "Your monster zone" : "Opponent monster zone",
-                    3 => player == PlayerMe ? "Your spell zone" : "Opponent spell zone",
+                    >= FieldLocateMin and <= FieldLocateMax =>
+                        player == PlayerMe ? "Your field" : "Opponent field",
                     13 => "Hand",
-                    4 => player == PlayerMe ? "Your graveyard" : "Opponent graveyard",
+                    15 => "Deck",
+                    16 => player == PlayerMe ? "Your graveyard" : "Opponent graveyard",
                     _ => $"Position {position}"
                 };
                 return zoneName;
@@ -1563,15 +1626,15 @@ namespace DuelLinksAccess
             }
             catch { }
 
-            // Count ALL monsters in zone 2 across all 3 slots
+            // Scan all field locate values for cards
             try
             {
-                MelonLoader.MelonLogger.Msg("  Monster zone scan (3 slots):");
-                for (int i = 0; i < MaxMonsterSlots; i++)
+                MelonLoader.MelonLogger.Msg("  Field locate scan:");
+                for (int loc = FieldLocateMin; loc <= FieldLocateMax; loc++)
                 {
-                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(PlayerMe, LocateMonster, i);
+                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(PlayerMe, loc, 0);
                     uint cardId = uid > 0 ? Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid) : 0;
-                    MelonLoader.MelonLogger.Msg($"    slot[{i}]: uid={uid} cardId={cardId}");
+                    if (uid > 0) MelonLoader.MelonLogger.Msg($"    locate[{loc}]: uid={uid} cardId={cardId}");
                 }
             }
             catch { }
@@ -2142,71 +2205,98 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Rebuilds _zoneSlots for the given zone by scanning for occupied slots.
-        /// For hand/graveyard: sequential indices 0..count-1.
-        /// For monster/spell zones: scans fixed slots and collects occupied ones.
+        /// Rebuilds _zoneSlots and _zoneLocates for the given zone.
+        /// Field zones (monster/spell): scans locate range, classifies by BasicVal.Type.
+        /// Stack zones (hand/graveyard): sequential indices 0..count-1 at fixed locate.
         /// </summary>
         private void RefreshZoneSlots(Zone zone)
         {
             _zoneSlots.Clear();
+            _zoneLocates.Clear();
             int player = GetZonePlayer(zone);
-            int locate = GetZoneLocate(zone);
 
-            if (IsFixedSlotZone(zone))
+            if (IsFieldSlotZone(zone))
             {
-                int maxSlots = GetMaxSlots(zone);
-                for (int i = 0; i < maxSlots; i++)
+                bool wantMonster = zone == Zone.MyMonster || zone == Zone.OppMonster;
+                for (int loc = FieldLocateMin; loc <= FieldLocateMax; loc++)
                 {
                     try
                     {
                         int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                            player, locate, i);
-                        if (uid > 0) _zoneSlots.Add(i);
+                            player, loc, 0);
+                        if (uid <= 0) continue;
+
+                        // Classify card type via BasicVal.Type
+                        bool isMonster = false;
+                        try
+                        {
+                            var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
+                            Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
+                                player, loc, 0, ref bv);
+                            isMonster = bv.Type != 0;
+                        }
+                        catch { /* If BasicVal fails, fall back to monster assumption */ isMonster = true; }
+
+                        if (isMonster == wantMonster)
+                        {
+                            _zoneSlots.Add(0);   // field slots always use index 0
+                            _zoneLocates.Add(loc);
+                        }
                     }
-                    catch { /* Empty slot or error */ }
+                    catch { /* skip */ }
                 }
             }
             else
             {
+                int locate = GetStackZoneLocate(zone);
                 int count = GetCardCount(player, locate);
                 for (int i = 0; i < count; i++)
+                {
                     _zoneSlots.Add(i);
+                    _zoneLocates.Add(locate);
+                }
             }
 
             DebugLogger.Log(LogCategory.Game, "FieldNav",
-                $"RefreshZone {zone}: player={player} locate={locate} found={_zoneSlots.Count} cards");
+                $"RefreshZone {zone}: player={player} found={_zoneSlots.Count} cards" +
+                (_zoneLocates.Count > 0 ? $" at locates=[{string.Join(",", _zoneLocates)}]" : ""));
         }
 
-        private static int CountOccupiedSlots(int player, int locate, int maxSlots)
+        /// <summary>
+        /// Counts monsters and spells on field by scanning all field locate values
+        /// and classifying via BasicVal.Type.
+        /// </summary>
+        private static void CountFieldCards(int player, out int monsters, out int spells)
         {
-            int count = 0;
-            for (int i = 0; i < maxSlots; i++)
+            monsters = 0;
+            spells = 0;
+            for (int loc = FieldLocateMin; loc <= FieldLocateMax; loc++)
             {
                 try
                 {
                     int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                        player, locate, i);
-                    if (uid > 0) count++;
+                        player, loc, 0);
+                    if (uid <= 0) continue;
+
+                    try
+                    {
+                        var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
+                        Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
+                            player, loc, 0, ref bv);
+                        if (bv.Type != 0) monsters++;
+                        else spells++;
+                    }
+                    catch { monsters++; /* assume monster on error */ }
                 }
-                catch { }
+                catch { /* skip */ }
             }
-            return count;
         }
 
-        private static bool IsFixedSlotZone(Zone zone)
+        /// <summary>Whether this zone scans individual field locate values.</summary>
+        private static bool IsFieldSlotZone(Zone zone)
         {
             return zone == Zone.MyMonster || zone == Zone.OppMonster
                 || zone == Zone.MySpell || zone == Zone.OppSpell;
-        }
-
-        private static int GetMaxSlots(Zone zone)
-        {
-            return zone switch
-            {
-                Zone.MyMonster or Zone.OppMonster => MaxMonsterSlots,
-                Zone.MySpell or Zone.OppSpell => MaxSpellSlots,
-                _ => 0
-            };
         }
 
         private static int GetZonePlayer(Zone zone)
@@ -2218,13 +2308,12 @@ namespace DuelLinksAccess
             };
         }
 
-        private static int GetZoneLocate(Zone zone)
+        /// <summary>Gets the fixed locate value for multi-card stack zones.</summary>
+        private static int GetStackZoneLocate(Zone zone)
         {
             return zone switch
             {
                 Zone.Hand => LocateHand,
-                Zone.MyMonster or Zone.OppMonster => LocateMonster,
-                Zone.MySpell or Zone.OppSpell => LocateSpell,
                 Zone.MyGrave => LocateGrave,
                 _ => LocateHand
             };

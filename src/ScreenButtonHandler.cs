@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.UI;
@@ -37,6 +36,10 @@ namespace DuelLinksAccess
         private string _lastReadText = "";
         private GameObject _screenRoot;
 
+        // Duel World map area cycling
+        private int _currentMapArea = 0;
+        private static readonly string[] _mapAreaNames = { "Street", "Alley", "Park", "Shop" };
+
         /// <summary>
         /// Screens that this handler should NOT process.
         /// Dialog is handled by DialogHandler; Duel will get its own handler.
@@ -52,7 +55,7 @@ namespace DuelLinksAccess
 
         #region Types
 
-        private enum ItemType { Button, Slider }
+        private enum ItemType { Button, Slider, MapObject }
 
         private class ScreenItem
         {
@@ -201,6 +204,10 @@ namespace DuelLinksAccess
                 DeduplicateItems();
                 FilterItems();
 
+                // On the Home/Duel World screen, also scan 3D map objects (NPCs, events, etc.)
+                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                    FindMapObjects();
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Found {_items.Count} items");
 
@@ -224,7 +231,14 @@ namespace DuelLinksAccess
                     }
                     else if (_screenRoot.name.Contains("Scenario"))
                     {
-                        DumpScenarioState(_screenRoot);
+                        // ScenarioPlayerPart with no visible text — cutscene/transition.
+                        // Enter text mode so Enter/Space advances via OnPointerClick,
+                        // and PollTextChanges detects when dialogue text appears.
+                        _textMode = true;
+                        _lastReadText = "";
+                        ScreenReader.Say(Loc.Get("screen_cutscene"));
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            "Cutscene mode: ScenarioPlayerPart with no visible text");
                     }
                 }
             }
@@ -363,7 +377,7 @@ namespace DuelLinksAccess
                     {
                         if (yta == null) continue;
                         if (yta.gameObject == null || !yta.gameObject.activeInHierarchy) continue;
-                        string t = StripRichText(yta.text);
+                        string t = LabelExtractor.StripRichText(yta.text);
                         if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                         if (t.All(char.IsDigit)) continue;
                         if (!parts.Contains(t))
@@ -385,7 +399,7 @@ namespace DuelLinksAccess
                         {
                             if (text == null) continue;
                             if (text.gameObject == null || !text.gameObject.activeInHierarchy) continue;
-                            string t = StripRichText(text.text);
+                            string t = LabelExtractor.StripRichText(text.text);
                             if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                             if (t.All(char.IsDigit)) continue;
                             if (!parts.Contains(t))
@@ -461,7 +475,7 @@ namespace DuelLinksAccess
                     var go = slider.gameObject;
                     if (go == null || !go.activeInHierarchy) continue;
 
-                    string label = GetSliderLabel(slider);
+                    string label = LabelExtractor.GetSliderLabel(slider);
                     _items.Add(new ScreenItem
                     {
                         Go = go,
@@ -477,6 +491,74 @@ namespace DuelLinksAccess
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[ScreenBtn] FindSliders error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Finds 3D map objects (NPCs, events, gifts) on the Duel World screen.
+        /// These are MapObjectBase components on GameObjects in the scene,
+        /// not UI selectables, so they require a separate scan.
+        /// </summary>
+        private void FindMapObjects()
+        {
+            try
+            {
+                var mapObjects = UnityEngine.Object.FindObjectsOfType<
+                    Il2CppYgomGame.Single.MapObjectBase>();
+                if (mapObjects == null) return;
+
+                foreach (var mapObj in mapObjects)
+                {
+                    if (mapObj == null) continue;
+                    var go = mapObj.gameObject;
+                    if (go == null || !go.activeInHierarchy) continue;
+
+                    var data = mapObj.mapObjectData;
+                    if (data == null) continue;
+
+                    // Skip non-tappable or hidden objects
+                    try
+                    {
+                        if (data.notTap || data.hidden) continue;
+                    }
+                    catch { continue; }
+
+                    // Build a label from the object type and GO name
+                    string typeName;
+                    try
+                    {
+                        var objType = data.type;
+                        typeName = objType switch
+                        {
+                            Il2CppYgomGame.Single.MapObjectType.NPCChallenge => Loc.Get("map_npc_challenge"),
+                            Il2CppYgomGame.Single.MapObjectType.NPCMob => Loc.Get("map_npc_standard"),
+                            Il2CppYgomGame.Single.MapObjectType.NPCOrigin => Loc.Get("map_npc_legendary"),
+                            Il2CppYgomGame.Single.MapObjectType.FoundGift => Loc.Get("map_gift"),
+                            Il2CppYgomGame.Single.MapObjectType.CardTrader => Loc.Get("map_card_trader"),
+                            Il2CppYgomGame.Single.MapObjectType.NPCTrainer => Loc.Get("map_npc_trainer"),
+                            Il2CppYgomGame.Single.MapObjectType.BonusDuelist => Loc.Get("map_npc_bonus"),
+                            _ => go.name
+                        };
+                    }
+                    catch
+                    {
+                        typeName = go.name;
+                    }
+
+                    _items.Add(new ScreenItem
+                    {
+                        Go = go,
+                        Label = typeName,
+                        Type = ItemType.MapObject
+                    });
+
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"MapObject: \"{typeName}\" GO={go.name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] FindMapObjects error: {ex.Message}");
             }
         }
 
@@ -509,8 +591,7 @@ namespace DuelLinksAccess
                     string goName = go.name.ToLower();
                     if (IsLayoutElement(goName)) continue;
 
-                    string label = GetLabel(go);
-                    if (string.IsNullOrEmpty(label)) label = go.name;
+                    string label = LabelExtractor.GetLabel(go);
 
                     processed.Add(go);
                     _items.Add(new ScreenItem
@@ -560,140 +641,6 @@ namespace DuelLinksAccess
 
         #endregion
 
-        #region Labels
-
-        private string GetLabel(GameObject go)
-        {
-            // Try YgomButton.textLabel first (explicit label reference)
-            try
-            {
-                var ygomBtn = go.GetComponent<Il2CppYgomSystem.UI.YgomButton>();
-                if (ygomBtn != null && ygomBtn.textLabel != null)
-                {
-                    // textLabel is a Graphic — try to get text from it
-                    var textComp = ygomBtn.textLabel.GetComponent<Text>();
-                    if (textComp != null)
-                    {
-                        string t = StripRichText(textComp.text);
-                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
-                            return t;
-                    }
-                    var ytaComp = ygomBtn.textLabel.GetComponent<Il2CppYgomSystem.UI.YgomTextAccessor>();
-                    if (ytaComp != null)
-                    {
-                        string t = StripRichText(ytaComp.text);
-                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
-                            return t;
-                    }
-                }
-            }
-            catch { }
-
-            // Try YgomTextAccessor in children (game's text system)
-            try
-            {
-                var ytas = go.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
-                if (ytas != null)
-                {
-                    foreach (var yta in ytas)
-                    {
-                        if (yta == null) continue;
-                        if (yta.gameObject == null || !yta.gameObject.activeInHierarchy) continue;
-                        string t = StripRichText(yta.text);
-                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
-                            return t;
-                    }
-                }
-            }
-            catch { }
-
-            // Fall back to Unity Text in children
-            try
-            {
-                var texts = go.GetComponentsInChildren<Text>(true);
-                if (texts != null)
-                {
-                    foreach (var text in texts)
-                    {
-                        if (text == null) continue;
-                        if (text.gameObject == null || !text.gameObject.activeInHierarchy) continue;
-                        string t = StripRichText(text.text);
-                        if (!string.IsNullOrEmpty(t) && t.Length >= 1 && !t.All(char.IsDigit))
-                            return t;
-                    }
-                }
-            }
-            catch { }
-
-            // Last resort: clean up the GO name
-            return CleanGoName(go.name);
-        }
-
-        /// <summary>
-        /// Cleans up a GameObject name for use as a fallback label.
-        /// Removes common suffixes like (Clone), Button, etc.
-        /// </summary>
-        private static string CleanGoName(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return name;
-
-            // Remove (Clone) suffix
-            if (name.EndsWith("(Clone)"))
-                name = name.Substring(0, name.Length - 7).TrimEnd();
-
-            return name;
-        }
-
-        private string GetSliderLabel(Slider slider)
-        {
-            try
-            {
-                var parent = slider.transform.parent;
-                if (parent != null)
-                {
-                    var ytas = parent.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
-                    if (ytas != null)
-                    {
-                        foreach (var t in ytas)
-                        {
-                            if (t == null) continue;
-                            string txt = StripRichText(t.text);
-                            if (!string.IsNullOrEmpty(txt) && txt.Length >= 2
-                                && !txt.All(char.IsDigit))
-                                return txt;
-                        }
-                    }
-
-                    var texts = parent.GetComponentsInChildren<Text>(true);
-                    if (texts != null)
-                    {
-                        foreach (var t in texts)
-                        {
-                            if (t == null) continue;
-                            string txt = StripRichText(t.text);
-                            if (!string.IsNullOrEmpty(txt) && txt.Length >= 2
-                                && !txt.All(char.IsDigit))
-                                return txt;
-                        }
-                    }
-                }
-            }
-            catch { }
-
-            int val = Mathf.RoundToInt(slider.value);
-            return Loc.Get("screen_slider", val);
-        }
-
-        private static readonly Regex RichTextRegex = new(@"<[^>]+>", RegexOptions.Compiled);
-
-        private string StripRichText(string text)
-        {
-            if (string.IsNullOrEmpty(text)) return text;
-            return RichTextRegex.Replace(text, "").Trim();
-        }
-
-        #endregion
-
         #region Input
 
         private void ProcessInput()
@@ -720,11 +667,17 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow))
             {
-                AdjustSlider(-1);
+                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                    CycleMapArea(-1);
+                else
+                    AdjustSlider(-1);
             }
             else if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.RightArrow))
             {
-                AdjustSlider(1);
+                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                    CycleMapArea(1);
+                else
+                    AdjustSlider(1);
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Return)
                 || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
@@ -789,6 +742,15 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+
+            // Guard: button may have been destroyed since scan
+            if (!LabelExtractor.IsAlive(item.Go))
+            {
+                _items.RemoveAt(_focusIndex);
+                if (_focusIndex >= _items.Count) _focusIndex = Math.Max(0, _items.Count - 1);
+                return;
+            }
+
             int pos = _focusIndex + 1;
             int total = _items.Count;
 
@@ -831,11 +793,125 @@ namespace DuelLinksAccess
             ScreenReader.Say(val.ToString());
         }
 
+        /// <summary>
+        /// Cycles between Duel World map areas by calling SingleViewController.StartmapRotation(int).
+        /// </summary>
+        private void CycleMapArea(int direction)
+        {
+            _currentMapArea += direction;
+            if (_currentMapArea < 0) _currentMapArea = _mapAreaNames.Length - 1;
+            if (_currentMapArea >= _mapAreaNames.Length) _currentMapArea = 0;
+
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("content", out mgr) || mgr == null) return;
+
+                var topVc = mgr.GetStackTopViewController();
+                if (topVc == null) return;
+
+                var singleVcType = FindVcType("Single");
+                if (singleVcType == null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "SingleViewController type not found");
+                    return;
+                }
+
+                var method = singleVcType.GetMethod("StartmapRotation",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    null, new[] { typeof(int) }, null);
+                if (method == null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "StartmapRotation(int) not found");
+                    return;
+                }
+
+                var ctor = singleVcType.GetConstructor(new[] { typeof(IntPtr) });
+                if (ctor == null) return;
+
+                var castVc = ctor.Invoke(new object[] { topVc.Pointer });
+                method.Invoke(castVc, new object[] { _currentMapArea });
+
+                string areaName = Loc.Get($"map_area_{_mapAreaNames[_currentMapArea].ToLower()}");
+                ScreenReader.Say(areaName);
+
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"Map area changed to {_mapAreaNames[_currentMapArea]} ({_currentMapArea})");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] CycleMapArea error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Activates a 3D map object by calling MapObjectBase.TapObject(ViewControllerManager).
+        /// </summary>
+        private void ActivateMapObject(ScreenItem item)
+        {
+            try
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"Tapping map object: {item.Label} ({item.Go.name})");
+
+                var mapObj = item.Go.GetComponent<Il2CppYgomGame.Single.MapObjectBase>();
+                if (mapObj == null)
+                {
+                    ScreenReader.Say(Loc.Get("screen_click_error"));
+                    return;
+                }
+
+                // Get the content ViewControllerManager to pass to TapObject
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null)
+                {
+                    ScreenReader.Say(Loc.Get("screen_click_error"));
+                    return;
+                }
+
+                Il2CppYgomSystem.UI.ViewControllerManager contentMgr;
+                if (!namedManager.TryGetValue("content", out contentMgr) || contentMgr == null)
+                {
+                    ScreenReader.Say(Loc.Get("screen_click_error"));
+                    return;
+                }
+
+                mapObj.TapObject(contentMgr);
+                ScreenReader.Say(item.Label);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] ActivateMapObject error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("screen_click_error"));
+            }
+        }
+
         private void ActivateCurrentItem()
         {
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+
+            // Guard: button may have been destroyed since scan
+            if (!LabelExtractor.IsAlive(item.Go))
+            {
+                ScreenReader.Say(Loc.Get("screen_click_error"));
+                _items.RemoveAt(_focusIndex);
+                if (_focusIndex >= _items.Count) _focusIndex = Math.Max(0, _items.Count - 1);
+                return;
+            }
+
+            // Map objects: call TapObject on the MapObjectBase component
+            if (item.Type == ItemType.MapObject)
+            {
+                ActivateMapObject(item);
+                return;
+            }
 
             // Route through TutorialArrow ipclick if present — direct clicks
             // don't satisfy the tutorial condition (documented in game-api.md)
@@ -1027,6 +1103,46 @@ namespace DuelLinksAccess
 
             try
             {
+                // ScenarioPlayerPart: advance the scenario text via click events.
+                // Always try direct ExecuteEvents first — TutorialArrow ipclick may
+                // point to an unrelated UI element (e.g., DuelButton) rather than
+                // the scenario advancement control.
+                if (_screenRoot.name.Contains("Scenario"))
+                {
+                    var scenarioVc = _screenRoot.GetComponent<Il2CppYgomGame.Scenario.ScenarioPlayViewController>();
+                    if (scenarioVc != null)
+                    {
+                        var go = scenarioVc.gameObject;
+                        var eventData = new UnityEngine.EventSystems.PointerEventData(
+                            UnityEngine.EventSystems.EventSystem.current);
+                        eventData.position = new Vector2(
+                            Screen.width / 2f, Screen.height / 2f);
+                        eventData.button = UnityEngine.EventSystems.PointerEventData.InputButton.Left;
+                        eventData.clickCount = 1;
+
+                        // Full click cycle: down → up → click
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            "Advancing ScenarioPlayerPart via ExecuteEvents click cycle");
+                        return;
+                    }
+                }
+
+                // For non-scenario screens, try TutorialArrow ipclick if one is
+                // on the dialog stack (the arrow may be the advancement mechanism).
+                if (AdvanceViaTutorialArrow())
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "Advancing via TutorialArrow ipclick (dialog stack had arrow)");
+                    return;
+                }
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     "Advancing screen (click)");
                 ClickGameObject(_screenRoot);
@@ -1034,6 +1150,80 @@ namespace DuelLinksAccess
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[ScreenBtn] Advance error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Routes a click through the TutorialArrowPart's ipclick handlers.
+        /// The game requires scenario clicks to go through the arrow — direct
+        /// OnPointerClick on ScenarioPlayViewController doesn't advance the text
+        /// while the arrow is on the dialog stack.
+        /// </summary>
+        private bool AdvanceViaTutorialArrow()
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return false;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("dialog", out mgr)) return false;
+
+                var topVc = mgr?.GetStackTopViewController();
+                if (topVc?.gameObject == null) return false;
+
+                string name = topVc.gameObject.name;
+                if (name != "TutorialArrow" && name != "TutorialArrowPart")
+                    return false;
+
+                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                if (arrowVc == null) return false;
+
+                var ipclick = arrowVc.ipclick;
+                if (ipclick == null || ipclick.Length == 0) return false;
+
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+                eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
+
+                for (int i = 0; i < ipclick.Length; i++)
+                {
+                    try
+                    {
+                        var handler = ipclick[i];
+                        if (handler == null) continue;
+
+                        var button = handler.TryCast<Il2CppYgomSystem.UI.YgomButton>();
+                        if (button != null)
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Advancing scenario via ipclick[{i}] YgomButton on {button.gameObject?.name ?? "?"}");
+                            button.OnPointerClick(eventData);
+                            return true;
+                        }
+
+                        var mb = handler.TryCast<MonoBehaviour>();
+                        if (mb?.gameObject != null)
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Advancing scenario via ipclick[{i}] {mb.GetIl2CppType().Name} on {mb.gameObject.name}");
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(
+                                mb.gameObject, eventData,
+                                UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                            return true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Msg($"[ScreenBtn] ipclick[{i}] error: {ex.Message}");
+                    }
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
             }
         }
 

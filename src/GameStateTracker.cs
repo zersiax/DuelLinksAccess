@@ -26,6 +26,7 @@ namespace DuelLinksAccess
             Shop,
             Dialog,
             CardDetail,
+            Gate,
             Other
         }
 
@@ -33,6 +34,13 @@ namespace DuelLinksAccess
         /// Currently active game screen.
         /// </summary>
         public static GameScreen CurrentScreen { get; private set; } = GameScreen.Unknown;
+
+        /// <summary>
+        /// When true, TutorialArrowPart is skipped in dialog name resolution.
+        /// Set by DialogHandler after confirming the arrow has no content underneath.
+        /// Reset when a new (non-arrow) dialog appears.
+        /// </summary>
+        public static bool SkipTutorialArrowPart { get; set; } = false;
 
         /// <summary>
         /// Whether the game has fully loaded and managers are available.
@@ -43,6 +51,12 @@ namespace DuelLinksAccess
         /// Name of the last focused ViewController (for debug logging).
         /// </summary>
         public static string LastViewControllerName { get; private set; } = "";
+
+        // Debounce: prevent rapid state changes from flash VCs (e.g. 16ms HtjsonDialog)
+        private static string _pendingVcName = "";
+        private static float _pendingStableTime = 0f;
+        private static bool _pendingFromDialog = false;
+        private const float DebounceDelay = 0.15f; // 150ms
 
         /// <summary>
         /// Fired when the active screen changes. Parameters: (oldScreen, newScreen).
@@ -76,12 +90,13 @@ namespace DuelLinksAccess
                 string baseName = GetTopViewName(namedManager, "base");
 
                 // Priority: dialog > dialogbase > content > base
-                // Skip known container names that don't represent actual screens
+                // Skip known container/overlay names that don't represent actual screens
                 string goName = null;
                 bool fromDialogManager = false;
                 if (!string.IsNullOrEmpty(dialogName)
                     && dialogName != "DialogManager"
-                    && dialogName != "TutorialArrow")
+                    && dialogName != "TutorialArrow"
+                    && !(SkipTutorialArrowPart && dialogName == "TutorialArrowPart"))
                 {
                     goName = dialogName;
                     fromDialogManager = true;
@@ -92,7 +107,8 @@ namespace DuelLinksAccess
                     goName = dialogBaseName;
                     fromDialogManager = true;
                 }
-                else if (!string.IsNullOrEmpty(contentName))
+                else if (!string.IsNullOrEmpty(contentName)
+                    && contentName != "Standby")
                     goName = contentName;
                 else if (!string.IsNullOrEmpty(baseName)
                     && baseName != "Header")
@@ -100,7 +116,21 @@ namespace DuelLinksAccess
 
                 if (string.IsNullOrEmpty(goName)) return;
 
-                // Only process when the name actually changes
+                // Debounce: only process after the VC name has been stable for
+                // DebounceDelay. This prevents flash VCs (e.g. 16ms HtjsonDialog
+                // auto-dismiss) from causing state bounces that reset handlers.
+                if (goName != _pendingVcName)
+                {
+                    _pendingVcName = goName;
+                    _pendingStableTime = 0f;
+                    _pendingFromDialog = fromDialogManager;
+                    return;
+                }
+
+                _pendingStableTime += UnityEngine.Time.deltaTime;
+                if (_pendingStableTime < DebounceDelay) return;
+
+                // Stable long enough — now process the change
                 if (goName == LastViewControllerName) return;
 
                 LastViewControllerName = goName;
@@ -125,7 +155,7 @@ namespace DuelLinksAccess
                 // Any VC from the dialog/dialogbase manager that doesn't match
                 // a known pattern should still be treated as Dialog
                 // (e.g. Mission, reward screens, etc.)
-                if (newScreen == GameScreen.Other && fromDialogManager)
+                if (newScreen == GameScreen.Other && _pendingFromDialog)
                     newScreen = GameScreen.Dialog;
 
                 SetScreen(newScreen);
@@ -278,6 +308,16 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Forces the debounce to re-evaluate on the next frame.
+        /// Call when skip conditions change (e.g. SkipTutorialArrowPart toggled).
+        /// </summary>
+        public static void ForceReevaluate()
+        {
+            _pendingVcName = "";
+            _pendingStableTime = 0f;
+        }
+
+        /// <summary>
         /// Resets state. Call on scene changes.
         /// </summary>
         public static void Reset()
@@ -286,6 +326,9 @@ namespace DuelLinksAccess
             CurrentScreen = GameScreen.Unknown;
             IsGameReady = false;
             LastViewControllerName = "";
+            _pendingVcName = "";
+            _pendingStableTime = 0f;
+            SkipTutorialArrowPart = false;
 
             if (oldScreen != GameScreen.Unknown)
             {
@@ -346,11 +389,14 @@ namespace DuelLinksAccess
             if (goName.Contains("Deck"))
                 return GameScreen.Deck;
 
-            if (goName.Contains("Shop") || goName.Contains("OpenPack"))
+            if (goName.Contains("Shop"))
                 return GameScreen.Shop;
 
             if (goName.Contains("CardDetail"))
                 return GameScreen.CardDetail;
+
+            if (goName.Contains("Gate"))
+                return GameScreen.Gate;
 
             if (goName.Contains("Dialog") || goName.Contains("Confirm")
                 || goName.Contains("AgeVerification") || goName.Contains("Tutorial"))
@@ -374,6 +420,7 @@ namespace DuelLinksAccess
                 GameScreen.Shop => "screen_shop",
                 GameScreen.Dialog => "screen_dialog",
                 GameScreen.CardDetail => "screen_card_detail",
+                GameScreen.Gate => "screen_gate",
                 _ => null
             };
         }

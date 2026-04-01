@@ -35,6 +35,8 @@ namespace DuelLinksAccess
         // RunEffect fires, so we read values next frame
         private static bool _pendingPhaseAnnouncement;
         private static int _pendingLPDamagePlayer = -1;
+        private static float _pendingLPDamageWait = 0f;
+        private const float LPDamageMaxWait = 1.5f; // timeout fallback
 
         #endregion
 
@@ -54,9 +56,29 @@ namespace DuelLinksAccess
 
             if (_pendingLPDamagePlayer >= 0)
             {
+                // Poll until DLL_DuelGetLP returns a different value from our
+                // last tracked LP — the engine updates after the damage animation
+                // plays, not when LifeDamage fires. Timeout after LPDamageMaxWait.
+                _pendingLPDamageWait += UnityEngine.Time.deltaTime;
                 int player = _pendingLPDamagePlayer;
-                _pendingLPDamagePlayer = -1;
-                AnnounceLPDamage(player);
+                try
+                {
+                    int currentLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(player);
+                    int lastLP = player == 0 ? _lastMyLP : _lastOppLP;
+                    bool changed = lastLP >= 0 && currentLP != lastLP;
+
+                    if (changed || _pendingLPDamageWait >= LPDamageMaxWait)
+                    {
+                        _pendingLPDamagePlayer = -1;
+                        AnnounceLPDamage(player);
+                    }
+                }
+                catch
+                {
+                    // Engine not available — announce with whatever we can read
+                    _pendingLPDamagePlayer = -1;
+                    AnnounceLPDamage(player);
+                }
             }
         }
 
@@ -100,8 +122,10 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeDamage:
-                    // Defer to next frame — engine hasn't updated LP yet
+                    // Defer — poll each frame until DLL_DuelGetLP changes.
+                    // Engine updates LP during the damage animation, not immediately.
                     _pendingLPDamagePlayer = param1;
+                    _pendingLPDamageWait = 0f;
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeSet:
@@ -218,6 +242,7 @@ namespace DuelLinksAccess
             _lastOppLP = -1;
             _pendingPhaseAnnouncement = false;
             _pendingLPDamagePlayer = -1;
+            _pendingLPDamageWait = 0f;
         }
 
         #endregion

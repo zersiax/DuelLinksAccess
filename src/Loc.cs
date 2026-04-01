@@ -90,6 +90,7 @@ namespace DuelLinksAccess
             _english["screen_shop"] = "Shop";
             _english["screen_dialog"] = "Dialog";
             _english["screen_card_detail"] = "Card detail";
+            _english["screen_gate"] = "Gate";
             _english["no_repeat"] = "Nothing to repeat";
 
             // ===== DIALOGS =====
@@ -114,6 +115,20 @@ namespace DuelLinksAccess
             _english["screen_rescan"] = "Rescanning";
             _english["screen_click_error"] = "Could not press button";
             _english["screen_back"] = "Back";
+            _english["screen_cutscene"] = "Cutscene. Press Enter or Space to advance.";
+
+            // ===== DUEL WORLD MAP =====
+            _english["map_area_street"] = "Street";
+            _english["map_area_alley"] = "Alley";
+            _english["map_area_park"] = "Park";
+            _english["map_area_shop"] = "Shop";
+            _english["map_npc_challenge"] = "Challenge Duelist";
+            _english["map_npc_standard"] = "Standard Duelist";
+            _english["map_npc_legendary"] = "Legendary Duelist";
+            _english["map_gift"] = "Gift";
+            _english["map_card_trader"] = "Card Trader";
+            _english["map_npc_trainer"] = "Trainer";
+            _english["map_npc_bonus"] = "Bonus Duelist";
 
             // ===== DUEL: GENERAL =====
             _english["duel_started"] = "Duel started";
