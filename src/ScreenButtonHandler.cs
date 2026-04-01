@@ -208,6 +208,10 @@ namespace DuelLinksAccess
                 if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
                     FindMapObjects();
 
+                // On the Deck screen, scan DeckSelectItem components (not standard Selectables)
+                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Deck)
+                    FindDeckItems(_screenRoot);
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Found {_items.Count} items");
 
@@ -562,6 +566,58 @@ namespace DuelLinksAccess
             }
         }
 
+        /// <summary>
+        /// Finds DeckSelectItem components on deck screens.
+        /// These are MonoBehaviours (not Selectables), so FindButtons() won't find them.
+        /// Each has a deckNameText (Text) for the label and OnClicked() for activation.
+        /// </summary>
+        private void FindDeckItems(GameObject root)
+        {
+            try
+            {
+                var deckItems = root.GetComponentsInChildren<
+                    Il2CppYgomGame.Deck.DeckSelectItem>(true);
+                if (deckItems == null) return;
+
+                foreach (var deckItem in deckItems)
+                {
+                    if (deckItem == null) continue;
+                    var go = deckItem.gameObject;
+                    if (go == null || !go.activeInHierarchy) continue;
+
+                    string label = "";
+                    try
+                    {
+                        var nameText = deckItem.deckNameText;
+                        if (nameText != null)
+                            label = LabelExtractor.StripRichText(nameText.text);
+                    }
+                    catch { }
+
+                    if (string.IsNullOrWhiteSpace(label))
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"DeckItem: skipping (no name text) GO={go.name}");
+                        continue;
+                    }
+
+                    _items.Add(new ScreenItem
+                    {
+                        Go = go,
+                        Label = label,
+                        Type = ItemType.Button
+                    });
+
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"DeckItem: \"{label}\" GO={go.name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] FindDeckItems error: {ex.Message}");
+            }
+        }
+
         private void FindButtons(GameObject root)
         {
             try
@@ -913,6 +969,30 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // Header Back button: use GoBack() directly (SendBack on content VC).
+            // The BackButton has no onClick listener and TryCallVcMethod only checks
+            // the content VC, not the header VC where BackButton lives.
+            if (item.Go.name == "BackButton")
+            {
+                GoBack();
+                return;
+            }
+
+            // Deck items: call OnClicked() directly (DeckSelectItem is not a Selectable)
+            try
+            {
+                var deckItem = item.Go.GetComponent<Il2CppYgomGame.Deck.DeckSelectItem>();
+                if (deckItem != null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Activating deck item: {item.Label}");
+                    deckItem.OnClicked();
+                    ScreenReader.Say(item.Label);
+                    return;
+                }
+            }
+            catch { }
+
             // Route through TutorialArrow ipclick if present — direct clicks
             // don't satisfy the tutorial condition (documented in game-api.md)
             if (IsTutorialArrowActive() && ActivateViaTutorialArrow(item.Label))
@@ -1240,7 +1320,10 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Triggers back navigation on the current ViewController.
+        /// Triggers back navigation via HeaderViewController.OnBackButton().
+        /// This is what the game's actual back button calls, so it handles
+        /// TutorialArrow and other blockers correctly.
+        /// Falls back to SendBack() on the content VC if no header is found.
         /// </summary>
         private void GoBack()
         {
@@ -1249,25 +1332,43 @@ namespace DuelLinksAccess
                 var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
                 if (namedManager == null) return;
 
-                // Try content manager first
+                // Try HeaderViewController.OnBackButton() first — this is the game's
+                // native back button handler and works even with TutorialArrow active.
                 Il2CppYgomSystem.UI.ViewControllerManager mgr;
-                if (namedManager.TryGetValue("content", out mgr) && mgr != null)
-                {
-                    var topVc = mgr.GetStackTopViewController();
-                    if (topVc != null)
-                    {
-                        topVc.SendBack();
-                        ScreenReader.Say(Loc.Get("screen_back"));
-                        return;
-                    }
-                }
-
-                // Try base manager
                 if (namedManager.TryGetValue("base", out mgr) && mgr != null)
                 {
                     var topVc = mgr.GetStackTopViewController();
                     if (topVc != null)
                     {
+                        var header = topVc.TryCast<Il2CppYgomGame.Menu.HeaderViewController>();
+                        if (header != null)
+                        {
+                            // Some screens set lockOnBack to block the back button.
+                            // Clear it so our accessibility back navigation always works.
+                            bool wasLocked = header.lockOnBack;
+                            if (wasLocked)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    "GoBack: clearing lockOnBack");
+                                header.lockOnBack = false;
+                            }
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                "GoBack via HeaderViewController.OnBackButton()");
+                            header.OnBackButton();
+                            ScreenReader.Say(Loc.Get("screen_back"));
+                            return;
+                        }
+                    }
+                }
+
+                // Fallback: SendBack on content VC
+                if (namedManager.TryGetValue("content", out mgr) && mgr != null)
+                {
+                    var topVc = mgr.GetStackTopViewController();
+                    if (topVc != null)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            "GoBack via content VC SendBack()");
                         topVc.SendBack();
                         ScreenReader.Say(Loc.Get("screen_back"));
                         return;
