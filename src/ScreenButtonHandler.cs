@@ -647,6 +647,9 @@ namespace DuelLinksAccess
                     string goName = go.name.ToLower();
                     if (IsLayoutElement(goName)) continue;
 
+                    // Skip Htjson noise elements (decorative icons, promo banners)
+                    if (IsJunkHtjsonElement(go.name)) continue;
+
                     string label = LabelExtractor.GetLabel(go);
 
                     processed.Add(go);
@@ -675,6 +678,16 @@ namespace DuelLinksAccess
                 || goName == "handleslidearea" || goName == "fillarea"
                 || goName == "slidingarea" || goName == "frame"
                 || goName == "bgcover" || goName == "titleset";
+        }
+
+        /// <summary>
+        /// Filters out Htjson noise elements that clutter the scan without adding value.
+        /// "Icon" elements are decorative images next to ButtonSet items.
+        /// "Crst" is the crystal store promotional banner in screen headers.
+        /// </summary>
+        private static bool IsJunkHtjsonElement(string goName)
+        {
+            return goName == "Icon" || goName == "Crst";
         }
 
         private bool IsChildOfSlider(GameObject go, GameObject root)
@@ -1003,14 +1016,65 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Activating: {item.Label} ({item.Go.name})");
 
-                // Strategy 1: OnPointerClick via ExecuteEvents (standard Unity buttons)
                 var eventData = new UnityEngine.EventSystems.PointerEventData(
                     UnityEngine.EventSystems.EventSystem.current);
-                bool handled = UnityEngine.EventSystems.ExecuteEvents.Execute(
-                    item.Go, eventData,
-                    UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
 
-                // Strategy 2: Try On{GoName}Button() on the content ViewController.
+                // Strategy 1: Htjson ButtonWidget — get its YgomButton and fire
+                // the full click cycle so the Htjson dispatch chain fires properly.
+                bool handled = false;
+                var buttonWidget = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>();
+                if (buttonWidget != null)
+                {
+                    var ygomBtn = buttonWidget.button;
+                    if (ygomBtn != null && ygomBtn.gameObject != null)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Htjson ButtonWidget found, clicking YgomButton on {ygomBtn.gameObject.name}");
+                        var btnGo = ygomBtn.gameObject;
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            btnGo, eventData,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            btnGo, eventData,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            btnGo, eventData,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                        handled = true;
+                    }
+                }
+
+                // Strategy 1b: Htjson CheckBoxWidget — extends Button directly,
+                // OnPointerClick dispatches to its HtjsonReceiver.
+                if (!handled)
+                {
+                    var checkBox = item.Go.GetComponent<Il2CppYgomSystem.Htjson.CheckBoxWidget>();
+                    if (checkBox != null)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Htjson CheckBoxWidget found on {item.Go.name}");
+                        checkBox.OnPointerClick(eventData);
+                        handled = true;
+                    }
+                }
+
+                // Strategy 2: Full click cycle via ExecuteEvents (standard Unity buttons).
+                // Uses pointerDown → pointerUp → pointerClick to better simulate real
+                // touch input. Some UI elements need the full cycle to trigger properly.
+                if (!handled)
+                {
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        item.Go, eventData,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        item.Go, eventData,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                    handled = UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        item.Go, eventData,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                }
+
+                // Strategy 3: Try On{GoName}Button() on the content ViewController.
                 // Many game screens wire world/map buttons to VC methods by convention.
                 // Always attempt this even if ExecuteEvents returned true — world buttons
                 // (Gate, Shop, Labo) have YgomButton children whose OnPointerClick only
@@ -1024,7 +1088,7 @@ namespace DuelLinksAccess
                 if (TryCallVcMethod(item.Go))
                     handled = true;
 
-                // Strategy 3: onClick.Invoke as last resort
+                // Strategy 4: onClick.Invoke as last resort
                 if (!handled)
                 {
                     var button = item.Go.GetComponent<Button>();
@@ -1332,6 +1396,17 @@ namespace DuelLinksAccess
                 var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
                 if (namedManager == null) return;
 
+                // Capture content VC name before attempting back navigation
+                // so we can detect if OnBackButton actually navigated.
+                string vcNameBefore = null;
+                Il2CppYgomSystem.UI.ViewControllerManager contentMgr;
+                if (namedManager.TryGetValue("content", out contentMgr) && contentMgr != null)
+                {
+                    var contentVc = contentMgr.GetStackTopViewController();
+                    if (contentVc?.gameObject != null)
+                        vcNameBefore = contentVc.gameObject.name;
+                }
+
                 // Try HeaderViewController.OnBackButton() first — this is the game's
                 // native back button handler and works even with TutorialArrow active.
                 Il2CppYgomSystem.UI.ViewControllerManager mgr;
@@ -1355,16 +1430,45 @@ namespace DuelLinksAccess
                             DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                                 "GoBack via HeaderViewController.OnBackButton()");
                             header.OnBackButton();
+
+                            // Check if the content VC actually changed.
+                            // Some screens (e.g. DeckSelect from pre-duel menu)
+                            // don't respond to OnBackButton — try their own OnBack().
+                            string vcNameAfter = null;
+                            if (contentMgr != null)
+                            {
+                                var afterVc = contentMgr.GetStackTopViewController();
+                                if (afterVc?.gameObject != null)
+                                    vcNameAfter = afterVc.gameObject.name;
+                            }
+
+                            if (vcNameBefore != null && vcNameBefore == vcNameAfter)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    $"OnBackButton did not navigate, trying content VC OnBack()");
+                                if (TryCallVcOnBack())
+                                {
+                                    ScreenReader.Say(Loc.Get("screen_back"));
+                                    return;
+                                }
+                            }
+
                             ScreenReader.Say(Loc.Get("screen_back"));
                             return;
                         }
                     }
                 }
 
-                // Fallback: SendBack on content VC
-                if (namedManager.TryGetValue("content", out mgr) && mgr != null)
+                // Fallback: content VC OnBack, then SendBack
+                if (TryCallVcOnBack())
                 {
-                    var topVc = mgr.GetStackTopViewController();
+                    ScreenReader.Say(Loc.Get("screen_back"));
+                    return;
+                }
+
+                if (contentMgr != null)
+                {
+                    var topVc = contentMgr.GetStackTopViewController();
                     if (topVc != null)
                     {
                         DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
@@ -1379,6 +1483,63 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"GoBack error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Tries to pop the content VC when OnBackButton didn't navigate.
+        /// First tries SendBack() on the content VC (base ViewController method),
+        /// then tries popVC() on the derived type (e.g. DeckSelectViewController).
+        /// </summary>
+        private bool TryCallVcOnBack()
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return false;
+
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("content", out mgr) || mgr == null)
+                    return false;
+
+                var topVc = mgr.GetStackTopViewController();
+                if (topVc?.gameObject == null) return false;
+
+                // Try SendBack first — standard VC back navigation
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    "GoBack fallback: trying content VC SendBack()");
+                topVc.SendBack();
+
+                // Check if SendBack worked
+                var afterVc = mgr.GetStackTopViewController();
+                string afterName = afterVc?.gameObject?.name;
+                if (afterName != topVc.gameObject.name)
+                    return true;
+
+                // SendBack didn't navigate — try popVC() on derived type
+                string vcGoName = topVc.gameObject.name;
+                var actualType = FindVcType(vcGoName);
+                if (actualType == null) return false;
+
+                var method = actualType.GetMethod("popVC",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    null, Type.EmptyTypes, null);
+                if (method == null) return false;
+
+                var ctor = actualType.GetConstructor(new[] { typeof(IntPtr) });
+                if (ctor == null) return false;
+
+                var castVc = ctor.Invoke(new object[] { topVc.Pointer });
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"GoBack fallback: calling {actualType.Name}.popVC()");
+                method.Invoke(castVc, null);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"TryCallVcOnBack error: {ex.Message}");
+                return false;
             }
         }
 

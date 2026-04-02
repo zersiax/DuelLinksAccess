@@ -91,6 +91,8 @@ namespace DuelLinksAccess
             _english["screen_dialog"] = "Dialog";
             _english["screen_card_detail"] = "Card detail";
             _english["screen_gate"] = "Gate";
+            _english["screen_store"] = "Store";
+            _english["screen_notices"] = "Notices";
             _english["no_repeat"] = "Nothing to repeat";
 
             // ===== DIALOGS =====

@@ -27,6 +27,8 @@ namespace DuelLinksAccess
             Dialog,
             CardDetail,
             Gate,
+            Store,
+            Notices,
             Other
         }
 
@@ -398,6 +400,15 @@ namespace DuelLinksAccess
             if (goName.Contains("Gate"))
                 return GameScreen.Gate;
 
+            if (goName == "Store")
+                return GameScreen.Store;
+
+            // HtjsonPage is the game's web-like content viewer used for login bonuses,
+            // notices, reward lists, and other server-driven content pages.
+            // Standby is the daily login bonus / standby screen.
+            if (goName == "HtjsonPage" || goName == "Standby")
+                return GameScreen.Notices;
+
             if (goName.Contains("Dialog") || goName.Contains("Confirm")
                 || goName.Contains("AgeVerification") || goName.Contains("Tutorial"))
                 return GameScreen.Dialog;
@@ -421,6 +432,8 @@ namespace DuelLinksAccess
                 GameScreen.Dialog => "screen_dialog",
                 GameScreen.CardDetail => "screen_card_detail",
                 GameScreen.Gate => "screen_gate",
+                GameScreen.Store => "screen_store",
+                GameScreen.Notices => "screen_notices",
                 _ => null
             };
         }

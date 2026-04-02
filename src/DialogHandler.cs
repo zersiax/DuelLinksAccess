@@ -133,8 +133,13 @@ namespace DuelLinksAccess
                     _scanAttempts++;
                     ScanDialog();
 
-                    // Retry if we found nothing in the dialog hierarchy
-                    if (_items.Count == 0 && !_textMode && _scanAttempts < 3)
+                    // TutorialArrowPart with no content: skip retries entirely.
+                    // These never have scannable items — retrying wastes 6 seconds.
+                    // Pass through immediately so the orphan handler can dismiss it.
+                    bool isTutorialArrowEmpty = _items.Count == 0 && !_textMode && IsTutorialArrowOnTop();
+
+                    // Retry if we found nothing — but not for empty TutorialArrows
+                    if (_items.Count == 0 && !_textMode && _scanAttempts < 3 && !isTutorialArrowEmpty)
                     {
                         MelonLogger.Msg($"[Dialog] No dialog items found, retrying in 2s (attempt {_scanAttempts})");
                         _scanDelay = 2.0f;
@@ -143,12 +148,9 @@ namespace DuelLinksAccess
                     {
                         _scanned = true;
 
-                        // TutorialArrowPart with no content after all retries:
-                        // let other handlers take over (HandleOrphanedTutorialArrow
-                        // + ScreenButtonHandler for the underlying screen)
-                        if (_items.Count == 0 && !_textMode && IsTutorialArrowOnTop())
+                        if (isTutorialArrowEmpty)
                         {
-                            MelonLogger.Msg("[Dialog] TutorialArrowPart has no content, passing through to other handlers");
+                            MelonLogger.Msg("[Dialog] TutorialArrowPart has no content, passing through immediately");
                             _passthrough = true;
                             // Tell GameStateTracker to skip this arrow so the screen
                             // reclassifies from Dialog to the content VC (e.g. Home).
@@ -811,17 +813,62 @@ namespace DuelLinksAccess
                 if (TryActivateSpecialDialog(item))
                     return;
 
-                // Try Button.onClick.Invoke() first — works for runtime-added
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+
+                // Strategy 1: Htjson ButtonWidget — fire full click cycle on its YgomButton
+                bool activated = false;
+                var buttonWidget = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>();
+                if (buttonWidget != null)
+                {
+                    var ygomBtn = buttonWidget.button;
+                    if (ygomBtn != null && ygomBtn.gameObject != null)
+                    {
+                        MelonLogger.Msg($"[Dialog] Htjson ButtonWidget, clicking YgomButton on {ygomBtn.gameObject.name}");
+                        var btnGo = ygomBtn.gameObject;
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            btnGo, eventData,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            btnGo, eventData,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            btnGo, eventData,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                        activated = true;
+                    }
+                }
+
+                // Strategy 2: Htjson CheckBoxWidget — OnPointerClick dispatches to receiver
+                if (!activated)
+                {
+                    var checkBox = item.Go.GetComponent<Il2CppYgomSystem.Htjson.CheckBoxWidget>();
+                    if (checkBox != null)
+                    {
+                        MelonLogger.Msg($"[Dialog] Htjson CheckBoxWidget on {item.Go.name}");
+                        checkBox.OnPointerClick(eventData);
+                        activated = true;
+                    }
+                }
+
+                // Strategy 3: Button.onClick.Invoke — works for runtime-added
                 // listeners (Htjson buttons) where ExecuteEvents fails
-                if (btn != null)
+                if (!activated && btn != null)
                 {
                     MelonLogger.Msg($"[Dialog] Using Button.onClick.Invoke()");
                     btn.onClick.Invoke();
+                    activated = true;
                 }
-                else
+
+                // Strategy 4: Full click cycle via ExecuteEvents as fallback
+                if (!activated)
                 {
-                    var eventData = new UnityEngine.EventSystems.PointerEventData(
-                        UnityEngine.EventSystems.EventSystem.current);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        item.Go, eventData,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        item.Go, eventData,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
                     UnityEngine.EventSystems.ExecuteEvents.Execute(
                         item.Go, eventData,
                         UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
