@@ -73,7 +73,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Tab and Shift Tab cycle zones. Left right navigate cards. Enter open actions. C re-read card. F field summary. P advance phase. S status. L event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. Control S save. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Tab and Shift Tab cycle zones. Left right navigate cards. Enter open actions. C re-read card. F field summary. P advance phase. S status. L event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
             _english["debug_mode"] = "Debug mode {0}";
 
             // ===== SETTINGS =====
@@ -246,6 +246,17 @@ namespace DuelLinksAccess
             _english["duel_card_selected"] = "Selected";
             _english["duel_card_select_cancelled"] = "Selection cancelled";
 
+            // ===== DUEL: EMOTIONAL LIST (card list selection) =====
+            _english["duel_emo_list_single"] = "Select a card. {0} choices. Left right to navigate, Enter to select.";
+            _english["duel_emo_list_multi"] = "Select cards. {0} choices, pick up to {1}. Left right to navigate, Enter to select.";
+            _english["duel_action_cancelled"] = "Cancelled";
+            _english["duel_cannot_cancel"] = "Cannot cancel";
+
+            // ===== DUEL: BATTLE POSITION =====
+            _english["duel_battle_position"] = "Choose position. Enter or 1 for Attack, 2 for Defense, Escape to cancel.";
+            _english["duel_atk_position"] = "Attack position";
+            _english["duel_def_position"] = "Defense position";
+
             // ===== DUEL: YES/NO DIALOG =====
             _english["duel_yesno_prompt"] = "{0} Enter for Yes, Escape for No.";
             _english["duel_yesno_generic"] = "Confirm? Enter for Yes, Escape for No.";
@@ -292,6 +303,46 @@ namespace DuelLinksAccess
             _english["duel_log_empty"] = "Event log is empty";
             _english["duel_log_opened"] = "Event log. {0} entries. Up down to browse, Escape to close.";
             _english["duel_log_closed"] = "Event log closed";
+
+            // ===== SHOP =====
+            _english["shop_entered"] = "Shop. {0}. {1}, {2} items. Tab to switch categories.";
+            _english["shop_entered_empty"] = "Shop. {0}. Loading items.";
+            _english["shop_category"] = "{0}, {1} items";
+            _english["shop_item_position"] = "{0} of {1}: {2}";
+            _english["shop_gems"] = "Gems";
+            _english["shop_crystals"] = "Crystals";
+            _english["shop_balance_unknown"] = "Balance unknown";
+            _english["shop_bonus"] = "bonus";
+            _english["shop_no_items"] = "No items in this category";
+            _english["shop_unknown_item"] = "Unknown item";
+            _english["shop_item_loading"] = "Loading";
+            _english["shop_item_sold_out"] = "Sold out";
+            _english["shop_item_sale"] = "On sale";
+            _english["shop_item_sale_date"] = "Sale ends {0}";
+            _english["shop_item_limit"] = "Limit: {0}";
+            _english["shop_activate_error"] = "Could not activate item";
+            _english["shop_card_pack"] = "Card Pack";
+            _english["shop_remaining"] = "{0} remaining";
+            _english["shop_packs_label"] = "packs";
+            _english["shop_contains_cards"] = "{0} cards included";
+            _english["shop_category_cards"] = "Card Packs";
+            _english["shop_category_structure"] = "Structure Decks";
+            _english["shop_category_etc"] = "Other Items";
+            _english["shop_category_bundle"] = "Bundles";
+            _english["shop_category_dpass"] = "Duel Pass";
+            _english["shop_category_accessories"] = "Accessories";
+            _english["shop_category_homebg"] = "Home Backgrounds";
+
+            // ===== TICKET EXCHANGE =====
+            _english["screen_ticket_exchange"] = "Ticket Exchange";
+            _english["ticket_entered"] = "Ticket Exchange. {0} cards available. Left right to browse, Enter to select.";
+            _english["ticket_card_position"] = "{0} of {1}: {2}";
+            _english["ticket_count"] = "{0} tickets remaining";
+            _english["ticket_no_cards"] = "No cards available for exchange";
+            _english["ticket_selected"] = "{0} selected";
+            _english["ticket_deselected"] = "{0} deselected";
+            _english["ticket_exchange_confirm"] = "Exchange confirmed";
+            _english["ticket_activate_error"] = "Could not complete exchange";
         }
 
         #endregion

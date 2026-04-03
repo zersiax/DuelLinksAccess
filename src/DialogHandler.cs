@@ -912,6 +912,34 @@ namespace DuelLinksAccess
                     }
                     MelonLogger.Msg("[Dialog] PolicySettingsDialogVC not found in stack, falling back to click");
                 }
+
+                // ConfirmDialogViewController (ticket exchange, card trader, etc.)
+                // Both "btn" GOs share the same onClick handler, so Button.onClick.Invoke()
+                // always triggers YES/TRADE. We need OnClickedNo() / OnClickedYes() directly.
+                var confirmVc = FindVcInStack<
+                    Il2CppYgomGame.Menu.ConfirmDialogViewController>("dialog");
+                if (confirmVc != null)
+                {
+                    // Determine which button by label
+                    string label = item.Label?.ToUpperInvariant() ?? "";
+                    if (label == "NO" || label == "CANCEL" || label == "CLOSE"
+                        || label == "いいえ" || label == "キャンセル")
+                    {
+                        MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedNo()");
+                        confirmVc.OnClickedNo();
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    else if (label == "TRADE" || label == "YES" || label == "OK"
+                        || label == "EXCHANGE" || label == "CONFIRM"
+                        || label == "はい" || label == "交換")
+                    {
+                        MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedYes()");
+                        confirmVc.OnClickedYes();
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                }
             }
             catch (Exception ex)
             {

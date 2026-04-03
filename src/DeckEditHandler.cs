@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using MelonLoader;
 using UnityEngine;
 using Il2CppYgomGame.Deck;
-using Il2CppYgomGame.Card;
 
 namespace DuelLinksAccess
 {
@@ -743,132 +742,32 @@ namespace DuelLinksAccess
         #region Card Formatting
 
         /// <summary>
-        /// Compact card announcement: name, type info, stats.
+        /// Compact card announcement via shared CardFormatter.
         /// </summary>
-        private string FormatCardCompact(int mrk)
-        {
-            try
-            {
-                var content = Content.Instance;
-                if (content == null) return GetCardName(mrk);
-
-                string name = content.GetName(mrk) ?? Loc.Get("duel_unknown_card");
-                var kind = content.GetKind(mrk);
-
-                // Check if it's a monster (has ATK/DEF)
-                if (IsMonsterKind(kind))
-                {
-                    var attr = content.GetAttr(mrk);
-                    var type = content.GetType(mrk);
-                    int level = content.GetLevel(mrk);
-                    int atk = content.GetAtk(mrk);
-                    int def = content.GetDef2(mrk);
-
-                    string attrText = content.GetAttributeText(attr);
-                    string typeText = content.GetTypeText(type);
-                    string kindText = content.GetKindText(kind);
-                    string lvLabel = GetLevelLabel(mrk, content);
-
-                    // "Dark Magician, Dark Spellcaster, Level 7, ATK 2500 DEF 2100"
-                    return $"{name}, {attrText} {typeText} {kindText}, {lvLabel} {level}, ATK {atk} DEF {def}";
-                }
-                else
-                {
-                    // Spell or Trap
-                    var icon = content.GetIcon(mrk);
-                    string kindText = content.GetKindText(kind);
-
-                    if (icon != Content.Icon.Null)
-                    {
-                        string iconText = content.GetIconText(icon);
-                        return $"{name}, {iconText} {kindText}";
-                    }
-
-                    return $"{name}, {kindText}";
-                }
-            }
-            catch (Exception ex)
-            {
-                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
-                    $"FormatCardCompact error for mrk={mrk}: {ex.Message}");
-                return GetCardName(mrk);
-            }
-        }
+        private string FormatCardCompact(int mrk) => CardFormatter.FormatCompact(mrk);
 
         /// <summary>
         /// Verbose card announcement: compact info + description + deck/owned counts.
         /// </summary>
         private string FormatCardVerbose(int mrk)
         {
-            string compact = FormatCardCompact(mrk);
+            string verbose = CardFormatter.FormatVerbose(mrk);
 
-            try
+            // In collection zone, append deck ownership info
+            if (_currentZone == Zone.Collection && _vc != null)
             {
-                var content = Content.Instance;
-                string desc = content?.GetDesc(mrk);
-
-                var parts = new List<string> { compact };
-
-                if (!string.IsNullOrEmpty(desc))
-                    parts.Add(desc);
-
-                // In collection zone, show deck/ownership info
-                if (_currentZone == Zone.Collection && _vc != null)
+                try
                 {
-                    try
-                    {
-                        int inDeck = _vc.GetNumForDeck(mrk, 0);
-                        parts.Add(Loc.Get("deck_card_in_deck", inDeck));
-                    }
-                    catch { }
+                    int inDeck = _vc.GetNumForDeck(mrk, 0);
+                    verbose += ". " + Loc.Get("deck_card_in_deck", inDeck);
                 }
+                catch { }
+            }
 
-                return string.Join(". ", parts);
-            }
-            catch
-            {
-                return compact;
-            }
+            return verbose;
         }
 
-        /// <summary>
-        /// Gets the level/rank label based on the card's LvType.
-        /// </summary>
-        private string GetLevelLabel(int mrk, Content content)
-        {
-            try
-            {
-                // Use DLL static method as a safe fallback since Property struct
-                // invocations through IL2CPP can be unreliable
-                int lvTypeInt = Content.DLL_CardGetLevel(mrk);
-                // Note: we can't easily get LvType from the instance methods alone,
-                // so we'll default to "Level" which covers most cards in Duel Links
-            }
-            catch { }
-
-            return Loc.Get("deck_level");
-        }
-
-        /// <summary>
-        /// Checks if a Content.Kind value represents a monster card.
-        /// </summary>
-        private bool IsMonsterKind(Content.Kind kind)
-        {
-            return kind != Content.Kind.Magic
-                && kind != Content.Kind.Trap;
-        }
-
-        private string GetCardName(int mrk)
-        {
-            try
-            {
-                return Content.Instance?.GetName(mrk) ?? Loc.Get("duel_unknown_card");
-            }
-            catch
-            {
-                return Loc.Get("duel_unknown_card");
-            }
-        }
+        private string GetCardName(int mrk) => CardFormatter.GetName(mrk);
 
         private string GetZoneName()
         {

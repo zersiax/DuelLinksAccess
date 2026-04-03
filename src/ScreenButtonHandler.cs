@@ -192,8 +192,21 @@ namespace DuelLinksAccess
                         {
                             var vc = contentMgr?.GetStackTopViewController();
                             if (vc != null)
+                            {
                                 MelonLoader.MelonLogger.Msg(
                                     $"[ScreenBtn][Type] {_screenRoot.name} -> VC type: {vc.GetType()?.Name}");
+
+                                // Dump VC Args for Htjson screens in debug mode
+                                if (Main.DebugMode && vc.Args != null)
+                                {
+                                    string goName = _screenRoot.name;
+                                    if (goName == "GiftTicket" || goName.Contains("Shop")
+                                        || goName == "HtjsonPage")
+                                    {
+                                        DumpArgsToLog(goName, vc.Args);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -357,6 +370,15 @@ namespace DuelLinksAccess
                         $"Filter: removing numeric \"{item.Label}\" ({item.Go.name})");
                     return true;
                 }
+
+                // Remove Htjson TextArea elements with placeholder text ("ああああ...")
+                if (item.Go.name == "TextArea" && LabelExtractor.IsPlaceholderText(item.Label))
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Filter: removing placeholder TextArea");
+                    return true;
+                }
+
                 return false;
             });
         }

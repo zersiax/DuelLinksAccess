@@ -123,6 +123,12 @@ namespace DuelLinksAccess
         private readonly List<int> _selectLocations = new();
         private int _selectIndex;
 
+        // EmotionalList state (chain, graveyard pick, discard, deck search, etc.)
+        private bool _inEmotionalList;
+        private int _emoListIndex;
+        private int _emoListCount;
+        private bool _emoListHandled;
+
         /// <summary>Stores a command entry for the accessible action menu.</summary>
         private struct CommandInfo
         {
@@ -142,6 +148,9 @@ namespace DuelLinksAccess
 
         /// <summary>Whether card selection mode is active (e.g., picking tributes).</summary>
         public bool InCardSelect => _inCardSelect;
+
+        /// <summary>Whether EmotionalList selection is active (chain, grave pick, etc.).</summary>
+        public bool InEmotionalList => _inEmotionalList;
 
         /// <summary>Whether the user has started field navigation.</summary>
         public bool IsNavigating => _isNavigating;
@@ -215,16 +224,21 @@ namespace DuelLinksAccess
         /// </summary>
         public bool ProcessInput()
         {
-            // Card selection (tribute/material) takes highest priority
+            // EmotionalList already active — handle first
+            if (_inEmotionalList)
+                return ProcessEmotionalListInput();
+            // Card selection (tribute/material) takes highest priority for detection
             if (_inCardSelect)
                 return ProcessCardSelectInput();
-            // Check if card selection just opened (even if we weren't in it yet)
             if (CheckForCardSelection())
                 return ProcessCardSelectInput();
             if (_awaitingTarget)
                 return ProcessTargetSelectionInput();
             if (_inActionMenu)
                 return ProcessActionMenuInput();
+            // Detect EmotionalList only after ruling out other selection modes
+            if (CheckForEmotionalList())
+                return ProcessEmotionalListInput();
             return ProcessNavigationInput();
         }
 
@@ -979,10 +993,36 @@ namespace DuelLinksAccess
                     DumpCardSelectionState();
                 TapFieldCard(client, player, locate, slotIndex);
             }
+            else if (IsDirectCommand(cmdType))
+            {
+                // Position changes etc.: execute via OnDoCardCommand directly
+                var worker = client.worker2d;
+                if (worker != null)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"Direct command: OnDoCardCommand({cmdType}) for ({player}, {locate}, {slotIndex})");
+                    worker.OnDoCardCommand(player, locate, slotIndex, cmdType);
+                }
+            }
             else
             {
-                TapCardForZone(client, player, locate, slotIndex);
-                MelonCoroutines.Start(AutoClickCommandButton(cmdType));
+                // During CheckChain, OnTapLocator doesn't create a CardCommand popup.
+                // Use OnDoCardCommand directly to execute the selected action.
+                var worker = client.worker2d;
+                var inputType = Il2CppYgomGame.Duel.Engine.MenuActType.Null;
+                try { inputType = worker?.curInputType ?? inputType; } catch { }
+
+                if (inputType == Il2CppYgomGame.Duel.Engine.MenuActType.CheckChain)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"CheckChain: using OnDoCardCommand({cmdType}) for ({player}, {locate}, {slotIndex})");
+                    worker.OnDoCardCommand(player, locate, slotIndex, cmdType);
+                }
+                else
+                {
+                    TapCardForZone(client, player, locate, slotIndex);
+                    MelonCoroutines.Start(AutoClickCommandButton(cmdType));
+                }
             }
         }
 
@@ -1002,6 +1042,16 @@ namespace DuelLinksAccess
         private static bool IsTapOnlyCommand(Il2CppYgomGame.Duel.Engine.CommandType cmd)
         {
             return cmd == Il2CppYgomGame.Duel.Engine.CommandType.Decide;
+        }
+
+        /// <summary>
+        /// Commands that can be executed directly via OnDoCardCommand without
+        /// needing the CardCommand popup UI (position changes, etc.).
+        /// </summary>
+        private static bool IsDirectCommand(Il2CppYgomGame.Duel.Engine.CommandType cmd)
+        {
+            return cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnAtk
+                || cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnDef;
         }
 
         /// <summary>
@@ -1223,6 +1273,285 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
                     $"  LogAttackState error: {ex.Message}");
             }
+        }
+
+        #endregion
+
+        #region EmotionalList (Chain / Graveyard / Discard / Deck Search)
+
+        /// <summary>
+        /// Checks whether the game's EmotionalList is actively presenting a card selection.
+        /// </summary>
+        public bool CheckForEmotionalList()
+        {
+            if (_inEmotionalList) return true;
+            if (_emoListHandled) return false;
+
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList == null) return false;
+
+                bool goActive = false;
+                bool isClosing = false;
+                int selectMax = 0;
+
+                try { var go = emoList.gameObject; goActive = go != null && go.activeInHierarchy; } catch { }
+                try { isClosing = emoList.isClosing; } catch { }
+                try { selectMax = emoList.selectMaxNum; } catch { }
+
+                // Active selection: visible, not closing, and game expects a pick
+                if (!goActive || isClosing || selectMax <= 0)
+                {
+                    // Reset handled flag when list becomes inactive
+                    if (_emoListHandled && (!goActive || selectMax <= 0))
+                        _emoListHandled = false;
+                    return false;
+                }
+
+                var items = emoList.itemList;
+                if (items == null || items.Count == 0) return false;
+
+                EnterEmotionalList(emoList);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"EmotionalList check error: {ex.Message}");
+                return false;
+            }
+        }
+
+        private void EnterEmotionalList(Il2CppYgomGame.Duel.EmotionalList emoList)
+        {
+            _inEmotionalList = true;
+            _emoListIndex = 0;
+
+            var items = emoList.itemList;
+            _emoListCount = items?.Count ?? 0;
+
+            int selectMax = 0;
+            try { selectMax = emoList.selectMaxNum; } catch { }
+
+            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                $"EmotionalList: entered with {_emoListCount} items, selectMax={selectMax}");
+
+            string prompt = selectMax > 1
+                ? Loc.Get("duel_emo_list_multi", _emoListCount, selectMax)
+                : Loc.Get("duel_emo_list_single", _emoListCount);
+
+            ScreenReader.Say(prompt);
+
+            if (_emoListCount > 0)
+                ReadEmotionalListCard(0);
+        }
+
+        private bool ProcessEmotionalListInput()
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList == null)
+                {
+                    _inEmotionalList = false;
+                    return false;
+                }
+
+                bool goActive = false;
+                bool isClosing = false;
+                int selectMax = 0;
+                try { var go = emoList.gameObject; goActive = go != null && go.activeInHierarchy; } catch { }
+                try { isClosing = emoList.isClosing; } catch { }
+                try { selectMax = emoList.selectMaxNum; } catch { }
+
+                if (!goActive || isClosing || selectMax <= 0)
+                {
+                    _inEmotionalList = false;
+                    _emoListHandled = false;
+                    return false;
+                }
+
+                _emoListCount = emoList.itemList?.Count ?? 0;
+            }
+            catch
+            {
+                _inEmotionalList = false;
+                return false;
+            }
+
+            if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow))
+            {
+                if (_emoListCount > 0)
+                {
+                    _emoListIndex = (_emoListIndex - 1 + _emoListCount) % _emoListCount;
+                    SelectEmotionalListCard(_emoListIndex);
+                    ReadEmotionalListCard(_emoListIndex);
+                }
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.RightArrow))
+            {
+                if (_emoListCount > 0)
+                {
+                    _emoListIndex = (_emoListIndex + 1) % _emoListCount;
+                    SelectEmotionalListCard(_emoListIndex);
+                    ReadEmotionalListCard(_emoListIndex);
+                }
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return))
+            {
+                ConfirmEmotionalList();
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
+            {
+                CancelEmotionalList();
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            {
+                if (_emoListCount > 0)
+                    ReadEmotionalListCard(_emoListIndex);
+                return true;
+            }
+            return false;
+        }
+
+        private void SelectEmotionalListCard(int index)
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                emoList?.SelectIndex(index, false);
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"SelectEmotionalListCard error: {ex.Message}");
+            }
+        }
+
+        private void ReadEmotionalListCard(int index)
+        {
+            if (index < 0 || index >= _emoListCount) return;
+
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList == null) return;
+
+                var items = emoList.itemList;
+                if (items == null || index >= items.Count) return;
+
+                var item = items[index];
+                if (item == null)
+                {
+                    ScreenReader.Say(Loc.Get("duel_card_select_item",
+                        index + 1, _emoListCount, Loc.Get("duel_unknown_card")));
+                    return;
+                }
+
+                int mixedId = item.mixedId;
+                int uid = 0;
+                try { uid = item.uniqueId; } catch { }
+
+                MelonLoader.MelonLogger.Msg(
+                    $"[FieldNav] EmoCard[{index}]: mixedId={mixedId} uniqueId={uid}");
+
+                string cardName = null;
+
+                // uniqueId → engine card ID (most reliable during duels)
+                if (uid > 0)
+                {
+                    try
+                    {
+                        uint cardDbId = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid);
+                        if (cardDbId > 0 && cardDbId < 100000)
+                            cardName = ResolveCardName(cardDbId);
+                    }
+                    catch { }
+                }
+
+                // Fallback: mixedId as card database ID
+                if (string.IsNullOrEmpty(cardName) || cardName == Loc.Get("duel_unknown_card"))
+                {
+                    if (mixedId > 0 && mixedId < 100000)
+                        cardName = ResolveCardName((uint)mixedId);
+                }
+
+                string info = cardName ?? Loc.Get("duel_unknown_card");
+                try
+                {
+                    var bv = item.basicVal;
+                    if (bv.Atk >= 0 && bv.Atk < 100000)
+                        info += $", ATK {bv.Atk}, DEF {bv.Def}";
+                }
+                catch { }
+
+                ScreenReader.Say(Loc.Get("duel_card_select_item",
+                    index + 1, _emoListCount, info));
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"ReadEmotionalListCard error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("duel_card_select_item",
+                    index + 1, _emoListCount, Loc.Get("duel_unknown_card")));
+            }
+        }
+
+        private void ConfirmEmotionalList()
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList == null)
+                {
+                    ScreenReader.Say(Loc.Get("duel_action_error"));
+                    _inEmotionalList = false;
+                    return;
+                }
+
+                emoList.SelectIndex(_emoListIndex, false);
+                emoList.OnDecide();
+                ScreenReader.Say(Loc.Get("duel_card_selected"));
+
+                _inEmotionalList = false;
+                _emoListHandled = true;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"ConfirmEmotionalList error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("duel_action_error"));
+            }
+        }
+
+        private void CancelEmotionalList()
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList != null && emoList.cancelable)
+                {
+                    emoList.OnCancel();
+                    ScreenReader.Say(Loc.Get("duel_action_cancelled"));
+                }
+                else
+                {
+                    ScreenReader.Say(Loc.Get("duel_cannot_cancel"));
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"CancelEmotionalList error: {ex.Message}");
+            }
+
+            _inEmotionalList = false;
+            _emoListHandled = true;
         }
 
         #endregion
@@ -1456,41 +1785,29 @@ namespace DuelLinksAccess
                 int player = Il2CppYgomGame.Duel.SelectCardLocation.LocationToPlayer(location);
                 int position = Il2CppYgomGame.Duel.SelectCardLocation.LocationToPosition(location);
 
-                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"ResolveCard: loc={location} (0x{location:X}) -> player={player} pos={position} (0x{position:X})");
+                // Always log raw values for debugging tribute/selection issues
+                MelonLoader.MelonLogger.Msg(
+                    $"[FieldNav] ResolveCard: loc={location} (0x{location:X}) -> player={player} pos={position} (0x{position:X})");
 
-                // Try to get card using position as zone type with slot 0
-                // If the location list has multiple entries for the same zone,
-                // we try each slot index to find a match
+                // Try position as direct field locate with slot 0
                 string name = TryGetCardName(player, position, 0);
                 if (name != null) return name;
 
-                // Scan field locate range and multi-card zones
-                int[] stackZones = { LocateHand, LocateGrave, LocateDeck };
-                // Field slots (each holds 0 or 1 card at slot 0)
+                // Position might encode a slot index for multi-card zones (hand, grave).
+                // For hand cards: locate=13, slot=position value
+                // For field cards: the locate IS the position (2,3,4 for monsters, 9,10,11 for spells)
+                if (position >= 0 && position < 10)
+                {
+                    // Try as hand slot
+                    name = TryGetCardName(player, LocateHand, position);
+                    if (name != null) return name;
+                }
+
+                // Scan field monster and spell zones
                 for (int loc = FieldLocateMin; loc <= FieldLocateMax; loc++)
                 {
                     name = TryGetCardName(player, loc, 0);
-                    if (name != null)
-                    {
-                        DebugLogger.Log(LogCategory.Game, "FieldNav",
-                            $"ResolveCard: found card at player={player} locate={loc} slot=0");
-                        return name;
-                    }
-                }
-                // Stack zones (multi-card)
-                foreach (int zone in stackZones)
-                {
-                    for (int slot = 0; slot < 10; slot++)
-                    {
-                        name = TryGetCardName(player, zone, slot);
-                        if (name != null)
-                        {
-                            DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                $"ResolveCard: found card at player={player} zone={zone} slot={slot}");
-                            return name;
-                        }
-                    }
+                    if (name != null) return name;
                 }
 
                 // Fallback: describe the position

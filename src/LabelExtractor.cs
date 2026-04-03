@@ -44,19 +44,27 @@ namespace DuelLinksAccess
             result = TryPullDownEntry(go);
             if (result != null) return result;
 
-            // 4. Child YgomTextAccessor components
+            // 4. HtjsonNode replaceParam — Htjson pages store content in dictionaries
+            result = TryHtjsonNodeData(go);
+            if (result != null) return result;
+
+            // 5. ButtonSet → sibling TextArea association
+            result = TryButtonSetSiblingText(go);
+            if (result != null) return result;
+
+            // 6. Child YgomTextAccessor components
             result = TryChildYgomTextAccessors(go);
             if (result != null) return result;
 
-            // 5. Child Unity Text components
+            // 7. Child Unity Text components
             result = TryChildUnityText(go);
             if (result != null) return result;
 
-            // 6. Parent/sibling text — button may have its label nearby
+            // 8. Parent/sibling text — button may have its label nearby
             result = TryParentSiblingText(go);
             if (result != null) return result;
 
-            // 7. Cleaned-up GO name as last resort
+            // 9. Cleaned-up GO name as last resort
             return CleanGoName(go.name);
         }
 
@@ -532,6 +540,409 @@ namespace DuelLinksAccess
         /// Some buttons have their label in a sibling Text element rather than
         /// as a child. Walks up 1-2 parents and checks siblings.
         /// </summary>
+        /// <summary>
+        /// Strategy 4: HtjsonNode data — reads replaceParam dictionary for content keys.
+        /// Htjson pages (ShopLineup, GiftTicket, etc.) store actual content in
+        /// HtjsonNode dictionaries rather than in standard Text components.
+        /// </summary>
+        private static string TryHtjsonNodeData(GameObject go)
+        {
+            try
+            {
+                // Check the GO and up to 2 parent levels for HtjsonNode
+                var current = go.transform;
+                int depth = 0;
+                while (current != null && depth < 3)
+                {
+                    var node = current.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>();
+                    if (node != null)
+                    {
+                        var dict = node.replaceParam;
+                        if (dict != null)
+                        {
+                            // Try common content keys
+                            string[] keys = { "title", "name", "label", "text", "summary",
+                                              "header", "desc", "caption", "content", "item_name" };
+                            foreach (var key in keys)
+                            {
+                                try
+                                {
+                                    Il2CppSystem.Object val;
+                                    if (dict.TryGetValue(key, out val) && val != null)
+                                    {
+                                        string text = val.ToString();
+                                        if (IsValidLabel(text) && !IsPlaceholderText(text))
+                                        {
+                                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                                $"HtjsonNode replaceParam[{key}]=\"{text}\" on {go.name}");
+                                            return StripRichText(text);
+                                        }
+                                    }
+                                }
+                                catch { }
+                            }
+
+                            // Try %iid% — card/item ID that can be resolved to a name
+                            try
+                            {
+                                Il2CppSystem.Object iidVal;
+                                if (dict.TryGetValue("%iid%", out iidVal) && iidVal != null)
+                                {
+                                    string iidStr = iidVal.ToString();
+                                    if (int.TryParse(iidStr, out int iid) && iid > 0)
+                                    {
+                                        string cardName = CardFormatter.GetName(iid);
+                                        if (IsValidLabel(cardName) && cardName != Loc.Get("duel_unknown_card"))
+                                        {
+                                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                                $"Card name from %%iid%%={iid}: \"{cardName}\" on {go.name}");
+                                            return cardName;
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            // Try %datapath% — query ClientWork data store for item name
+                            try
+                            {
+                                Il2CppSystem.Object dpVal;
+                                if (dict.TryGetValue("%datapath%", out dpVal) && dpVal != null)
+                                {
+                                    string dataPath = dpVal.ToString();
+                                    if (!string.IsNullOrEmpty(dataPath))
+                                    {
+                                        string found = TryClientWorkName(dataPath, go.name);
+                                        if (found != null) return found;
+
+                                        // Fallback: try product path lookup for items with empty titles
+                                        Il2CppSystem.Object ppVal;
+                                        Il2CppSystem.Object dnVal;
+                                        if (dict.TryGetValue("%productpath%", out ppVal) && ppVal != null
+                                            && dict.TryGetValue("%dataname%", out dnVal) && dnVal != null)
+                                        {
+                                            string productPath = ppVal.ToString() + "." + dnVal.ToString();
+                                            found = TryClientWorkName(productPath, go.name);
+                                            if (found != null) return found;
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            // Debug: dump all keys when in debug mode to help discover content
+                            if (Main.DebugMode)
+                            {
+                                try
+                                {
+                                    var enumerator = dict.GetEnumerator();
+                                    var keyList = new List<string>();
+                                    while (enumerator.MoveNext())
+                                    {
+                                        var entry = enumerator.Current;
+                                        string k = entry.Key;
+                                        string v = entry.Value?.ToString() ?? "null";
+                                        if (v.Length > 60) v = v.Substring(0, 60) + "...";
+                                        keyList.Add($"{k}={v}");
+                                    }
+                                    if (keyList.Count > 0)
+                                    {
+                                        DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                            $"HtjsonNode on {go.name}: [{string.Join(", ", keyList)}]");
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                    }
+                    current = current.parent;
+                    depth++;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Strategy 5: ButtonSet → sibling TextArea association.
+        /// On Htjson pages, a ButtonSet element is paired with a sibling TextArea
+        /// that contains the item label. Checks the previous sibling for text content.
+        /// </summary>
+        private static string TryButtonSetSiblingText(GameObject go)
+        {
+            try
+            {
+                // Only apply to elements named "ButtonSet" or "btn" that lack labels
+                string goName = go.name;
+                if (goName != "ButtonSet" && goName != "btn" && goName != "card") return null;
+
+                var parent = go.transform.parent;
+                if (parent == null) return null;
+
+                // Find this GO's sibling index
+                int myIndex = go.transform.GetSiblingIndex();
+
+                // Check the previous sibling for text (TextArea typically comes before ButtonSet)
+                if (myIndex > 0)
+                {
+                    var prevSibling = parent.GetChild(myIndex - 1);
+                    if (prevSibling != null)
+                    {
+                        string text = ExtractTextFromTransform(prevSibling);
+                        if (text != null && !IsPlaceholderText(text))
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                $"ButtonSet sibling text: \"{text}\" from {prevSibling.name}");
+                            return text;
+                        }
+                    }
+                }
+
+                // Also check next sibling
+                if (myIndex < parent.childCount - 1)
+                {
+                    var nextSibling = parent.GetChild(myIndex + 1);
+                    if (nextSibling != null)
+                    {
+                        string text = ExtractTextFromTransform(nextSibling);
+                        if (text != null && !IsPlaceholderText(text))
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                $"ButtonSet sibling text: \"{text}\" from {nextSibling.name}");
+                            return text;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Extracts text from a transform by checking its Text/YgomTextAccessor components.
+        /// </summary>
+        private static string ExtractTextFromTransform(Transform t)
+        {
+            try
+            {
+                // Check YgomTextAccessor
+                var yta = t.GetComponent<Il2CppYgomSystem.UI.YgomTextAccessor>();
+                if (yta != null)
+                {
+                    string text = StripRichText(yta.text);
+                    if (IsValidLabel(text)) return text;
+                }
+
+                // Check Text component
+                var textComp = t.GetComponent<Text>();
+                if (textComp != null)
+                {
+                    string text = StripRichText(textComp.text);
+                    if (IsValidLabel(text)) return text;
+                }
+
+                // Check children
+                var childTexts = t.GetComponentsInChildren<Text>(false);
+                if (childTexts != null)
+                {
+                    foreach (var ct in childTexts)
+                    {
+                        if (ct == null) continue;
+                        string text = StripRichText(ct.text);
+                        if (IsValidLabel(text)) return text;
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Checks if a string is placeholder text (e.g., Japanese "ああああ" placeholders).
+        /// </summary>
+        /// <summary>
+        /// Tries to resolve a name from ClientWork data store at the given path.
+        /// Checks common name keys (title, name, headline, summary).
+        /// In debug mode, dumps the full data dictionary for unknown items.
+        /// </summary>
+        private static string TryClientWorkName(string dataPath, string goName)
+        {
+            // Debug: dump keys when in debug mode (helps discover new data fields)
+            if (Main.DebugMode)
+            {
+                try
+                {
+                    var obj = Il2CppYgomSystem.Utility.ClientWork.getByJsonPath(dataPath);
+                    if (obj != null)
+                    {
+                        var dataDict = obj.TryCast<Il2CppSystem.Collections.Generic
+                            .Dictionary<string, Il2CppSystem.Object>>();
+                        if (dataDict != null)
+                        {
+                            var keyList = new List<string>();
+                            var enumerator = dataDict.GetEnumerator();
+                            while (enumerator.MoveNext())
+                            {
+                                var entry = enumerator.Current;
+                                string k = entry.Key;
+                                var valObj = entry.Value;
+                                string v = valObj?.ToString() ?? "null";
+
+                                // Recursively dump sub-dictionaries (footer, icon)
+                                if (v.Contains("Dictionary"))
+                                {
+                                    try
+                                    {
+                                        var subDict = valObj?.TryCast<Il2CppSystem.Collections.Generic
+                                            .Dictionary<string, Il2CppSystem.Object>>();
+                                        if (subDict != null)
+                                        {
+                                            var subKeys = new List<string>();
+                                            var subEnum = subDict.GetEnumerator();
+                                            while (subEnum.MoveNext())
+                                            {
+                                                var se = subEnum.Current;
+                                                string sv = se.Value?.ToString() ?? "null";
+                                                if (sv.Length > 150) sv = sv.Substring(0, 150) + "...";
+                                                subKeys.Add($"{se.Key}={sv}");
+                                            }
+                                            v = "{" + string.Join(", ", subKeys) + "}";
+                                        }
+                                    }
+                                    catch { }
+                                }
+
+                                if (v.Length > 200) v = v.Substring(0, 200) + "...";
+                                keyList.Add($"{k}={v}");
+                            }
+                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                $"[CW-DUMP] {dataPath}: [{string.Join(", ", keyList)}]");
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // Build composite label from available fields
+            var parts = new List<string>();
+
+            // Primary name: title or headline
+            string[] primaryKeys = { "title", "name", "headline" };
+            foreach (var key in primaryKeys)
+            {
+                try
+                {
+                    string value = Il2CppYgomSystem.Utility.ClientWork
+                        .getStringByJsonPath(dataPath + "." + key, "");
+                    if (!string.IsNullOrEmpty(value) && !IsPlaceholderText(value))
+                    {
+                        parts.Add(StripRichText(value));
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            // Description: footer.summary or summary — adds context like "Destruction Is Inevitable"
+            string[] descKeys = { "footer.summary", "summary", "footer.title", "desc" };
+            foreach (var key in descKeys)
+            {
+                try
+                {
+                    string value = Il2CppYgomSystem.Utility.ClientWork
+                        .getStringByJsonPath(dataPath + "." + key, "");
+                    if (!string.IsNullOrEmpty(value) && !IsPlaceholderText(value))
+                    {
+                        string cleaned = StripRichText(value);
+                        if (!parts.Contains(cleaned))
+                            parts.Add(cleaned);
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            // Sale/New flags from icon sub-dict
+            try
+            {
+                string saleVal = Il2CppYgomSystem.Utility.ClientWork
+                    .getStringByJsonPath(dataPath + ".icon.sale", "");
+                string newVal = Il2CppYgomSystem.Utility.ClientWork
+                    .getStringByJsonPath(dataPath + ".icon.new", "");
+                if (saleVal == "True") parts.Add("Sale");
+                if (newVal == "True") parts.Add("New");
+            }
+            catch { }
+
+            if (parts.Count > 0)
+            {
+                string result = string.Join(", ", parts);
+                DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                    $"ClientWork composite: \"{result}\" on {goName}");
+                return result;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Debug helper: dumps all Text components (including inactive) in a GO hierarchy.
+        /// </summary>
+        private static void DumpChildTexts(GameObject go, string context)
+        {
+            try
+            {
+                // Check all Text components including inactive
+                var texts = go.GetComponentsInChildren<Text>(true);
+                if (texts != null && texts.Count > 0)
+                {
+                    for (int i = 0; i < texts.Count; i++)
+                    {
+                        var t = texts[i];
+                        if (t == null) continue;
+                        string val = t.text ?? "(null)";
+                        bool active = t.gameObject?.activeInHierarchy ?? false;
+                        string path = t.gameObject?.name ?? "?";
+                        DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                            $"[ChildText] {context}: \"{val}\" active={active} go={path}");
+                    }
+                }
+                else
+                {
+                    DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                        $"[ChildText] {context}: no Text components");
+                }
+
+                // Check for ShopListWidget in parents
+                var shopWidget = go.GetComponentInParent<Il2CppYgomGame.Htjson.ShopListWidget>();
+                if (shopWidget != null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                        $"[ShopWidget] Found ShopListWidget on parent of {go.name}");
+                    var bannerParent = shopWidget.bannerParent;
+                    if (bannerParent != null)
+                        DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                            $"[ShopWidget] bannerParent={bannerParent.name}, children={bannerParent.transform.childCount}");
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                    $"[ChildText] dump error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Checks if text is Htjson placeholder content (e.g., repeated "ああああ").
+        /// </summary>
+        public static bool IsPlaceholderText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return true;
+            // "ああああ" pattern — repeating hiragana 'a' used as placeholder
+            if (text.Length >= 4 && text.All(c => c == 'あ')) return true;
+            return false;
+        }
+
         private static string TryParentSiblingText(GameObject go)
         {
             try

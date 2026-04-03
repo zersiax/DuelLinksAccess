@@ -46,6 +46,9 @@ namespace DuelLinksAccess
         private string _lastYesNoText = "";
         private float _yesNoCooldown; // Grace period after OnButton — game doesn't clear text immediately
 
+        // Battle position dialog — ATK or DEF position choice
+        private bool _bpDialogAnnounced;
+
         #endregion
 
         #region Properties
@@ -170,11 +173,21 @@ namespace DuelLinksAccess
             // This is NOT a standard VC/Htjson dialog, it's a MonoBehaviour inside the duel.
             if (HandleDuelYesNoDialog()) return;
 
+            // Battle position dialog — ATK or DEF position choice during normal summon.
+            if (HandleBattlePositionDialog()) return;
+
             // Field navigation — most keys suppressed when a dialog overlay is active
             // so DialogHandler can handle duel dialogs (Yes/No, card selection).
             // Tab for zone cycling always works — it doesn't conflict with dialog keys.
             bool dialogActive = GameStateTracker.CurrentScreen
                 == GameStateTracker.GameScreen.Dialog;
+
+            // EmotionalList works regardless of dialog state when already active
+            if (_fieldNav.InEmotionalList)
+            {
+                _fieldNav.ProcessInput();
+                return;
+            }
 
             if (!dialogActive)
             {
@@ -466,6 +479,88 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"DuelYesNo error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Handles the battle position dialog — choose ATK or DEF position during summon.
+        /// The game shows BattlePositionDialog (via worker2d.bpDialog) when summoning a
+        /// monster that can be placed in either position.
+        /// Enter/1 = ATK position, 2 = DEF position.
+        /// </summary>
+        private bool HandleBattlePositionDialog()
+        {
+            if (!IsActive) return false;
+
+            try
+            {
+                var client = Il2CppYgomGame.Duel.DuelClient.instance;
+                var worker = client?.worker2d;
+                var bpDlg = worker?.bpDialog;
+
+                if (bpDlg == null) { _bpDialogAnnounced = false; return false; }
+
+                // Check if dialog's content is active AND has a valid card
+                // (cardId > 0 distinguishes an active prompt from a dormant component)
+                var content = bpDlg.content;
+                if (content == null || !content.activeInHierarchy)
+                {
+                    _bpDialogAnnounced = false;
+                    return false;
+                }
+
+                int cardId = 0;
+                try { cardId = bpDlg.cardId; } catch { }
+                if (cardId <= 0)
+                {
+                    _bpDialogAnnounced = false;
+                    return false;
+                }
+
+                // Announce the dialog
+                if (!_bpDialogAnnounced)
+                {
+                    _bpDialogAnnounced = true;
+                    ScreenReader.Say(Loc.Get("duel_battle_position"));
+                }
+
+                // Enter or 1 = ATK position
+                if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Alpha1))
+                {
+                    bpDlg.OnClickCard(0); // 0 = left/ATK
+                    bpDlg.OnConfirm();
+                    ScreenReader.Say(Loc.Get("duel_atk_position"));
+                    _bpDialogAnnounced = false;
+                    return true;
+                }
+
+                // 2 = DEF position
+                if (InputManager.TryConsumeKeyDown(KeyCode.Alpha2))
+                {
+                    bpDlg.OnClickCard(1); // 1 = right/DEF
+                    bpDlg.OnConfirm();
+                    ScreenReader.Say(Loc.Get("duel_def_position"));
+                    _bpDialogAnnounced = false;
+                    return true;
+                }
+
+                // Escape = back/cancel
+                if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
+                {
+                    bpDlg.OnBack();
+                    _bpDialogAnnounced = false;
+                    return true;
+                }
+
+                // Consume keys while dialog is active
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"BattlePosition error: {ex.Message}");
                 return false;
             }
         }
