@@ -376,6 +376,20 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // S — announce current skill
+            if (InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                AnnounceCurrentSkill();
+                return;
+            }
+
+            // K — open skill selection
+            if (InputManager.TryConsumeKeyDown(KeyCode.K))
+            {
+                OpenSkillSelection();
+                return;
+            }
+
             // Ctrl+S — save deck
             if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
                 && InputManager.TryConsumeKeyDown(KeyCode.S))
@@ -586,6 +600,58 @@ namespace DuelLinksAccess
             var list = GetCurrentList();
             if (_focusIndex >= list.Count && list.Count > 0)
                 _focusIndex = list.Count - 1;
+        }
+
+        private void AnnounceCurrentSkill()
+        {
+            try
+            {
+                var header = _vc?.deckHeader;
+                if (header == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_no_skill"));
+                    return;
+                }
+
+                var skillText = header.skillName;
+                string name = skillText?.text;
+
+                if (string.IsNullOrEmpty(name))
+                    ScreenReader.Say(Loc.Get("deck_no_skill"));
+                else
+                    ScreenReader.Say(Loc.Get("deck_skill", name));
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"AnnounceCurrentSkill error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_no_skill"));
+            }
+        }
+
+        private void OpenSkillSelection()
+        {
+            try
+            {
+                var header = _vc?.deckHeader;
+                var skillBtn = header?.skillButton;
+                if (skillBtn != null)
+                {
+                    skillBtn.onClick.Invoke();
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "Clicked skill button");
+                }
+                else
+                {
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "Skill button not found");
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"OpenSkillSelection error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
         }
 
         private void SaveDeck()

@@ -73,7 +73,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Tab and Shift Tab cycle zones. Left right navigate cards. Enter open actions. C re-read card. F field summary. P advance phase. S status. L event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. Control S save. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Tab and Shift Tab cycle zones. Left right navigate cards. Enter open actions. C re-read card. F field summary. P advance phase. S status. L event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. Control S save. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
             _english["debug_mode"] = "Debug mode {0}";
 
             // ===== SETTINGS =====
@@ -280,6 +280,8 @@ namespace DuelLinksAccess
             _english["deck_saved"] = "Deck saved";
             _english["deck_operation_error"] = "Operation failed";
             _english["deck_level"] = "Level";
+            _english["deck_skill"] = "Skill: {0}. Press K to change.";
+            _english["deck_no_skill"] = "No skill set. Press K to select.";
             _english["deck_reason_full"] = "deck full, maximum {0}";
             _english["deck_reason_limit"] = "already have {0} copies";
             _english["deck_reason_no_copies"] = "no more copies available";

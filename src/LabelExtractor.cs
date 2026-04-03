@@ -28,6 +28,10 @@ namespace DuelLinksAccess
 
             string result;
 
+            // 0. SkillSelectItem2 — skill selection list with owned/locked status
+            result = TrySkillSelectItem(go);
+            if (result != null) return result;
+
             // 1. YgomButton.textLabel — explicit text reference on the button
             result = TryYgomButtonTextLabel(go);
             if (result != null) return result;
@@ -207,6 +211,55 @@ namespace DuelLinksAccess
         #endregion
 
         #region Extraction Strategies
+
+        /// <summary>
+        /// Strategy 0: SkillSelectItem2 — annotates skill name with owned/locked/new status.
+        /// </summary>
+        private static string TrySkillSelectItem(GameObject go)
+        {
+            try
+            {
+                var skillItem = go.GetComponent<Il2CppYgomGame.Deck.SkillSelectItem2>();
+                if (skillItem == null) return null;
+
+                var nameText = skillItem.skillName;
+                string name = nameText?.text;
+                if (string.IsNullOrEmpty(name)) return null;
+
+                // Check if skill is locked by comparing text color to ngColor
+                bool isLocked = false;
+                try
+                {
+                    var currentColor = nameText.color;
+                    var ngColor = skillItem.ngColor;
+                    // Colors match (within tolerance) = locked
+                    isLocked = Math.Abs(currentColor.r - ngColor.r) < 0.1f
+                        && Math.Abs(currentColor.g - ngColor.g) < 0.1f
+                        && Math.Abs(currentColor.b - ngColor.b) < 0.1f;
+                }
+                catch { }
+
+                // Check for NEW badge
+                bool isNew = false;
+                try { isNew = skillItem.isNew; }
+                catch { }
+
+                // Check if currently set
+                bool isSet = false;
+                try { isSet = skillItem.nowInSet?.activeSelf == true; }
+                catch { }
+
+                if (isLocked)
+                    return name + ", locked";
+                else if (isSet)
+                    return isNew ? name + ", currently set, new" : name + ", currently set";
+                else if (isNew)
+                    return name + ", new";
+                else
+                    return name;
+            }
+            catch { return null; }
+        }
 
         /// <summary>
         /// Strategy 1: YgomButton.textLabel — the button's explicit text reference.
