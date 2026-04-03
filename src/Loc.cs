@@ -140,6 +140,9 @@ namespace DuelLinksAccess
             _english["duel_result_win"] = "You win";
             _english["duel_result_lose"] = "You lose";
             _english["duel_result_draw"] = "Draw";
+            _english["duel_result_turns"] = "{0} turns";
+            _english["duel_result_lp"] = "Your LP: {0}, Opponent LP: {1}";
+            _english["duel_result_finisher"] = "Finished by {0}";
             _english["duel_not_in_duel"] = "Not in a duel";
             _english["duel_status"] = "Turn {0}, {1}. {2}. Your LP: {3}. Opponent LP: {4}";
             _english["duel_status_error"] = "Could not read duel status";

@@ -44,6 +44,7 @@ namespace DuelLinksAccess
         // Duel yes/no dialog (DuelCommonDialog) — tribute summon confirmation, etc.
         private bool _yesNoDialogAnnounced;
         private string _lastYesNoText = "";
+        private float _yesNoCooldown; // Grace period after OnButton — game doesn't clear text immediately
 
         #endregion
 
@@ -100,6 +101,7 @@ namespace DuelLinksAccess
                 _duelEndMessage = null;
                 _yesNoDialogAnnounced = false;
                 _lastYesNoText = "";
+                _yesNoCooldown = 0f;
                 _eventLog.Clear();
                 _fieldNav.Reset();
             }
@@ -369,7 +371,18 @@ namespace DuelLinksAccess
         /// </summary>
         private bool HandleDuelYesNoDialog()
         {
-            if (!DuelEventAnnouncer.InDuel) return false;
+            // Use IsActive (InDuel OR screen==Duel) instead of just InDuel,
+            // because resumed duels never fire DuelStart so InDuel stays false.
+            if (!IsActive) return false;
+
+            // After calling OnButton, the game doesn't clear dlgText immediately.
+            // Skip checks during the cooldown so the user can proceed (e.g., select
+            // tribute materials) without the stale text blocking input.
+            if (_yesNoCooldown > 0f)
+            {
+                _yesNoCooldown -= Time.deltaTime;
+                return false;
+            }
 
             try
             {
@@ -388,22 +401,33 @@ namespace DuelLinksAccess
                     return false;
                 }
 
-                // Dialog is active — read text if not yet announced
+                // The game keeps DuelCommonDialog content active during the entire duel
+                // but only populates dlgText when a real yes/no prompt is showing.
+                // Treat empty text as inactive to avoid intercepting other dialogs' keys.
+                string text = "";
+                try { text = dlg.dlgText?.text ?? ""; } catch { }
+
+                if (string.IsNullOrEmpty(text))
+                {
+                    if (_yesNoDialogAnnounced)
+                    {
+                        _yesNoDialogAnnounced = false;
+                        _lastYesNoText = "";
+                    }
+                    return false;
+                }
+
+                // If the text is the same as what we already responded to, the game
+                // hasn't cleared it yet — don't re-activate. Only activate on NEW text.
+                if (text == _lastYesNoText && !_yesNoDialogAnnounced)
+                    return false;
+
+                // Dialog is active with real text — read if not yet announced
                 if (!_yesNoDialogAnnounced)
                 {
                     _yesNoDialogAnnounced = true;
-                    string text = "";
-                    try { text = dlg.dlgText?.text ?? ""; } catch { }
-
-                    if (!string.IsNullOrEmpty(text) && text != _lastYesNoText)
-                    {
-                        _lastYesNoText = text;
-                        ScreenReader.Say(Loc.Get("duel_yesno_prompt", text));
-                    }
-                    else if (string.IsNullOrEmpty(text))
-                    {
-                        ScreenReader.Say(Loc.Get("duel_yesno_generic"));
-                    }
+                    _lastYesNoText = text;
+                    ScreenReader.Say(Loc.Get("duel_yesno_prompt", text));
 
                     DebugLogger.Log(LogCategory.Game, "DuelHandler",
                         $"DuelCommonDialog active: text='{text}'");
@@ -419,6 +443,7 @@ namespace DuelLinksAccess
                     dlg.OnButton(0);
                     ScreenReader.Say(Loc.Get("duel_yes"));
                     _yesNoDialogAnnounced = false;
+                    _yesNoCooldown = 0.5f;
                     return true;
                 }
 
@@ -430,6 +455,7 @@ namespace DuelLinksAccess
                     dlg.OnButton(1);
                     ScreenReader.Say(Loc.Get("duel_no"));
                     _yesNoDialogAnnounced = false;
+                    _yesNoCooldown = 0.5f;
                     return true;
                 }
 

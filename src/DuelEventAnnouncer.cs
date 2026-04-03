@@ -70,8 +70,8 @@ namespace DuelLinksAccess
                     DuelEnded = false;
                     _lastTurnPlayer = -1;
                     _lastPhase = -1;
-                    _lastMyLP = -1;
-                    _lastOppLP = -1;
+                    // Don't reset LP here — LifeSet fires BEFORE DuelStart
+                    // and already sets the correct starting values
                     Announce(Loc.Get("duel_started"));
                     break;
 
@@ -100,10 +100,12 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeSet:
-                    TrackLP(param1);
+                    TrackLP(param1, param2);
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.WaitInput:
+                    // Resumed duels never fire DuelStart, so set InDuel here too
+                    if (!InDuel) InDuel = true;
                     Announce(Loc.Get("duel_your_move"));
                     break;
 
@@ -318,16 +320,11 @@ namespace DuelLinksAccess
             }
         }
 
-        /// <summary>Silently tracks LP on LifeSet without announcing (avoids noise).</summary>
-        private static void TrackLP(int player)
+        /// <summary>Silently tracks LP on LifeSet using the value from the event directly.</summary>
+        private static void TrackLP(int player, int lpValue)
         {
-            try
-            {
-                int lp = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(player);
-                if (player == 0) _lastMyLP = lp;
-                else _lastOppLP = lp;
-            }
-            catch { }
+            if (player == 0) _lastMyLP = lpValue;
+            else _lastOppLP = lpValue;
         }
 
         private static void AnnounceDraw(int player)

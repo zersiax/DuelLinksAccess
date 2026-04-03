@@ -40,6 +40,9 @@ namespace DuelLinksAccess
         private int _currentMapArea = 0;
         private static readonly string[] _mapAreaNames = { "Street", "Alley", "Park", "Shop" };
 
+        // Result screen delayed rescan (after NEXT button press)
+        private float _resultRescanTimer = -1f;
+
         /// <summary>
         /// Screens that this handler should NOT process.
         /// Dialog is handled by DialogHandler; Duel will get its own handler.
@@ -103,6 +106,7 @@ namespace DuelLinksAccess
                 _lastReadText = "";
                 _items.Clear();
                 _screenRoot = null;
+                _resultRescanTimer = -1f;
             }
 
             if (!_scanned)
@@ -129,6 +133,17 @@ namespace DuelLinksAccess
             // In text mode, poll for text changes to auto-read new dialogue
             if (_textMode)
                 PollTextChanges();
+
+            // Delayed rescan for result screens (after NEXT button animations)
+            if (_resultRescanTimer > 0f)
+            {
+                _resultRescanTimer -= Time.deltaTime;
+                if (_resultRescanTimer <= 0f && _screenRoot != null)
+                {
+                    ScanResultScreen(_screenRoot);
+                    _focusIndex = 0;
+                }
+            }
 
             ProcessInput();
         }
@@ -212,11 +227,18 @@ namespace DuelLinksAccess
                 if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Deck)
                     FindDeckItems(_screenRoot);
 
+                // Result screens: replace the generic button scan with structured text extraction
+                bool isResultScreen = _screenRoot.name == "ResultBasePage"
+                    || _screenRoot.name == "ReplayResult";
+                if (isResultScreen)
+                    ScanResultScreen(_screenRoot);
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Found {_items.Count} items");
 
-                if (_items.Count > 0)
+                if (_items.Count > 0 && !isResultScreen)
                 {
+                    // Result screens handle their own announcement in ScanResultScreen
                     ScreenReader.SayQueued(
                         Loc.Get("screen_buttons", _items.Count));
                     AnnounceCurrentItem(queued: true);
@@ -337,6 +359,445 @@ namespace DuelLinksAccess
                 }
                 return false;
             });
+        }
+
+        /// <summary>
+        /// Replaces the generic button scan for ResultBasePage and ReplayResult screens.
+        /// Extracts meaningful text (level, EXP, score, campaign info, player names/skills)
+        /// and creates structured items with NEXT/OK/END buttons for navigation.
+        /// The level-up rewards scrollable list is excluded (just "Lvl: N" milestone markers).
+        /// </summary>
+        private void ScanResultScreen(GameObject root)
+        {
+            _items.Clear();
+
+            try
+            {
+                var texts = root.GetComponentsInChildren<Text>(true);
+                if (texts == null) return;
+
+                // Collect meaningful text, filtering out level-up milestone spam
+                var textParts = new List<string>();
+                bool inLevelUpSection = false;
+
+                foreach (var text in texts)
+                {
+                    if (text == null || text.gameObject == null) continue;
+                    if (!text.gameObject.activeInHierarchy) continue;
+                    string val = LabelExtractor.StripRichText(text.text);
+                    if (string.IsNullOrWhiteSpace(val)) continue;
+
+                    // Skip placeholder text
+                    if (val.StartsWith("\u3042\u3042\u3042")) continue;
+                    if (val == "0" && text.gameObject.name == "CardNum") continue;
+
+                    // Detect level-up rewards section boundary
+                    if (val == "Character Level-Up Rewards")
+                        inLevelUpSection = true;
+
+                    // Skip level-up milestone entries: "Lvl: N", "Next" marker,
+                    // and standalone numbers (EXP thresholds like 10, 15, 25...)
+                    if (inLevelUpSection)
+                    {
+                        if (val.StartsWith("Lvl:")) continue;
+                        if (val == "Next") continue;
+                        if (val.All(char.IsDigit)) continue;
+
+                        // End the section on known page 2 headers or button text
+                        if (val == "[Duel Assessment]" || val == "NEXT"
+                            || val == "SCORE" || val == "REWARDS")
+                            inLevelUpSection = false;
+                        else
+                            continue; // Still in the section, skip
+                    }
+
+                    // Skip button labels (handled separately below)
+                    if (val == "NEXT" || val == "OK" || val == "END"
+                        || val == "WATCH AGAIN" || val == "Rate")
+                        continue;
+
+                    // Skip duplicate numbers that are just reward quantities
+                    // (stray "1", "10" from reward item counts)
+                    if (val.All(char.IsDigit) && val.Length <= 2
+                        && textParts.Count > 0)
+                    {
+                        // Keep only the first few numbers (level, EXP)
+                        string lastPart = textParts[textParts.Count - 1];
+                        if (lastPart == "SCORE" || lastPart == "REWARDS")
+                        {
+                            // These are meaningful: score value, reward count
+                            textParts.Add(val);
+                            continue;
+                        }
+                        // Skip stray small numbers in reward sections
+                        if (textParts.Contains("REWARDS")) continue;
+                    }
+
+                    textParts.Add(val);
+                }
+
+                // Build and read duel stats from Args if available
+                string argsSummary = ReadResultArgs();
+                if (!string.IsNullOrEmpty(argsSummary))
+                    textParts.Insert(0, argsSummary);
+
+                string summary = string.Join(". ", textParts);
+                if (!string.IsNullOrEmpty(summary))
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Result screen text: {summary}");
+                }
+
+                // Find the actionable buttons (NEXT, OK, END, WATCH AGAIN, Rate)
+                FindResultButtons(root, texts);
+
+                // Announce the summary text directly, then let user navigate to buttons
+                if (!string.IsNullOrEmpty(summary))
+                {
+                    if (_items.Count > 0)
+                        ScreenReader.Say(summary + ". " +
+                            Loc.Get("screen_buttons", _items.Count));
+                    else
+                        ScreenReader.Say(summary);
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"Result screen scan error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Finds NEXT/OK/END/WATCH AGAIN/Rate buttons in the result screen.
+        /// </summary>
+        private void FindResultButtons(GameObject root, Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppArrayBase<Text> texts)
+        {
+            foreach (var text in texts)
+            {
+                if (text == null || text.gameObject == null) continue;
+                if (!text.gameObject.activeInHierarchy) continue;
+
+                string val = text.text?.Trim();
+                if (string.IsNullOrEmpty(val)) continue;
+
+                if (val != "NEXT" && val != "OK" && val != "END"
+                    && val != "WATCH AGAIN" && val != "Rate") continue;
+
+                // Find the parent button GO (Label → btn)
+                var btnGo = text.transform.parent?.gameObject;
+                if (btnGo == null) continue;
+
+                var selectable = btnGo.GetComponent<Selectable>();
+                if (selectable == null) continue;
+
+                // Avoid duplicates
+                if (_items.Any(i => i.Go == btnGo)) continue;
+
+                _items.Add(new ScreenItem
+                {
+                    Go = btnGo,
+                    Label = val,
+                    Type = ItemType.Button
+                });
+            }
+        }
+
+        /// <summary>
+        /// Reads duel stats from the ResultBasePage VC Args dictionary.
+        /// Unboxes IL2CPP values to extract result, turn count, LP, and score.
+        /// Returns a formatted summary string, or null if not available.
+        /// </summary>
+        private string ReadResultArgs()
+        {
+            try
+            {
+                var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedMgr == null) return null;
+
+                Il2CppYgomSystem.UI.ViewControllerManager contentMgr;
+                if (!namedMgr.TryGetValue("content", out contentMgr)) return null;
+
+                var vc = contentMgr?.GetStackTopViewController();
+                if (vc == null) return null;
+
+                var args = vc.Args;
+                if (args == null) return null;
+
+                // Dump all keys for diagnostics (debug mode only)
+                if (Main.DebugMode)
+                    DumpArgsToLog(vc.gameObject.name, args);
+
+                // Unbox scalar values
+                int res = UnboxInt(args, "res", -1);
+                int turn = UnboxInt(args, "turn", -1);
+                int lp = UnboxInt(args, "lp", -1);
+                int lp2 = UnboxInt(args, "lp2", -1);
+                int finish = UnboxInt(args, "finish", -1);
+                int finisher = UnboxInt(args, "finisher", 0);
+
+                // Try to dump list values for reward data discovery
+                if (Main.DebugMode)
+                {
+                    DumpArgsList(args, "v32", "card IDs (32-bit)");
+                    DumpArgsList(args, "v16", "card IDs (16-bit)");
+                    DumpArgsList(args, "counts", "reward counts");
+                    DumpArgsList(args, "rare", "rarities");
+                    DumpArgsList(args, "grave", "graveyard cards");
+                    DumpArgsList(args, "brkcard", "destroyed cards");
+                    DumpArgsList(args, "activate", "activated cards");
+                    DumpArgsUintArray(args, "dat", "raw result data");
+                }
+
+                // Build summary from what we extracted
+                var parts = new List<string>();
+
+                if (res >= 0)
+                {
+                    // res: 1=Win, 2=Loss, 3=Draw (based on DuelEndMessage.resultType pattern)
+                    string result = res switch
+                    {
+                        1 => Loc.Get("duel_result_win"),
+                        2 => Loc.Get("duel_result_lose"),
+                        3 => Loc.Get("duel_result_draw"),
+                        _ => $"Result {res}"
+                    };
+                    parts.Add(result);
+                }
+
+                if (turn > 0)
+                    parts.Add(Loc.Get("duel_result_turns", turn));
+
+                if (lp >= 0 && lp2 >= 0)
+                    parts.Add(Loc.Get("duel_result_lp", lp, lp2));
+
+                if (finisher > 0)
+                {
+                    try
+                    {
+                        var content = Il2CppYgomGame.Card.Content.Instance;
+                        string cardName = content?.GetName(finisher);
+                        if (!string.IsNullOrEmpty(cardName))
+                            parts.Add(Loc.Get("duel_result_finisher", cardName));
+                    }
+                    catch { }
+                }
+
+                return parts.Count > 0 ? string.Join(". ", parts) : null;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"ReadResultArgs error: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>Unboxes an IL2CPP boxed int from the Args dictionary.</summary>
+        private static int UnboxInt(Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object> args, string key, int defaultValue)
+        {
+            try
+            {
+                Il2CppSystem.Object obj;
+                if (!args.TryGetValue(key, out obj) || obj == null) return defaultValue;
+                return obj.Unbox<int>();
+            }
+            catch { return defaultValue; }
+        }
+
+        /// <summary>Dumps an Args list value to the debug log for discovery.</summary>
+        private static void DumpArgsList(Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object> args, string key, string label)
+        {
+            try
+            {
+                Il2CppSystem.Object obj;
+                if (!args.TryGetValue(key, out obj) || obj == null) return;
+
+                var list = obj.TryCast<Il2CppSystem.Collections.Generic.List<Il2CppSystem.Object>>();
+                if (list == null) return;
+
+                var vals = new List<string>();
+                for (int i = 0; i < Math.Min(list.Count, 20); i++)
+                {
+                    try
+                    {
+                        var item = list[i];
+                        if (item == null) { vals.Add("null"); continue; }
+                        try { vals.Add(item.Unbox<int>().ToString()); }
+                        catch
+                        {
+                            try { vals.Add(item.Unbox<long>().ToString()); }
+                            catch { vals.Add(item.ToString()); }
+                        }
+                    }
+                    catch { vals.Add("?"); }
+                }
+
+                string suffix = list.Count > 20 ? $"... ({list.Count} total)" : "";
+                MelonLogger.Msg($"[ResultArgs] {key} ({label}): [{string.Join(", ", vals)}{suffix}]");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ResultArgs] {key} dump error: {ex.Message}");
+            }
+        }
+
+        /// <summary>Dumps a UInt32[] Args value to the debug log.</summary>
+        private static void DumpArgsUintArray(Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object> args, string key, string label)
+        {
+            try
+            {
+                Il2CppSystem.Object obj;
+                if (!args.TryGetValue(key, out obj) || obj == null) return;
+
+                var arr = obj.TryCast<Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<uint>>();
+                if (arr == null) return;
+
+                var vals = new List<string>();
+                for (int i = 0; i < Math.Min(arr.Length, 40); i++)
+                    vals.Add(arr[i].ToString());
+
+                string suffix = arr.Length > 40 ? $"... ({arr.Length} total)" : "";
+                MelonLogger.Msg($"[ResultArgs] {key} ({label}) [{arr.Length}]: [{string.Join(", ", vals)}{suffix}]");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ResultArgs] {key} dump error: {ex.Message}");
+            }
+        }
+
+        /// <summary>Dumps all Args keys/values to the debug log.</summary>
+        private static void DumpArgsToLog(string vcName, Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object> args)
+        {
+            try
+            {
+                MelonLogger.Msg($"[ResultArgs] === Args for {vcName} ({args.Count} keys) ===");
+                foreach (var entry in args)
+                {
+                    string key = entry.Key;
+                    var val = entry.Value;
+                    string valStr = "(null)";
+                    if (val != null)
+                    {
+                        // Try unboxing as int first
+                        try
+                        {
+                            int intVal = val.Unbox<int>();
+                            valStr = intVal.ToString();
+                        }
+                        catch
+                        {
+                            try { valStr = val.ToString(); }
+                            catch { valStr = $"({val.GetType()?.Name})"; }
+                            if (valStr == val.GetType()?.FullName || valStr.Length > 200)
+                                valStr = $"[{val.GetType()?.Name}]";
+                        }
+                    }
+                    MelonLogger.Msg($"[ResultArgs]   {key} = {valStr}");
+                }
+                MelonLogger.Msg("[ResultArgs] === End Args ===");
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Diagnostic: dumps the full UI tree of a result/reward screen.
+        /// Logs every GameObject with its depth, name, and any Text component values.
+        /// This helps us understand where reward data (card names, quantities) lives.
+        /// </summary>
+        private void DumpResultScreenTree(GameObject root)
+        {
+            try
+            {
+                MelonLogger.Msg($"[ResultDiag] === UI Tree for {root.name} ===");
+                DumpTransformTree(root.transform, 0);
+
+                // Also scan siblings (e.g. TIM_LvUp_ItemGet is a sibling, not a child)
+                var parent = root.transform.parent;
+                if (parent != null)
+                {
+                    for (int i = 0; i < parent.childCount; i++)
+                    {
+                        var sibling = parent.GetChild(i);
+                        if (sibling != null && sibling.gameObject != root
+                            && sibling.gameObject.activeSelf)
+                        {
+                            MelonLogger.Msg($"[ResultDiag] --- Sibling: {sibling.gameObject.name} ---");
+                            DumpTransformTree(sibling, 0);
+                        }
+                    }
+                }
+
+                MelonLogger.Msg($"[ResultDiag] === End UI Tree ===");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ResultDiag] Dump error: {ex.Message}");
+            }
+        }
+
+        private void DumpTransformTree(Transform t, int depth)
+        {
+            if (t == null) return;
+
+            string indent = new string(' ', depth * 2);
+            string goName = t.gameObject.name;
+            bool active = t.gameObject.activeSelf;
+
+            // Collect component info
+            var parts = new List<string>();
+
+            // Text component
+            try
+            {
+                var text = t.GetComponent<Text>();
+                if (text != null && !string.IsNullOrWhiteSpace(text.text))
+                {
+                    string val = text.text.Replace("\n", "\\n");
+                    if (val.Length > 80) val = val.Substring(0, 80) + "...";
+                    parts.Add($"Text=\"{val}\"");
+                }
+            }
+            catch { }
+
+            // Image component (note sprite name for card identification)
+            try
+            {
+                var img = t.GetComponent<UnityEngine.UI.Image>();
+                if (img != null && img.sprite != null)
+                {
+                    string spriteName = img.sprite.name;
+                    if (!string.IsNullOrEmpty(spriteName) && spriteName != goName)
+                        parts.Add($"Sprite={spriteName}");
+                }
+            }
+            catch { }
+
+            // Button/Selectable
+            try
+            {
+                var btn = t.GetComponent<UnityEngine.UI.Selectable>();
+                if (btn != null)
+                    parts.Add($"Selectable({btn.GetType().Name})");
+            }
+            catch { }
+
+            string info = parts.Count > 0 ? " [" + string.Join(", ", parts) + "]" : "";
+            string activeStr = active ? "" : " (INACTIVE)";
+
+            // Only log if active or has meaningful info, to reduce noise
+            if (active || parts.Count > 0)
+                MelonLogger.Msg($"[ResultDiag] {indent}{goName}{activeStr}{info}");
+
+            // Recurse children (limit depth to avoid excessive output)
+            if (depth < 16)
+            {
+                for (int i = 0; i < t.childCount; i++)
+                {
+                    try { DumpTransformTree(t.GetChild(i), depth + 1); }
+                    catch { }
+                }
+            }
         }
 
         /// <summary>
@@ -1013,6 +1474,14 @@ namespace DuelLinksAccess
 
             try
             {
+                // On result screens, schedule a rescan after pressing NEXT/OK
+                // to pick up page 2 content (assessment, score, rewards)
+                if (_screenRoot != null
+                    && (_screenRoot.name == "ResultBasePage" || _screenRoot.name == "ReplayResult"))
+                {
+                    _resultRescanTimer = 2f;
+                }
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Activating: {item.Label} ({item.Go.name})");
 

@@ -793,6 +793,8 @@ namespace DuelLinksAccess
                     if (IsTapOnlyCommand(cmdType))
                     {
                         // Decide/Select: just tap the card — no CardCommand popup
+                        if (Main.DebugMode)
+                            DumpCardSelectionState();
                         TapFieldCard(client, player, locate, slotIndex);
                     }
                     else
@@ -895,6 +897,8 @@ namespace DuelLinksAccess
             if (IsTapOnlyCommand(cmdType))
             {
                 // Decide/Select: just tap the card — no CardCommand popup
+                if (Main.DebugMode)
+                    DumpCardSelectionState();
                 TapFieldCard(client, player, locate, slotIndex);
             }
             else
@@ -1891,19 +1895,32 @@ namespace DuelLinksAccess
                 return;
             }
 
-            try
-            {
-                var inputType = worker.curInputType;
-                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"curInputType={inputType} before tap");
-            }
+            var inputType = Il2CppYgomGame.Duel.Engine.MenuActType.Null;
+            try { inputType = worker.curInputType; }
             catch { }
 
             DebugLogger.Log(LogCategory.Game, "FieldNav",
-                $"Calling OnTapLocator({player}, {locate}, {slotIndex})");
-            worker.OnTapLocator(player, locate, slotIndex);
+                $"curInputType={inputType} before tap");
 
-            DebugLogger.Log(LogCategory.Game, "FieldNav", "OnTapLocator returned");
+            // In LockOn/Selection modes (spell targeting, tribute selection),
+            // OnTapLocator doesn't register. Use OnDoCardCommand with Decide
+            // to directly tell the engine to select this card.
+            if (inputType == Il2CppYgomGame.Duel.Engine.MenuActType.LockOn
+                || inputType == Il2CppYgomGame.Duel.Engine.MenuActType.Selection)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"Using OnDoCardCommand(Decide) for {inputType}: ({player}, {locate}, {slotIndex})");
+                worker.OnDoCardCommand(player, locate, slotIndex,
+                    Il2CppYgomGame.Duel.Engine.CommandType.Decide);
+            }
+            else
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"Calling OnTapLocator({player}, {locate}, {slotIndex})");
+                worker.OnTapLocator(player, locate, slotIndex);
+            }
+
+            DebugLogger.Log(LogCategory.Game, "FieldNav", "Tap returned");
 
             try
             {
