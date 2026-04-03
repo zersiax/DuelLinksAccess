@@ -73,7 +73,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Tab and Shift Tab cycle zones. Left right navigate cards. Enter open actions. C re-read card. F field summary. P advance phase. S status. L event log. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Tab and Shift Tab cycle zones. Left right navigate cards. Enter open actions. C re-read card. F field summary. P advance phase. S status. L event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. Control S save. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
             _english["debug_mode"] = "Debug mode {0}";
 
             // ===== SETTINGS =====
@@ -260,6 +260,30 @@ namespace DuelLinksAccess
             // ===== DUEL: TUTORIAL =====
             _english["duel_tutorial_arrow"] = "Press Space to continue tutorial";
             _english["duel_tutorial_arrow_pointing"] = "Tutorial arrow. Navigate the field and press Enter to interact.";
+
+            // ===== DECK EDITOR =====
+            _english["deck_edit_entered"] = "Deck editor. {0} in main deck, {1} in extra deck, {2} in collection. Tab to switch zones, Left right to browse cards.";
+            _english["deck_zone"] = "{0}, {1} cards";
+            _english["deck_zone_main_name"] = "Main deck";
+            _english["deck_zone_extra_name"] = "Extra deck";
+            _english["deck_zone_collection_name"] = "Collection";
+            _english["deck_zone_empty"] = "No cards in this zone";
+            _english["deck_card_position"] = "{0} of {1}: {2}";
+            _english["deck_card_added"] = "{0} added to deck";
+            _english["deck_card_added_count"] = "{0} added. Main deck: {1}";
+            _english["deck_card_removed"] = "{0} removed from deck";
+            _english["deck_card_removed_count"] = "{0} removed. Main deck: {1}";
+            _english["deck_card_not_addible"] = "Cannot add {0}";
+            _english["deck_card_not_addible_reason"] = "Cannot add {0}: {1}";
+            _english["deck_card_in_deck"] = "{0} copies in deck";
+            _english["deck_stats"] = "Main deck: {0} of {1}. Extra deck: {2} of {3}.";
+            _english["deck_saved"] = "Deck saved";
+            _english["deck_operation_error"] = "Operation failed";
+            _english["deck_level"] = "Level";
+            _english["deck_reason_full"] = "deck full, maximum {0}";
+            _english["deck_reason_limit"] = "already have {0} copies";
+            _english["deck_reason_no_copies"] = "no more copies available";
+            _english["deck_reason_unknown"] = "not allowed";
 
             // ===== DUEL: EVENT LOG =====
             _english["duel_log_entry"] = "{0} of {1}: {2}";

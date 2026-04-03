@@ -43,6 +43,7 @@ namespace DuelLinksAccess
         private DialogHandler _dialogHandler;
         private ScreenButtonHandler _screenButtonHandler;
         private DuelHandler _duelHandler;
+        private DeckEditHandler _deckEditHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
         // when neither DuelHandler nor DialogHandler is handling them
@@ -71,6 +72,7 @@ namespace DuelLinksAccess
             _dialogHandler = new DialogHandler();
             _screenButtonHandler = new ScreenButtonHandler();
             _duelHandler = new DuelHandler();
+            _deckEditHandler = new DeckEditHandler();
         }
 
         private void OnScreenChanged(GameStateTracker.GameScreen oldScreen,
@@ -261,6 +263,10 @@ namespace DuelLinksAccess
             // Safety net: TutorialArrow on dialog stack but screen is not Dialog/Duel.
             // Happens during ScenarioPlayerPart cutscenes — auto-dismiss click-to-continue.
             if (!(_duelHandler?.IsActive == true) && HandleOrphanedTutorialArrow()) return;
+
+            // Deck editor handler — intercepts Deck screen when in DeckEdit2ViewController
+            _deckEditHandler?.Update();
+            if (_deckEditHandler?.IsActive == true) return;
 
             // Generic screen button handler — fallback for non-dialog, non-duel screens
             _screenButtonHandler?.Update();

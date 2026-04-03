@@ -656,6 +656,13 @@ namespace DuelLinksAccess
                         }
                     }
                 }
+                else
+                {
+                    // Hand cards: read level, ATK, DEF from Content database
+                    string handStats = GetHandCardStats(cardDbId);
+                    if (handStats != null)
+                        parts.Add(handStats);
+                }
 
                 // Position header: "1 of 3: Blue-Eyes White Dragon"
                 string header = Loc.Get("duel_card_position",
@@ -667,14 +674,52 @@ namespace DuelLinksAccess
                     ? $"{header}. {details}"
                     : header;
 
-                // Verbose: show available commands
-                if (verbose && isMyCard)
+                // Verbose: show card type, description, and available commands
+                if (verbose)
                 {
-                    uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
-                    if (cmdMask != 0)
+                    try
                     {
-                        string cmds = DescribeCommandMask(cmdMask);
-                        announcement += ". " + Loc.Get("duel_available_actions", cmds);
+                        var content = Il2CppYgomGame.Card.Content.Instance;
+                        if (content != null)
+                        {
+                            int mrk = (int)cardDbId;
+                            var kind = content.GetKind(mrk);
+
+                            // Show card type (spell/trap with icon, or monster kind)
+                            string kindText = content.GetKindText(kind);
+                            if (kind == Il2CppYgomGame.Card.Content.Kind.Magic
+                                || kind == Il2CppYgomGame.Card.Content.Kind.Trap)
+                            {
+                                var icon = content.GetIcon(mrk);
+                                if (icon != Il2CppYgomGame.Card.Content.Icon.Null)
+                                    announcement += ". " + content.GetIconText(icon) + " " + kindText;
+                                else
+                                    announcement += ". " + kindText;
+                            }
+                            else
+                            {
+                                var attr = content.GetAttr(mrk);
+                                var type = content.GetType(mrk);
+                                announcement += ". " + content.GetAttributeText(attr)
+                                    + " " + content.GetTypeText(type)
+                                    + " " + kindText;
+                            }
+
+                            string desc = content.GetDesc(mrk);
+                            if (!string.IsNullOrEmpty(desc))
+                                announcement += ". " + desc;
+                        }
+                    }
+                    catch { }
+
+                    if (isMyCard)
+                    {
+                        uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
+                        if (cmdMask != 0)
+                        {
+                            string cmds = DescribeCommandMask(cmdMask);
+                            announcement += ". " + Loc.Get("duel_available_actions", cmds);
+                        }
                     }
                 }
 
@@ -713,6 +758,39 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
                     $"GetCardStats error: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets level, ATK, DEF for a hand card using the Content database.
+        /// Returns null for spells/traps (no ATK/DEF).
+        /// </summary>
+        private string GetHandCardStats(uint cardDbId)
+        {
+            try
+            {
+                var content = Il2CppYgomGame.Card.Content.Instance;
+                if (content == null) return null;
+
+                int mrk = (int)cardDbId;
+                var kind = content.GetKind(mrk);
+
+                // Only monsters have ATK/DEF
+                if (kind == Il2CppYgomGame.Card.Content.Kind.Magic
+                    || kind == Il2CppYgomGame.Card.Content.Kind.Trap)
+                    return null;
+
+                int level = content.GetLevel(mrk);
+                int atk = content.GetAtk(mrk);
+                int def = content.GetDef2(mrk);
+
+                return $"Level {level}, " + Loc.Get("duel_card_stats", atk, def);
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"GetHandCardStats error: {ex.Message}");
                 return null;
             }
         }
