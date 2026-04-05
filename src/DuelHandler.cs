@@ -182,8 +182,10 @@ namespace DuelLinksAccess
             bool dialogActive = GameStateTracker.CurrentScreen
                 == GameStateTracker.GameScreen.Dialog;
 
-            // EmotionalList works regardless of dialog state when already active
-            if (_fieldNav.InEmotionalList)
+            // EmotionalList works regardless of dialog state — both when already
+            // active and when first detected. RunList often fires alongside RunDialog,
+            // so detection must happen before the dialogActive gate.
+            if (_fieldNav.InEmotionalList || _fieldNav.CheckForEmotionalList())
             {
                 _fieldNav.ProcessInput();
                 return;
@@ -529,7 +531,7 @@ namespace DuelLinksAccess
                 if (InputManager.TryConsumeKeyDown(KeyCode.Return)
                     || InputManager.TryConsumeKeyDown(KeyCode.Alpha1))
                 {
-                    bpDlg.OnClickCard(0); // 0 = left/ATK
+                    bpDlg.OnClickCard(1); // left=1 = left card = ATK
                     bpDlg.OnConfirm();
                     ScreenReader.Say(Loc.Get("duel_atk_position"));
                     _bpDialogAnnounced = false;
@@ -539,7 +541,7 @@ namespace DuelLinksAccess
                 // 2 = DEF position
                 if (InputManager.TryConsumeKeyDown(KeyCode.Alpha2))
                 {
-                    bpDlg.OnClickCard(1); // 1 = right/DEF
+                    bpDlg.OnClickCard(0); // left=0 = right card = DEF
                     bpDlg.OnConfirm();
                     ScreenReader.Say(Loc.Get("duel_def_position"));
                     _bpDialogAnnounced = false;

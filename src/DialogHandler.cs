@@ -33,6 +33,10 @@ namespace DuelLinksAccess
         // Passthrough: TutorialArrowPart with no content — let other handlers run
         private bool _passthrough;
 
+        // Which manager the current dialog VC lives in (usually "dialog",
+        // but TutorialArrowPart can appear in "content" manager)
+        private string _activeManager = "dialog";
+
         // Post-activation rescan: after clicking a button that may open a
         // stacked dialog, we rescan after a delay to detect the new content
         private float _postActivationRescanDelay = -1f;
@@ -74,6 +78,7 @@ namespace DuelLinksAccess
                     _items.Clear();
                     _postActivationRescanDelay = -1f;
                     _passthrough = false;
+                    _activeManager = "dialog";
                 }
                 return;
             }
@@ -185,8 +190,20 @@ namespace DuelLinksAccess
             try
             {
                 // Find the TOP dialog VC — scan only the active dialog, not
-                // the entire manager (which may contain multiple stacked dialogs)
+                // the entire manager (which may contain multiple stacked dialogs).
+                // TutorialArrowPart can appear in "content" manager instead of "dialog".
                 GameObject dialogRoot = GetTopVcRoot("dialog");
+                _activeManager = "dialog";
+                if (dialogRoot == null)
+                {
+                    var contentRoot = GetTopVcRoot("content");
+                    if (contentRoot != null &&
+                        (contentRoot.name == "TutorialArrow" || contentRoot.name == "TutorialArrowPart"))
+                    {
+                        dialogRoot = contentRoot;
+                        _activeManager = "content";
+                    }
+                }
                 if (dialogRoot == null)
                 {
                     MelonLogger.Msg("[Dialog] No top dialog VC found");
@@ -217,11 +234,18 @@ namespace DuelLinksAccess
                 FindButtons(dialogRoot);
 
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
-                // dismiss it and fall back to scanning the full manager root
+                // dismiss it or pass through so other handlers can run
                 if (_items.Count == 0 && string.IsNullOrEmpty(dialogText))
                 {
                     if (IsTutorialArrowOnTop())
-                        DismissTutorialArrow();
+                    {
+                        // Don't click the arrow — screen-center click lands on
+                        // underlying quiz banners in Duel Trials. Just return;
+                        // the passthrough logic in Update() will set
+                        // SkipTutorialArrowPart + ForceReevaluate so the screen
+                        // reclassifies and ScreenButtonHandler takes over.
+                        return;
+                    }
 
                     var managerRoot = GetManagerRoot("dialog");
                     if (managerRoot != null && managerRoot != dialogRoot)
@@ -687,7 +711,7 @@ namespace DuelLinksAccess
             else if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
                 // Re-read dialog text from the active dialog VC
-                var root = GetTopVcRoot("dialog");
+                var root = GetTopVcRoot(_activeManager);
                 if (root != null)
                 {
                     string text = ReadDialogText(root);
@@ -860,6 +884,27 @@ namespace DuelLinksAccess
                     activated = true;
                 }
 
+                // Strategy 3b: Htjson ButtonSet / div — handler may be on a parent
+                // container (e.g. Task0_0). Walk up and fire onClick on any Button.
+                if (!activated && (item.Go.name == "ButtonSet" || item.Go.name == "div"))
+                {
+                    var parent = item.Go.transform.parent;
+                    int depth = 0;
+                    while (parent != null && depth < 4)
+                    {
+                        var parentBtn = parent.GetComponent<Button>();
+                        if (parentBtn != null && parentBtn.onClick != null)
+                        {
+                            MelonLogger.Msg($"[Dialog] ButtonSet parent onClick.Invoke on {parent.gameObject.name}");
+                            parentBtn.onClick.Invoke();
+                            activated = true;
+                            break;
+                        }
+                        parent = parent.parent;
+                        depth++;
+                    }
+                }
+
                 // Strategy 4: Full click cycle via ExecuteEvents as fallback
                 if (!activated)
                 {
@@ -999,7 +1044,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var topVc = GetTopVc("dialog");
+                var topVc = GetTopVc(_activeManager);
                 if (topVc != null)
                 {
                     string vcName = topVc.gameObject?.name ?? "";
@@ -1055,7 +1100,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var topGo = GetTopVcRoot("dialog");
+                var topGo = GetTopVcRoot(_activeManager);
                 if (topGo == null) return false;
                 string name = topGo.name;
                 return name == "TutorialArrow" || name == "TutorialArrowPart";
@@ -1075,7 +1120,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var topVc = GetTopVc("dialog");
+                var topVc = GetTopVc(_activeManager);
                 if (topVc == null) return false;
 
                 var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
@@ -1143,7 +1188,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var topVc = GetTopVc("dialog");
+                var topVc = GetTopVc(_activeManager);
                 if (topVc?.gameObject == null) return;
 
                 MelonLogger.Msg($"[Dialog] Dismissing TutorialArrow: {topVc.gameObject.name}");
@@ -1151,10 +1196,8 @@ namespace DuelLinksAccess
                 var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
                 if (arrowVc != null)
                 {
-                    var eventData = new UnityEngine.EventSystems.PointerEventData(
-                        UnityEngine.EventSystems.EventSystem.current);
-                    eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
-                    arrowVc.OnPointerClick(eventData);
+                    // Use the proper click method with physicTarget + RegistPointerCurrentRaycast
+                    Main.ClickArrowAtTarget(arrowVc);
                     return;
                 }
 

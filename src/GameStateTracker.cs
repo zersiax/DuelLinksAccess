@@ -29,6 +29,7 @@ namespace DuelLinksAccess
             Gate,
             Store,
             Notices,
+            DuelTrials,
             Other
         }
 
@@ -159,6 +160,13 @@ namespace DuelLinksAccess
                 // (e.g. Mission, reward screens, etc.)
                 if (newScreen == GameScreen.Other && _pendingFromDialog)
                     newScreen = GameScreen.Dialog;
+
+                // TutorialArrowPart in the content manager is a tutorial overlay
+                // on a content page (e.g. Duel Trials), not a real dialog.
+                // Let ScreenButtonHandler scan the page content underneath.
+                if (newScreen == GameScreen.Dialog
+                    && goName == "TutorialArrowPart" && !_pendingFromDialog)
+                    newScreen = GameScreen.Other;
 
                 SetScreen(newScreen);
             }
@@ -409,6 +417,9 @@ namespace DuelLinksAccess
             if (goName == "HtjsonPage" || goName == "Standby")
                 return GameScreen.Notices;
 
+            if (goName.Contains("School") || goName.Contains("DuelQuest"))
+                return GameScreen.DuelTrials;
+
             if (goName.Contains("Dialog") || goName.Contains("Confirm")
                 || goName.Contains("AgeVerification") || goName.Contains("Tutorial"))
                 return GameScreen.Dialog;
@@ -434,6 +445,7 @@ namespace DuelLinksAccess
                 GameScreen.Gate => "screen_gate",
                 GameScreen.Store => "screen_store",
                 GameScreen.Notices => "screen_notices",
+                GameScreen.DuelTrials => "screen_duel_trials",
                 _ => null
             };
         }

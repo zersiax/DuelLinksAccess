@@ -369,7 +369,7 @@ namespace DuelLinksAccess
         /// so the arrow's IsCollider check passes and the click routes through to ipclick.
         /// For click-to-continue (physicTarget == null): uses screen center.
         /// </summary>
-        private static void ClickArrowAtTarget(
+        internal static void ClickArrowAtTarget(
             Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
         {
             var eventData = new UnityEngine.EventSystems.PointerEventData(
@@ -413,9 +413,10 @@ namespace DuelLinksAccess
             // RegistPointerCurrentRaycast populates the eventData with raycast
             // results that IsCollider needs — without it, OnPointerClick silently fails
             // even with the correct screen position.
+            bool registered = false;
             try
             {
-                bool registered = arrowVc.RegistPointerCurrentRaycast(eventData);
+                registered = arrowVc.RegistPointerCurrentRaycast(eventData);
                 DebugLogger.Log(LogCategory.Game, "Main",
                     $"RegistPointerCurrentRaycast returned {registered}");
             }
@@ -425,7 +426,39 @@ namespace DuelLinksAccess
                     $"RegistPointerCurrentRaycast error: {ex.Message}");
             }
 
-            arrowVc.OnPointerClick(eventData);
+            if (registered)
+            {
+                arrowVc.OnPointerClick(eventData);
+            }
+            else
+            {
+                // Fallback: call ipclick handlers directly (bypasses IsCollider check)
+                try
+                {
+                    var ipclick = arrowVc.ipclick;
+                    if (ipclick != null && ipclick.Length > 0)
+                    {
+                        foreach (var handler in ipclick)
+                        {
+                            if (handler == null) continue;
+                            handler.OnPointerClick(eventData);
+                        }
+                        DebugLogger.Log(LogCategory.Game, "Main",
+                            $"Called {ipclick.Length} ipclick handler(s) directly");
+                    }
+                    else
+                    {
+                        // No ipclick handlers — try OnPointerClick anyway as last resort
+                        arrowVc.OnPointerClick(eventData);
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Game, "Main",
+                        $"ipclick fallback error: {ex.Message}");
+                    arrowVc.OnPointerClick(eventData);
+                }
+            }
         }
 
         #endregion

@@ -64,7 +64,15 @@ namespace DuelLinksAccess
             result = TryParentSiblingText(go);
             if (result != null) return result;
 
-            // 9. Cleaned-up GO name as last resort
+            // 9. ShortCutPanel BG buttons — image-only, identify via panel dictionary
+            result = TryShortCutPanelButton(go);
+            if (result != null) return result;
+
+            // 10. Duel Trials quiz banners — image-only, label from ClientWork data
+            result = TryDuelTrialsBanner(go);
+            if (result != null) return result;
+
+            // 11. Cleaned-up GO name as last resort
             return CleanGoName(go.name);
         }
 
@@ -888,7 +896,7 @@ namespace DuelLinksAccess
         /// <summary>
         /// Debug helper: dumps all Text components (including inactive) in a GO hierarchy.
         /// </summary>
-        private static void DumpChildTexts(GameObject go, string context)
+        internal static void DumpChildTexts(GameObject go, string context)
         {
             try
             {
@@ -986,6 +994,137 @@ namespace DuelLinksAccess
             }
             catch { }
             return null;
+        }
+
+        /// <summary>
+        /// Identifies BG buttons within the ShortCutPanel by matching against
+        /// the panel's Buttons dictionary. These character-style buttons are
+        /// image-only and need their key looked up for a readable label.
+        /// </summary>
+        // Cache: maps BG GO instance IDs to shortcut labels (built once per panel)
+        private static readonly Dictionary<int, string> _shortcutBgCache = new();
+        private static int _shortcutCacheFrame = -1;
+
+        private static string TryShortCutPanelButton(GameObject go)
+        {
+            if (go.name != "BG") return null;
+            try
+            {
+                var panel = Il2CppYgomGame.Single.OverLap.ShortCutPanel.spanel;
+                if (panel == null) return null;
+
+                // Verify this BG is under the shortcut panel
+                if (!go.transform.IsChildOf(panel.transform)) return null;
+
+                // Build cache once per frame: collect all PrefabCharaPinButton
+                // children in order and match to character-style dictionary keys
+                int frame = UnityEngine.Time.frameCount;
+                if (frame != _shortcutCacheFrame)
+                {
+                    _shortcutCacheFrame = frame;
+                    _shortcutBgCache.Clear();
+                    BuildShortcutBgCache(panel);
+                }
+
+                int id = go.GetInstanceID();
+                if (_shortcutBgCache.TryGetValue(id, out string cached))
+                    return cached;
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "LabelExtract",
+                    $"ShortCutPanel BG match error: {ex.Message}");
+            }
+            return null;
+        }
+
+        // The 4 character-style shortcut keys that render as PrefabCharaPinButton
+        // with BG image buttons. The remaining 5 keys use ShortCutButtonEntry icons.
+        // Order matches the panel's creation order (dictionary iteration order).
+        private static readonly string[] _charShortcutKeys =
+            { "trader", "duelchallenge", "traderEx", "eve1004" };
+
+        /// <summary>
+        /// Builds a mapping from BG button instance IDs to shortcut labels.
+        /// Finds all PrefabCharaPinButton containers anywhere in the panel
+        /// hierarchy and matches them to the known character-style keys by order.
+        /// </summary>
+        private static void BuildShortcutBgCache(
+            Il2CppYgomGame.Single.OverLap.ShortCutPanel panel)
+        {
+            try
+            {
+                // Find all PrefabCharaPinButton(Clone) GOs anywhere in the panel
+                var allTransforms = panel.GetComponentsInChildren<Transform>(true);
+                if (allTransforms == null) return;
+
+                var bgButtons = new List<GameObject>();
+                foreach (var tf in allTransforms)
+                {
+                    if (tf?.gameObject == null) continue;
+                    if (!tf.gameObject.name.StartsWith("PrefabCharaPinButton")) continue;
+                    if (!tf.gameObject.activeInHierarchy) continue;
+
+                    // Find the BG button inside this container
+                    var bgBtn = tf.Find("BG");
+                    if (bgBtn?.gameObject != null)
+                        bgButtons.Add(bgBtn.gameObject);
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "LabelExtract",
+                    $"Found {bgButtons.Count} PrefabCharaPinButton BG buttons");
+
+                // Match by order to the known character-style keys
+                int count = Math.Min(bgButtons.Count, _charShortcutKeys.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    string label = Loc.GetShortcutLabel(_charShortcutKeys[i]);
+                    _shortcutBgCache[bgButtons[i].GetInstanceID()] = label;
+                    DebugLogger.Log(LogCategory.Handler, "LabelExtract",
+                        $"ShortCut mapped BG #{i} -> {_charShortcutKeys[i]} = \"{label}\"");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "LabelExtract",
+                    $"BuildShortcutBgCache error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Identifies Duel Trials quiz banners (Banner1/2/3) by reading
+        /// the resource type from ClientWork data. These are image-only
+        /// elements with no text — the data lives in DuelChallenge.top.data.list.
+        /// </summary>
+        private static string TryDuelTrialsBanner(GameObject go)
+        {
+            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.DuelTrials)
+                return null;
+
+            // Match BannerN pattern
+            string name = go.name;
+            if (!name.StartsWith("Banner")) return null;
+            string numStr = name.Substring("Banner".Length);
+            if (!int.TryParse(numStr, out int bannerNum) || bannerNum < 1)
+                return null;
+
+            // Try to get resource type from ClientWork
+            try
+            {
+                string dataPath = $"DuelChallenge.top.data.list.{bannerNum}.data";
+                string resource = Il2CppYgomSystem.Utility.ClientWork
+                    .getStringByJsonPath(dataPath + ".resource", "");
+                if (!string.IsNullOrEmpty(resource) && resource == "Quiz")
+                    return Loc.Get("duel_trials_quiz", bannerNum);
+
+                // Non-Quiz resource: use resource name + number
+                if (!string.IsNullOrEmpty(resource))
+                    return $"{resource} {bannerNum}";
+            }
+            catch { }
+
+            // Fallback: generic quiz label
+            return Loc.Get("duel_trials_quiz", bannerNum);
         }
 
         #endregion

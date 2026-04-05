@@ -254,6 +254,22 @@ namespace DuelLinksAccess
                     // Result screens handle their own announcement in ScanResultScreen
                     ScreenReader.SayQueued(
                         Loc.Get("screen_buttons", _items.Count));
+
+                    // Htjson pages often have explanatory text alongside buttons
+                    // (e.g. Duel Trials quiz descriptions, hint text). Capture it
+                    // so T can re-read it, and announce on entry.
+                    if (_screenRoot.name == "HtjsonPage" || _screenRoot.name == "TutorialArrowPart")
+                    {
+                        string pageText = ReadScreenText(_screenRoot);
+                        if (!string.IsNullOrEmpty(pageText))
+                        {
+                            _lastReadText = pageText;
+                            ScreenReader.SayQueued(pageText);
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Htjson page text ({pageText.Length} chars)");
+                        }
+                    }
+
                     AnnounceCurrentItem(queued: true);
                 }
                 else
@@ -912,11 +928,38 @@ namespace DuelLinksAccess
                 if (namedManager == null) return null;
 
                 // Try content manager first (main game screens)
-                var root = GetTopViewGameObject(namedManager, "content");
-                if (root != null) return root;
+                Il2CppYgomSystem.UI.ViewControllerManager contentMgr;
+                if (namedManager.TryGetValue("content", out contentMgr) && contentMgr != null)
+                {
+                    var topVc = contentMgr.GetStackTopViewController();
+                    if (topVc?.gameObject != null)
+                    {
+                        string topName = topVc.gameObject.name;
+
+                        // TutorialArrowPart is a tutorial overlay pushed on top of
+                        // the actual content page (e.g. Duel Trials HtjsonPage).
+                        // Scan the page underneath instead of the empty arrow.
+                        if (topName == "TutorialArrowPart" || topName == "TutorialArrow")
+                        {
+                            int count = contentMgr.GetStackCount();
+                            if (count >= 2)
+                            {
+                                var belowVc = contentMgr.GetStackViewController(count - 2);
+                                if (belowVc?.gameObject != null)
+                                {
+                                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                        $"Skipping {topName}, scanning {belowVc.gameObject.name} underneath");
+                                    return belowVc.gameObject;
+                                }
+                            }
+                        }
+
+                        return topVc.gameObject;
+                    }
+                }
 
                 // Fall back to base manager
-                root = GetTopViewGameObject(namedManager, "base");
+                var root = GetTopViewGameObject(namedManager, "base");
                 if (root != null) return root;
 
                 return null;
@@ -1000,13 +1043,33 @@ namespace DuelLinksAccess
                     var go = mapObj.gameObject;
                     if (go == null || !go.activeInHierarchy) continue;
 
+                    // Log every map object before filtering, to catch special types
+                    bool isSchool = false;
+                    try
+                    {
+                        isSchool = mapObj.TryCast<Il2CppYgomGame.Single.SchoolObject>() != null;
+                    }
+                    catch { }
+
                     var data = mapObj.mapObjectData;
-                    if (data == null) continue;
+                    if (data == null)
+                    {
+                        if (isSchool)
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"SchoolObject FOUND but mapObjectData is null. GO={go.name}");
+                        continue;
+                    }
 
                     // Skip non-tappable or hidden objects
                     try
                     {
-                        if (data.notTap || data.hidden) continue;
+                        if (data.notTap || data.hidden)
+                        {
+                            if (isSchool)
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    $"SchoolObject FOUND but filtered: notTap={data.notTap} hidden={data.hidden} GO={go.name}");
+                            continue;
+                        }
                     }
                     catch { continue; }
 
@@ -1031,6 +1094,15 @@ namespace DuelLinksAccess
                     {
                         typeName = go.name;
                     }
+
+                    // Identify special map objects by IL2CPP type
+                    try
+                    {
+                        var school = mapObj.TryCast<Il2CppYgomGame.Single.SchoolObject>();
+                        if (school != null)
+                            typeName = Loc.Get("map_school");
+                    }
+                    catch { }
 
                     _items.Add(new ScreenItem
                     {
@@ -1239,6 +1311,14 @@ namespace DuelLinksAccess
             else if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
                 AnnounceCurrentItem();
+            }
+            else if (InputManager.TryConsumeKeyDown(KeyCode.T))
+            {
+                // Re-read page text (Htjson pages with explanatory content)
+                if (!string.IsNullOrEmpty(_lastReadText))
+                    ScreenReader.Say(_lastReadText);
+                else
+                    ScreenReader.Say(Loc.Get("screen_no_text"));
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
@@ -1579,7 +1659,52 @@ namespace DuelLinksAccess
                 if (TryCallVcMethod(item.Go))
                     handled = true;
 
-                // Strategy 4: onClick.Invoke as last resort
+                // Strategy 4: Htjson ButtonSet / div — ExecuteEvents on these only
+                // fires YgomButton's sound effect (IPointerClickHandler), not the
+                // Button.onClick listeners where the Htjson link/expand handler is
+                // registered. Fire onClick.Invoke() directly on the item and its
+                // parents to trigger the actual handler.
+                if (item.Go.name == "ButtonSet" || item.Go.name == "div")
+                {
+                    try
+                    {
+                        // Try onClick.Invoke on the item itself
+                        var btn = item.Go.GetComponent<Button>();
+                        if (btn != null && btn.onClick != null)
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"ButtonSet onClick.Invoke on {item.Go.name}");
+                            btn.onClick.Invoke();
+                            handled = true;
+                        }
+
+                        // Also walk up parents and fire onClick on any Button found.
+                        // The expand/link handler is often on the container parent.
+                        var parent = item.Go.transform.parent;
+                        int depth = 0;
+                        while (parent != null && depth < 4)
+                        {
+                            var parentBtn = parent.GetComponent<Button>();
+                            if (parentBtn != null && parentBtn.onClick != null)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    $"ButtonSet parent onClick.Invoke on {parent.gameObject.name}");
+                                parentBtn.onClick.Invoke();
+                                handled = true;
+                                break;
+                            }
+                            parent = parent.parent;
+                            depth++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"ButtonSet onClick failed: {ex.Message}");
+                    }
+                }
+
+                // Strategy 5: onClick.Invoke as last resort
                 if (!handled)
                 {
                     var button = item.Go.GetComponent<Button>();

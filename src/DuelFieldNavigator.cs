@@ -60,11 +60,10 @@ namespace DuelLinksAccess
         private const int FieldLocateMin = 1;
         private const int FieldLocateMax = 12;
 
-        // Card position bitmasks returned by DLL_DuelGetCardFace
-        private const int PosFaceUpAtk = 0x1;
-        private const int PosFaceUpDef = 0x4;
-        private const int PosFaceUp = PosFaceUpAtk | PosFaceUpDef;  // 0x5
-        private const int PosDefense = PosFaceUpDef | 0x8;          // 0xC
+        // DLL_DuelGetCardFace returns: 0=face-down, 1=face-up (boolean only)
+        // ATK/DEF position determined from command mask TurnAtk/TurnDef bits
+        private const uint CmdTurnAtk = 0x200;  // Can switch TO ATK → currently in DEF
+        private const uint CmdTurnDef = 0x400;  // Can switch TO DEF → currently in ATK
 
         // Player identifiers (matches existing DuelEventAnnouncer convention)
         private const int PlayerMe = 0;
@@ -114,6 +113,7 @@ namespace DuelLinksAccess
 
         // Target selection state (attack targeting)
         private bool _awaitingTarget;
+        private bool _useDirectCommand; // true = skip drag, use OnDoCardCommand(Attack)
         private int _attackerPlayer;
         private int _attackerLocate;
         private int _attackerSlot;
@@ -168,6 +168,7 @@ namespace DuelLinksAccess
             _zoneLocates.Clear();
             _isNavigating = false;
             _awaitingTarget = false;
+            _useDirectCommand = false;
             _inCardSelect = false;
             _selectLocations.Clear();
             CancelActionMenu();
@@ -642,9 +643,10 @@ namespace DuelLinksAccess
                 // Face/position info (field cards only)
                 if (!isHand)
                 {
+                    // DLL_DuelGetCardFace: 0=face-down, 1=face-up (boolean)
                     int face = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardFace(
                         player, locate, slotIndex);
-                    bool isFaceUp = (face & PosFaceUp) != 0;
+                    bool isFaceUp = face != 0;
 
                     // Don't reveal opponent's face-down card names
                     if (!isFaceUp && !isMyCard)
@@ -656,7 +658,23 @@ namespace DuelLinksAccess
 
                     if (isMonster)
                     {
-                        bool isDefense = (face & PosDefense) != 0;
+                        // Determine ATK/DEF position from command mask:
+                        // TurnAtk available → currently DEF, TurnDef available → currently ATK.
+                        // Face-down monsters are always in DEF (Yu-Gi-Oh rule).
+                        bool isDefense = !isFaceUp; // face-down = always DEF
+                        if (isFaceUp)
+                        {
+                            try
+                            {
+                                uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
+                                if ((cmdMask & CmdTurnAtk) != 0)
+                                    isDefense = true;  // can switch TO ATK → in DEF
+                                // If TurnDef is set, isDefense stays false (in ATK)
+                                // If neither, default to ATK (just summoned/already switched)
+                            }
+                            catch { }
+                        }
+
                         parts.Add(isDefense
                             ? Loc.Get("duel_defense_position")
                             : Loc.Get("duel_attack_position"));
@@ -834,10 +852,27 @@ namespace DuelLinksAccess
             {
                 uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
 
+                // Always log attack diagnostics for field monsters
+                if (_currentZone == Zone.MyMonster)
+                {
+                    string inputType = "?";
+                    int attackMask = 0;
+                    try { inputType = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d?
+                        .curInputType.ToString() ?? "?"; } catch { }
+                    try { attackMask = Il2CppYgomGame.Duel.Engine
+                        .DLL_DuelGetAttackTargetMask(player, locate); } catch { }
+                    MelonLogger.Msg($"[FieldNav][AttackDiag] zone={_currentZone} loc={locate} " +
+                        $"slot={slotIndex} cmdMask=0x{cmdMask:X} attackTargetMask=0x{attackMask:X} " +
+                        $"inputType={inputType}");
+                }
+
                 if (cmdMask == 0)
                 {
                     if (Main.DebugMode)
                         DumpCommandMaskScan(player, locate, slotIndex);
+
+                    // cmdMask=0 is normal for Defense Position monsters (can't attack)
+                    // and for monsters that already attacked this turn.
 
                     // Fallback: if no commands but we're on our own field card,
                     // try tapping it via OnTapLocator. This handles tribute/material
@@ -986,6 +1021,13 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // Action on field cards (monster effects) fails the OnTapLocator +
+            // CardCommand popup flow — the popup never appears. Route through
+            // OnDoCardCommand directly, like TurnAtk/TurnDef/Reverse. Hand cards
+            // continue using the tap flow which works via HandCards.TapCard.
+            bool isFieldAction = cmdType == Il2CppYgomGame.Duel.Engine.CommandType.Action
+                && _currentZone != Zone.Hand;
+
             if (IsTapOnlyCommand(cmdType))
             {
                 // Decide/Select: just tap the card — no CardCommand popup
@@ -993,9 +1035,10 @@ namespace DuelLinksAccess
                     DumpCardSelectionState();
                 TapFieldCard(client, player, locate, slotIndex);
             }
-            else if (IsDirectCommand(cmdType))
+            else if (IsDirectCommand(cmdType) || isFieldAction)
             {
-                // Position changes etc.: execute via OnDoCardCommand directly
+                // Position changes / flip / field activation: execute via
+                // OnDoCardCommand directly.
                 var worker = client.worker2d;
                 if (worker != null)
                 {
@@ -1046,12 +1089,15 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Commands that can be executed directly via OnDoCardCommand without
-        /// needing the CardCommand popup UI (position changes, etc.).
+        /// needing the CardCommand popup UI (position changes, flip summon, etc.).
+        /// OnTapLocator + CardCommand popup doesn't register for these on face-down
+        /// monsters — the popup never appears, so we bypass it entirely.
         /// </summary>
         private static bool IsDirectCommand(Il2CppYgomGame.Duel.Engine.CommandType cmd)
         {
             return cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnAtk
-                || cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnDef;
+                || cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnDef
+                || cmd == Il2CppYgomGame.Duel.Engine.CommandType.Reverse;
         }
 
         /// <summary>
@@ -1141,6 +1187,20 @@ namespace DuelLinksAccess
             int targetLocate = (!directAttack && _zoneLocates.Count > 0)
                 ? _zoneLocates[_navIndex] : 0;
 
+            if (_useDirectCommand)
+            {
+                // OnDoCardCommand path: declare attack, then select target.
+                // OnDoCardCommand triggers BattleAttack + WaitInput(8) for target selection.
+                // We then tap the target via OnTapLocator to confirm.
+                _useDirectCommand = false;
+                int tgtLoc = directAttack ? 0 : targetLocate;
+                int tgtSlot = directAttack ? 0 : targetSlot;
+                MelonCoroutines.Start(DirectCommandAttackSequence(
+                    _attackerPlayer, _attackerLocate, _attackerSlot,
+                    directAttack, tgtLoc, tgtSlot));
+                return;
+            }
+
             MelonCoroutines.Start(AttackDragSequence(
                 _attackerPlayer, _attackerLocate, _attackerSlot,
                 directAttack, targetLocate, targetSlot));
@@ -1164,6 +1224,10 @@ namespace DuelLinksAccess
                 ScreenReader.Say(Loc.Get("duel_action_error"));
                 yield break;
             }
+
+            // Clean stale attack state before starting a new attack
+            worker.selectAttacked = false;
+            worker.startTargeting = false;
 
             // Dump attack state before anything
             LogAttackState(worker, "before TapDownField");
@@ -1208,6 +1272,24 @@ namespace DuelLinksAccess
 
                 LogAttackState(worker, "after TapUpField (direct)");
 
+                // Fallback: if drag sequence didn't register, try OnDoCardCommand
+                bool directDragWorked = false;
+                try { directDragWorked = worker.autoAttack; } catch { }
+                if (!directDragWorked)
+                {
+                    MelonLogger.Msg("[FieldNav] Direct drag failed (autoAttack=false), " +
+                        $"trying OnDoCardCommand(Attack) for loc={atkLocate}");
+                    try
+                    {
+                        worker.OnDoCardCommand(atkPlayer, atkLocate, atkSlot,
+                            Il2CppYgomGame.Duel.Engine.CommandType.Attack);
+                    }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Msg($"[FieldNav] OnDoCardCommand(Attack) error: {ex.Message}");
+                    }
+                }
+
                 ScreenReader.Say(Loc.Get("duel_direct_attack"));
             }
             else
@@ -1229,7 +1311,85 @@ namespace DuelLinksAccess
                 worker.OnTapUpField(PlayerOpp, targetLocate, tgtSlot);
 
                 LogAttackState(worker, "after TapUpField (targeted)");
+
+                // Fallback: if drag sequence didn't register (autoAttack still false),
+                // try OnDoCardCommand(Attack). This handles cases where the engine
+                // gates OnSelectAttacked (e.g. equipped monsters breaking cmdMask).
+                bool dragWorked = false;
+                try { dragWorked = worker.autoAttack; } catch { }
+                if (!dragWorked)
+                {
+                    MelonLogger.Msg("[FieldNav] Drag sequence failed (autoAttack=false), " +
+                        $"trying OnDoCardCommand(Attack) for loc={atkLocate}");
+                    try
+                    {
+                        worker.OnDoCardCommand(atkPlayer, atkLocate, atkSlot,
+                            Il2CppYgomGame.Duel.Engine.CommandType.Attack);
+                    }
+                    catch (Exception ex)
+                    {
+                        MelonLogger.Msg($"[FieldNav] OnDoCardCommand(Attack) error: {ex.Message}");
+                    }
+                }
             }
+        }
+
+        /// <summary>
+        /// Coroutine: attack via OnDoCardCommand for when drag sequence fails
+        /// (e.g. equipped monsters breaking cmdMask). Declares the attack, waits
+        /// for the engine to enter target selection, then taps the target.
+        /// </summary>
+        private static IEnumerator DirectCommandAttackSequence(
+            int atkPlayer, int atkLocate, int atkSlot,
+            bool directAttack, int targetLocate, int targetSlot)
+        {
+            var client = Il2CppYgomGame.Duel.DuelClient.instance;
+            var worker = client?.worker2d;
+            if (worker == null)
+            {
+                ScreenReader.Say(Loc.Get("duel_action_error"));
+                yield break;
+            }
+
+            // Force all worker2d state that TapDownField normally sets.
+            // TapDownField fails when cmdMask is broken (equipped monsters),
+            // but OnSelectAttacked needs this state to commit the battle.
+            worker.attackingMonster = atkLocate;
+            worker.selectAttacked = true;
+            worker.startTargeting = true;
+            worker.isTapDowned = true;
+            worker.attackDrag = true;
+
+            LogAttackState(worker, "after manual flag setup");
+
+            for (int i = 0; i < 5; i++)
+                yield return null;
+
+            if (directAttack)
+            {
+                MelonLogger.Msg($"[FieldNav] DirectCommand: OnSelectAttacked({PlayerOpp}, 7, 0)");
+                worker.OnSelectAttacked(PlayerOpp, 7, 0);
+                LogAttackState(worker, "after OnSelectAttacked (direct)");
+
+                for (int i = 0; i < 5; i++)
+                    yield return null;
+
+                worker.OnTapUpField(PlayerOpp, 7, 0);
+            }
+            else
+            {
+                MelonLogger.Msg($"[FieldNav] DirectCommand: " +
+                    $"OnSelectAttacked({PlayerOpp}, {targetLocate}, {targetSlot})");
+                worker.OnSelectAttacked(PlayerOpp, targetLocate, targetSlot);
+                LogAttackState(worker, "after OnSelectAttacked (targeted)");
+
+                for (int i = 0; i < 5; i++)
+                    yield return null;
+
+                worker.OnTapUpField(PlayerOpp, targetLocate, targetSlot);
+            }
+
+            LogAttackState(worker, "after TapUpField");
         }
 
         /// <summary>Dumps all attack-related worker2d fields for diagnostics.</summary>
@@ -1285,7 +1445,6 @@ namespace DuelLinksAccess
         public bool CheckForEmotionalList()
         {
             if (_inEmotionalList) return true;
-            if (_emoListHandled) return false;
 
             try
             {
@@ -1300,14 +1459,15 @@ namespace DuelLinksAccess
                 try { isClosing = emoList.isClosing; } catch { }
                 try { selectMax = emoList.selectMaxNum; } catch { }
 
-                // Active selection: visible, not closing, and game expects a pick
+                // List inactive — reset handled flag so next activation is detected
                 if (!goActive || isClosing || selectMax <= 0)
                 {
-                    // Reset handled flag when list becomes inactive
-                    if (_emoListHandled && (!goActive || selectMax <= 0))
-                        _emoListHandled = false;
+                    _emoListHandled = false;
                     return false;
                 }
+
+                // Don't re-enter if we already handled this active list instance
+                if (_emoListHandled) return false;
 
                 var items = emoList.itemList;
                 if (items == null || items.Count == 0) return false;
@@ -1349,6 +1509,7 @@ namespace DuelLinksAccess
 
         private bool ProcessEmotionalListInput()
         {
+            int selectMax = 0;
             try
             {
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
@@ -1360,7 +1521,6 @@ namespace DuelLinksAccess
 
                 bool goActive = false;
                 bool isClosing = false;
-                int selectMax = 0;
                 try { var go = emoList.gameObject; goActive = go != null && go.activeInHierarchy; } catch { }
                 try { isClosing = emoList.isClosing; } catch { }
                 try { selectMax = emoList.selectMaxNum; } catch { }
@@ -1385,7 +1545,11 @@ namespace DuelLinksAccess
                 if (_emoListCount > 0)
                 {
                     _emoListIndex = (_emoListIndex - 1 + _emoListCount) % _emoListCount;
-                    SelectEmotionalListCard(_emoListIndex);
+                    // Multi-select: scroll only (don't toggle). Single-select: SelectIndex moves highlight.
+                    if (selectMax > 1)
+                        ScrollEmotionalList(_emoListIndex);
+                    else
+                        SelectEmotionalListCard(_emoListIndex);
                     ReadEmotionalListCard(_emoListIndex);
                 }
                 return true;
@@ -1395,14 +1559,26 @@ namespace DuelLinksAccess
                 if (_emoListCount > 0)
                 {
                     _emoListIndex = (_emoListIndex + 1) % _emoListCount;
-                    SelectEmotionalListCard(_emoListIndex);
+                    if (selectMax > 1)
+                        ScrollEmotionalList(_emoListIndex);
+                    else
+                        SelectEmotionalListCard(_emoListIndex);
                     ReadEmotionalListCard(_emoListIndex);
                 }
                 return true;
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Return))
             {
-                ConfirmEmotionalList();
+                if (selectMax > 1)
+                    ToggleEmotionalListCard();
+                else
+                    ConfirmEmotionalList();
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Space))
+            {
+                if (selectMax > 1)
+                    ConfirmEmotionalList();
                 return true;
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
@@ -1417,6 +1593,21 @@ namespace DuelLinksAccess
                 return true;
             }
             return false;
+        }
+
+        /// <summary>Scrolls the EmotionalList to show the card at index without toggling selection.</summary>
+        private void ScrollEmotionalList(int index)
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                emoList?.ScrollCardList(index, true);
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"ScrollEmotionalList error: {ex.Message}");
+            }
         }
 
         private void SelectEmotionalListCard(int index)
@@ -1455,10 +1646,12 @@ namespace DuelLinksAccess
 
                 int mixedId = item.mixedId;
                 int uid = 0;
+                int cid = 0;
                 try { uid = item.uniqueId; } catch { }
+                try { cid = item.cid; } catch { }
 
                 MelonLoader.MelonLogger.Msg(
-                    $"[FieldNav] EmoCard[{index}]: mixedId={mixedId} uniqueId={uid}");
+                    $"[FieldNav] EmoCard[{index}]: mixedId={mixedId} uniqueId={uid} cid={cid}");
 
                 string cardName = null;
 
@@ -1474,7 +1667,14 @@ namespace DuelLinksAccess
                     catch { }
                 }
 
-                // Fallback: mixedId as card database ID
+                // Fallback: cid (card ID) — more reliable than mixedId
+                if (string.IsNullOrEmpty(cardName) || cardName == Loc.Get("duel_unknown_card"))
+                {
+                    if (cid > 0 && cid < 100000)
+                        cardName = ResolveCardName((uint)cid);
+                }
+
+                // Last resort: mixedId as card database ID
                 if (string.IsNullOrEmpty(cardName) || cardName == Loc.Get("duel_unknown_card"))
                 {
                     if (mixedId > 0 && mixedId < 100000)
@@ -1502,6 +1702,33 @@ namespace DuelLinksAccess
             }
         }
 
+        /// <summary>
+        /// Toggles selection on the current card for multi-select EmotionalList.
+        /// SelectIndex toggles the card in the game's selectedList.
+        /// </summary>
+        private void ToggleEmotionalListCard()
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList == null) return;
+
+                emoList.SelectIndex(_emoListIndex, false);
+
+                int selectedCount = 0;
+                int selectMax = 0;
+                try { selectedCount = emoList.selectedList?.Count ?? 0; } catch { }
+                try { selectMax = emoList.selectMaxNum; } catch { }
+
+                ScreenReader.Say(Loc.Get("duel_emo_list_toggled", selectedCount, selectMax));
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"ToggleEmotionalListCard error: {ex.Message}");
+            }
+        }
+
         private void ConfirmEmotionalList()
         {
             try
@@ -1514,7 +1741,28 @@ namespace DuelLinksAccess
                     return;
                 }
 
-                emoList.SelectIndex(_emoListIndex, false);
+                // For multi-select, check minimum selection requirement
+                int selectMax = 0;
+                int selectMin = 0;
+                try { selectMax = emoList.selectMaxNum; } catch { }
+                try { selectMin = emoList.selectMinNum; } catch { }
+
+                if (selectMax > 1)
+                {
+                    int selectedCount = 0;
+                    try { selectedCount = emoList.selectedList?.Count ?? 0; } catch { }
+                    if (selectedCount < selectMin)
+                    {
+                        ScreenReader.Say(Loc.Get("duel_emo_list_need_more", selectMin));
+                        return;
+                    }
+                }
+                else
+                {
+                    // Single select: select current card before confirming
+                    emoList.SelectIndex(_emoListIndex, false);
+                }
+
                 emoList.OnDecide();
                 ScreenReader.Say(Loc.Get("duel_card_selected"));
 
@@ -2670,16 +2918,31 @@ namespace DuelLinksAccess
                             player, loc, 0);
                         if (uid <= 0) continue;
 
-                        // Classify card type via BasicVal.Type
-                        bool isMonster = false;
+                        // Classify by field position first: locates 2-4 are monster zones,
+                        // 9-11 are spell/trap zones. This prevents equipped monster cards
+                        // (which retain their monster BasicVal.Type) from appearing in
+                        // the wrong zone when equipped to spell/trap positions.
+                        bool isMonsterZone = loc >= 1 && loc <= 8;
+                        bool isMonster;
+                        int bvType = -1;
+                        int cardId = 0;
                         try
                         {
                             var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
                             Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
                                 player, loc, 0, ref bv);
-                            isMonster = bv.Type != 0;
+                            bvType = (int)bv.Type;
+                            cardId = bv.CardID;
+                            // Use locate to determine zone, not card type.
+                            // Monster cards equipped to spell zones should be in MySpell.
+                            isMonster = isMonsterZone;
                         }
-                        catch { /* If BasicVal fails, fall back to monster assumption */ isMonster = true; }
+                        catch { isMonster = isMonsterZone; }
+
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            $"ZoneScan: p={player} loc={loc} uid={uid} cardId={cardId} " +
+                            $"bvType={bvType} isMonsterZone={isMonsterZone} " +
+                            $"match={isMonster == wantMonster}");
 
                         if (isMonster == wantMonster)
                         {

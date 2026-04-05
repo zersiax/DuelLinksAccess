@@ -45,6 +45,19 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Gets a localized label for a shortcut panel key.
+        /// Falls back to a cleaned-up version of the key if not mapped.
+        /// </summary>
+        public static string GetShortcutLabel(string key)
+        {
+            string locKey = "shortcut_" + key;
+            if (!_initialized) Initialize();
+            if (_english.TryGetValue(locKey, out string value))
+                return value;
+            return key;
+        }
+
+        /// <summary>
         /// Gets a localized string with placeholders.
         /// Uses {0}, {1}, {2} etc. as placeholders.
         /// </summary>
@@ -93,6 +106,8 @@ namespace DuelLinksAccess
             _english["screen_gate"] = "Gate";
             _english["screen_store"] = "Store";
             _english["screen_notices"] = "Notices";
+            _english["screen_duel_trials"] = "Duel Trials";
+            _english["duel_trials_quiz"] = "Quiz Level {0}";
             _english["no_repeat"] = "Nothing to repeat";
 
             // ===== DIALOGS =====
@@ -118,6 +133,7 @@ namespace DuelLinksAccess
             _english["screen_click_error"] = "Could not press button";
             _english["screen_back"] = "Back";
             _english["screen_cutscene"] = "Cutscene. Press Enter or Space to advance.";
+            _english["screen_no_text"] = "No page text";
 
             // ===== DUEL WORLD MAP =====
             _english["map_area_street"] = "Street";
@@ -131,6 +147,18 @@ namespace DuelLinksAccess
             _english["map_card_trader"] = "Card Trader";
             _english["map_npc_trainer"] = "Trainer";
             _english["map_npc_bonus"] = "Bonus Duelist";
+            _english["map_school"] = "Duel Trials";
+
+            // ===== SHORTCUT PANEL =====
+            _english["shortcut_trader"] = "Card Trader";
+            _english["shortcut_duelchallenge"] = "Duel Trials";
+            _english["shortcut_traderEx"] = "Card Trader EX";
+            _english["shortcut_replay"] = "Replay";
+            _english["shortcut_cardlist"] = "Card List";
+            _english["shortcut_cardchronicle"] = "Card Chronicle";
+            _english["shortcut_skilllist"] = "Skill List";
+            _english["shortcut_ranking"] = "Ranking";
+            _english["shortcut_eve1004"] = "Event";
 
             // ===== DUEL: GENERAL =====
             _english["duel_started"] = "Duel started";
@@ -248,7 +276,9 @@ namespace DuelLinksAccess
 
             // ===== DUEL: EMOTIONAL LIST (card list selection) =====
             _english["duel_emo_list_single"] = "Select a card. {0} choices. Left right to navigate, Enter to select.";
-            _english["duel_emo_list_multi"] = "Select cards. {0} choices, pick up to {1}. Left right to navigate, Enter to select.";
+            _english["duel_emo_list_multi"] = "Select cards. {0} choices, pick up to {1}. Left right to navigate, Enter to toggle, Space to confirm.";
+            _english["duel_emo_list_toggled"] = "{0} selected of {1}";
+            _english["duel_emo_list_need_more"] = "Need at least {0} selected";
             _english["duel_action_cancelled"] = "Cancelled";
             _english["duel_cannot_cancel"] = "Cannot cancel";
 
