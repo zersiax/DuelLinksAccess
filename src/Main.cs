@@ -229,6 +229,13 @@ namespace DuelLinksAccess
                 return true;
             }
 
+            // F10 = Dump DLL_DuelGetCardNum for locates 0-25 (debug)
+            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F10))
+            {
+                DuelFieldNavigator.DumpLocateCounts();
+                return true;
+            }
+
             // Ctrl+R = Repeat last announcement
             if (Input.GetKey(KeyCode.LeftControl) && InputManager.TryConsumeKeyDown(KeyCode.R))
             {

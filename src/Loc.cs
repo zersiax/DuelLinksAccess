@@ -112,7 +112,7 @@ namespace DuelLinksAccess
 
             // ===== DIALOGS =====
             _english["dialog_buttons"] = "{0} items. Up down to navigate, Enter to press, Left right for sliders.";
-            _english["dialog_button_item"] = "{0} of {1}: {2}";
+            _english["dialog_button_item"] = "{2}, {0} of {1}";
             _english["dialog_slider_item"] = "{0} of {1}: Slider, value {2}, range {3} to {4}. Left right to adjust.";
             _english["dialog_slider"] = "Slider: {0}";
             _english["dialog_no_buttons"] = "No interactive items found. Press Space to re-scan.";
@@ -126,7 +126,7 @@ namespace DuelLinksAccess
 
             // ===== SCREEN BUTTONS =====
             _english["screen_buttons"] = "{0} items. Up down to navigate, Enter to press.";
-            _english["screen_button_item"] = "{0} of {1}: {2}";
+            _english["screen_button_item"] = "{2}, {0} of {1}";
             _english["screen_slider_item"] = "{0} of {1}: {2}, value {3}, range {4} to {5}. Left right to adjust.";
             _english["screen_slider"] = "Slider: {0}";
             _english["screen_rescan"] = "Rescanning";
@@ -227,6 +227,7 @@ namespace DuelLinksAccess
             _english["duel_zone_my_monsters"] = "Your monsters";
             _english["duel_zone_my_spells"] = "Your spells and traps";
             _english["duel_zone_my_grave"] = "Your graveyard";
+            _english["duel_zone_my_extra"] = "Your extra deck";
             _english["duel_zone_opp_monsters"] = "Opponent monsters";
             _english["duel_zone_opp_spells"] = "Opponent spells and traps";
             _english["duel_card_position"] = "{0} of {1}: {2}";
@@ -270,8 +271,9 @@ namespace DuelLinksAccess
 
             // ===== DUEL: CARD SELECTION (tribute, material, etc.) =====
             _english["duel_card_select_prompt"] = "{0}. {1} choices. Left right to navigate, Enter to select.";
-            _english["duel_card_select_item"] = "{0} of {1}: {2}";
+            _english["duel_card_select_item"] = "{2}, {0} of {1}";
             _english["duel_card_selected"] = "Selected";
+            _english["duel_card_picked"] = "Selected: {0}";
             _english["duel_card_select_cancelled"] = "Selection cancelled";
 
             // ===== DUEL: EMOTIONAL LIST (card list selection) =====

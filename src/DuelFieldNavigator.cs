@@ -38,6 +38,7 @@ namespace DuelLinksAccess
         // Confirmed from log analysis:
         //   locate=2,3   → field slots (monsters confirmed here)
         //   locate=13    → Hand (multi-card)
+        //   locate=14    → Extra Deck (multi-card, player only; opponent's is hidden)
         //   locate=15    → Deck (multi-card)
         //   locate=16    → Graveyard (multi-card, confirmed: destroyed Doron appeared here)
         //
@@ -53,6 +54,7 @@ namespace DuelLinksAccess
         //   5-8        → Unknown (possibly field spell, pendulum, extra monster,
         //                 or unused in Speed Duel format)
         private const int LocateHand = 13;
+        private const int LocateExtra = 14;
         private const int LocateGrave = 16;
         private const int LocateDeck = 15;
 
@@ -82,6 +84,7 @@ namespace DuelLinksAccess
             OppMonster,
             OppSpell,
             MyGrave,
+            MyExtra,
         }
 
 
@@ -97,6 +100,7 @@ namespace DuelLinksAccess
             Zone.OppMonster,
             Zone.OppSpell,
             Zone.MyGrave,
+            Zone.MyExtra,
         };
 
         // Navigation state
@@ -158,6 +162,40 @@ namespace DuelLinksAccess
         #endregion
 
         #region Public Methods
+
+        /// <summary>
+        /// Debug: probes DLL_DuelGetCardNum for all locate values 0-25 on both
+        /// players and logs any non-zero counts. Use to discover unknown locates
+        /// (Extra Deck, banished pile, field spell, etc.) in a live duel.
+        /// </summary>
+        public static void DumpLocateCounts()
+        {
+            try
+            {
+                MelonLoader.MelonLogger.Msg("[FieldNav] === Locate count dump ===");
+                for (int player = 0; player <= 1; player++)
+                {
+                    var found = new System.Text.StringBuilder();
+                    for (int locate = 0; locate <= 25; locate++)
+                    {
+                        int count = 0;
+                        try { count = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, locate); }
+                        catch { continue; }
+
+                        if (count > 0)
+                            found.Append($"loc={locate}:{count} ");
+                    }
+                    MelonLoader.MelonLogger.Msg(
+                        $"[FieldNav] Player {player}: {(found.Length > 0 ? found.ToString() : "(none)")}");
+                }
+                MelonLoader.MelonLogger.Msg("[FieldNav] === End dump ===");
+                ScreenReader.Say("Locate counts dumped to log");
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Msg($"[FieldNav] DumpLocateCounts error: {ex.Message}");
+            }
+        }
 
         /// <summary>Resets all navigation state. Call on duel end.</summary>
         public void Reset()
@@ -620,6 +658,9 @@ namespace DuelLinksAccess
                 string cardName = ResolveCardName(cardDbId);
 
                 bool isHand = _currentZone == Zone.Hand;
+                bool isExtra = _currentZone == Zone.MyExtra;
+                // Hand and Extra Deck share read semantics: no face, Content-DB stats.
+                bool isContentView = isHand || isExtra;
                 bool isMyCard = player == PlayerMe;
                 bool isFieldCard = IsFieldSlotZone(_currentZone);
 
@@ -640,8 +681,8 @@ namespace DuelLinksAccess
                 // --- Build announcement parts ---
                 var parts = new List<string>();
 
-                // Face/position info (field cards only)
-                if (!isHand)
+                // Face/position info (field + grave; not hand/extra)
+                if (!isContentView)
                 {
                     // DLL_DuelGetCardFace: 0=face-down, 1=face-up (boolean)
                     int face = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardFace(
@@ -690,10 +731,10 @@ namespace DuelLinksAccess
                 }
                 else
                 {
-                    // Hand cards: read level, ATK, DEF from Content database
-                    string handStats = GetHandCardStats(cardDbId);
-                    if (handStats != null)
-                        parts.Add(handStats);
+                    // Hand / Extra Deck cards: read level, ATK, DEF from Content database
+                    string stats = GetHandCardStats(cardDbId);
+                    if (stats != null)
+                        parts.Add(stats);
                 }
 
                 // Position header: "1 of 3: Blue-Eyes White Dragon"
@@ -874,10 +915,12 @@ namespace DuelLinksAccess
                     // cmdMask=0 is normal for Defense Position monsters (can't attack)
                     // and for monsters that already attacked this turn.
 
-                    // Fallback: if no commands but we're on our own field card,
+                    // Fallback: if no commands but we're on our own field/extra card,
                     // try tapping it via OnTapLocator. This handles tribute/material
-                    // selection where the game waits for taps, not commands.
-                    if (_currentZone == Zone.MyMonster || _currentZone == Zone.MySpell)
+                    // selection where the game waits for taps, not commands, and also
+                    // extra deck summon initiation (materials picked after tap).
+                    if (_currentZone == Zone.MyMonster || _currentZone == Zone.MySpell
+                        || _currentZone == Zone.MyExtra)
                     {
                         var duelClient = Il2CppYgomGame.Duel.DuelClient.instance;
                         if (duelClient != null)
@@ -912,10 +955,15 @@ namespace DuelLinksAccess
 
                 if (_commands.Count == 1 && !NeedsTarget(_commands[0].Type))
                 {
-                    // Single command that doesn't need a target: auto-execute
+                    // Single command that doesn't need a target: auto-execute.
+                    // Must mirror ExecuteSelectedCommand's dispatch to handle
+                    // field Action / direct commands correctly.
                     var cmdType = _commands[0].Type;
                     string label = _commands[0].Label;
                     ScreenReader.Say(label);
+
+                    bool isFieldAction = cmdType == Il2CppYgomGame.Duel.Engine.CommandType.Action
+                        && _currentZone != Zone.Hand;
 
                     if (IsTapOnlyCommand(cmdType))
                     {
@@ -923,6 +971,18 @@ namespace DuelLinksAccess
                         if (Main.DebugMode)
                             DumpCardSelectionState();
                         TapFieldCard(client, player, locate, slotIndex);
+                    }
+                    else if (IsDirectCommand(cmdType) || isFieldAction)
+                    {
+                        // Position changes / flip / field activation: OnDoCardCommand
+                        // directly. The CardCommand popup path fails for these.
+                        var worker = client.worker2d;
+                        if (worker != null)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                $"Direct command (auto): OnDoCardCommand({cmdType}) for ({player}, {locate}, {slotIndex})");
+                            worker.OnDoCardCommand(player, locate, slotIndex, cmdType);
+                        }
                     }
                     else
                     {
@@ -1589,7 +1649,7 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.C))
             {
                 if (_emoListCount > 0)
-                    ReadEmotionalListCard(_emoListIndex);
+                    ReadEmotionalListCard(_emoListIndex, verbose: true);
                 return true;
             }
             return false;
@@ -1624,7 +1684,7 @@ namespace DuelLinksAccess
             }
         }
 
-        private void ReadEmotionalListCard(int index)
+        private void ReadEmotionalListCard(int index, bool verbose = false)
         {
             if (index < 0 || index >= _emoListCount) return;
 
@@ -1650,45 +1710,44 @@ namespace DuelLinksAccess
                 try { uid = item.uniqueId; } catch { }
                 try { cid = item.cid; } catch { }
 
-                MelonLoader.MelonLogger.Msg(
-                    $"[FieldNav] EmoCard[{index}]: mixedId={mixedId} uniqueId={uid} cid={cid}");
-
-                string cardName = null;
-
-                // uniqueId → engine card ID (most reliable during duels)
+                // Resolve card DB ID. Field cards (tribute material) store the
+                // runtime uniqueId in mixedId; hand/grave cards often store the
+                // card DB ID directly. Try uniqueId lookup first, then fall back
+                // to treating mixedId as a card DB ID.
+                int cardDbId = 0;
                 if (uid > 0)
                 {
                     try
                     {
-                        uint cardDbId = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid);
-                        if (cardDbId > 0 && cardDbId < 100000)
-                            cardName = ResolveCardName(cardDbId);
+                        uint resolved = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid);
+                        if (resolved > 0 && resolved < 100000)
+                            cardDbId = (int)resolved;
                     }
                     catch { }
                 }
-
-                // Fallback: cid (card ID) — more reliable than mixedId
-                if (string.IsNullOrEmpty(cardName) || cardName == Loc.Get("duel_unknown_card"))
+                // Try mixedId as a uniqueId (field cards in tribute/material selection)
+                if (cardDbId == 0 && mixedId > 0)
                 {
-                    if (cid > 0 && cid < 100000)
-                        cardName = ResolveCardName((uint)cid);
+                    try
+                    {
+                        uint resolved = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(mixedId);
+                        if (resolved > 0 && resolved < 100000)
+                            cardDbId = (int)resolved;
+                    }
+                    catch { }
                 }
+                if (cardDbId == 0 && cid > 0 && cid < 100000)
+                    cardDbId = cid;
+                // Last resort: mixedId as a direct card DB ID (hand/grave discard lists)
+                if (cardDbId == 0 && mixedId > 0 && mixedId < 100000)
+                    cardDbId = mixedId;
 
-                // Last resort: mixedId as card database ID
-                if (string.IsNullOrEmpty(cardName) || cardName == Loc.Get("duel_unknown_card"))
-                {
-                    if (mixedId > 0 && mixedId < 100000)
-                        cardName = ResolveCardName((uint)mixedId);
-                }
+                MelonLoader.MelonLogger.Msg(
+                    $"[FieldNav] EmoCard[{index}]: mixedId={mixedId} uniqueId={uid} cid={cid} resolved={cardDbId}");
 
-                string info = cardName ?? Loc.Get("duel_unknown_card");
-                try
-                {
-                    var bv = item.basicVal;
-                    if (bv.Atk >= 0 && bv.Atk < 100000)
-                        info += $", ATK {bv.Atk}, DEF {bv.Def}";
-                }
-                catch { }
+                string info = cardDbId > 0
+                    ? (verbose ? CardFormatter.FormatVerbose(cardDbId) : CardFormatter.FormatCompact(cardDbId))
+                    : Loc.Get("duel_unknown_card");
 
                 ScreenReader.Say(Loc.Get("duel_card_select_item",
                     index + 1, _emoListCount, info));
@@ -1759,12 +1818,43 @@ namespace DuelLinksAccess
                 }
                 else
                 {
-                    // Single select: select current card before confirming
-                    emoList.SelectIndex(_emoListIndex, false);
+                    // Single select: previous approach set selectedList=[idx] and
+                    // called OnDecide, but OnDecide doesn't read selectedList alone
+                    // — it uses the internal state updated by OnClickCard. Route
+                    // through OnClickCard with the ListCard at our index, which is
+                    // exactly what the game invokes on a physical tap.
+                    try
+                    {
+                        var cards = emoList.cardList;
+                        if (cards != null && _emoListIndex < cards.Count)
+                        {
+                            var listCard = cards[_emoListIndex];
+                            MelonLoader.MelonLogger.Msg(
+                                $"[FieldNav] Confirm: _emoListIndex={_emoListIndex}, " +
+                                $"calling OnClickCard(cardList[{_emoListIndex}])");
+                            emoList.OnClickCard(listCard);
+                        }
+                        else
+                        {
+                            MelonLoader.MelonLogger.Msg(
+                                $"[FieldNav] Confirm: cardList null or index out of range " +
+                                $"(_emoListIndex={_emoListIndex} count={cards?.Count ?? 0})");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MelonLoader.MelonLogger.Msg(
+                            $"[FieldNav] OnClickCard error: {ex.Message}");
+                    }
                 }
 
+                // Announce what's being picked (with card name)
+                string pickedName = GetEmoCardName(_emoListIndex);
+                ScreenReader.Say(Loc.Get("duel_card_picked", pickedName));
+
+                // For multi-select, OnDecide is still required. For single-select,
+                // OnClickCard may auto-confirm — but OnDecide is idempotent/safe.
                 emoList.OnDecide();
-                ScreenReader.Say(Loc.Get("duel_card_selected"));
 
                 _inEmotionalList = false;
                 _emoListHandled = true;
@@ -1775,6 +1865,53 @@ namespace DuelLinksAccess
                     $"ConfirmEmotionalList error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("duel_action_error"));
             }
+        }
+
+        /// <summary>Resolves the display name of the EmotionalList card at the given index.</summary>
+        private string GetEmoCardName(int index)
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var items = emoList?.itemList;
+                if (items == null || index < 0 || index >= items.Count)
+                    return Loc.Get("duel_unknown_card");
+
+                var item = items[index];
+                if (item == null) return Loc.Get("duel_unknown_card");
+
+                int mixedId = item.mixedId;
+                int uid = 0, cid = 0;
+                try { uid = item.uniqueId; } catch { }
+                try { cid = item.cid; } catch { }
+
+                int cardDbId = 0;
+                if (uid > 0)
+                {
+                    try
+                    {
+                        uint r = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid);
+                        if (r > 0 && r < 100000) cardDbId = (int)r;
+                    }
+                    catch { }
+                }
+                if (cardDbId == 0 && mixedId > 0)
+                {
+                    try
+                    {
+                        uint r = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(mixedId);
+                        if (r > 0 && r < 100000) cardDbId = (int)r;
+                    }
+                    catch { }
+                }
+                if (cardDbId == 0 && cid > 0 && cid < 100000) cardDbId = cid;
+                if (cardDbId == 0 && mixedId > 0 && mixedId < 100000) cardDbId = mixedId;
+
+                if (cardDbId > 0)
+                    return CardFormatter.GetName(cardDbId);
+            }
+            catch { }
+            return Loc.Get("duel_unknown_card");
         }
 
         private void CancelEmotionalList()
@@ -3022,6 +3159,7 @@ namespace DuelLinksAccess
             {
                 Zone.Hand => LocateHand,
                 Zone.MyGrave => LocateGrave,
+                Zone.MyExtra => LocateExtra,
                 _ => LocateHand
             };
         }
@@ -3034,6 +3172,7 @@ namespace DuelLinksAccess
                 Zone.MyMonster => Loc.Get("duel_zone_my_monsters"),
                 Zone.MySpell => Loc.Get("duel_zone_my_spells"),
                 Zone.MyGrave => Loc.Get("duel_zone_my_grave"),
+                Zone.MyExtra => Loc.Get("duel_zone_my_extra"),
                 Zone.OppMonster => Loc.Get("duel_zone_opp_monsters"),
                 Zone.OppSpell => Loc.Get("duel_zone_opp_spells"),
                 _ => "Unknown"
