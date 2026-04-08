@@ -611,11 +611,16 @@ namespace DuelLinksAccess
                             }
                             catch { }
 
-                            // Try %datapath% — query ClientWork data store for item name
+                            // Try %datapath% or %sublooppath% — query ClientWork data store
+                            // for item name. Some Htjson templates (e.g. AnotherMissionDialog)
+                            // use %sublooppath% instead of %datapath%.
                             try
                             {
                                 Il2CppSystem.Object dpVal;
-                                if (dict.TryGetValue("%datapath%", out dpVal) && dpVal != null)
+                                if ((!dict.TryGetValue("%datapath%", out dpVal) || dpVal == null)
+                                    && !dict.TryGetValue("%sublooppath%", out dpVal))
+                                    dpVal = null;
+                                if (dpVal != null)
                                 {
                                     string dataPath = dpVal.ToString();
                                     if (!string.IsNullOrEmpty(dataPath))
@@ -834,8 +839,8 @@ namespace DuelLinksAccess
             // Build composite label from available fields
             var parts = new List<string>();
 
-            // Primary name: title or headline
-            string[] primaryKeys = { "title", "name", "headline" };
+            // Primary name: title, name, or label (missions use "label" for text)
+            string[] primaryKeys = { "title", "name", "headline", "label" };
             foreach (var key in primaryKeys)
             {
                 try
@@ -879,6 +884,20 @@ namespace DuelLinksAccess
                     .getStringByJsonPath(dataPath + ".icon.new", "");
                 if (saleVal == "True") parts.Add("Sale");
                 if (newVal == "True") parts.Add("New");
+            }
+            catch { }
+
+            // Mission progress from extext (e.g. "(0/1)", "(3/5)")
+            try
+            {
+                string extext = Il2CppYgomSystem.Utility.ClientWork
+                    .getStringByJsonPath(dataPath + ".extext", "");
+                if (!string.IsNullOrEmpty(extext))
+                {
+                    string progress = StripRichText(extext);
+                    if (!string.IsNullOrEmpty(progress))
+                        parts.Add(progress);
+                }
             }
             catch { }
 

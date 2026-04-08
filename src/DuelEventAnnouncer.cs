@@ -35,6 +35,10 @@ namespace DuelLinksAccess
         // RunEffect fires, so we read values next frame
         private static bool _pendingPhaseAnnouncement;
 
+        // Deferred dialog text — rapid-fire RunDialog events (multiple per
+        // phase transition) replace each other so only the last one speaks
+        private static string _pendingDialogText;
+
         #endregion
 
         #region Public Methods
@@ -49,6 +53,12 @@ namespace DuelLinksAccess
             {
                 _pendingPhaseAnnouncement = false;
                 AnnouncePhaseChange();
+            }
+
+            if (_pendingDialogText != null)
+            {
+                Announce(_pendingDialogText);
+                _pendingDialogText = null;
             }
         }
 
@@ -146,11 +156,17 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunDialog:
-                    Announce(Loc.Get("duel_dialog"));
+                    // p3=0: informational "Check the field?" — suppress entirely.
+                    // The player already hears what happened from other events
+                    // (summon, phase change, etc.) and can inspect the field anytime.
+                    // p3=1: actionable "Activate a card or effect?" chain window.
+                    // Defer to next frame so rapid bursts only speak the last one.
+                    if (param3 != 0)
+                        DeferDialogText("duel_dialog");
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunList:
-                    Announce(Loc.Get("duel_select_card"));
+                    AnnounceDialogText("duel_select_card");
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.ChainSet:
@@ -214,6 +230,7 @@ namespace DuelLinksAccess
             _lastMyLP = -1;
             _lastOppLP = -1;
             _pendingPhaseAnnouncement = false;
+            _pendingDialogText = null;
         }
 
         #endregion
@@ -369,6 +386,187 @@ namespace DuelLinksAccess
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Composes dialog text and defers it to next frame. Rapid-fire RunDialog
+        /// events (2-3 per phase transition) replace each other so only the last
+        /// one in a burst is actually spoken.
+        /// </summary>
+        private static void DeferDialogText(string fallbackKey)
+        {
+            try
+            {
+                string text = ComposeDialogText();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    _pendingDialogText = text;
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelDialog",
+                    $"ComposeDialogText error: {ex.Message}");
+            }
+            _pendingDialogText = Loc.Get(fallbackKey);
+        }
+
+        /// <summary>
+        /// Composes and announces duel dialog/selection text from the Engine's
+        /// DialogMix API immediately. Falls back to the given Loc key.
+        /// </summary>
+        private static void AnnounceDialogText(string fallbackKey)
+        {
+            try
+            {
+                string text = ComposeDialogText();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    Announce(text);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelDialog",
+                    $"ComposeDialogText error: {ex.Message}");
+            }
+            Announce(Loc.Get(fallbackKey));
+        }
+
+        /// <summary>
+        /// Reads Engine.DialogGetMixNum/Type/Data to compose the actual dialog text.
+        /// Returns null if no mix data is available or composition fails.
+        /// </summary>
+        private static string ComposeDialogText()
+        {
+            int count = Il2CppYgomGame.Duel.Engine.DialogGetMixNum();
+            if (count <= 0) return null;
+
+            DebugLogger.Log(LogCategory.Game, "DuelDialog",
+                $"DialogMix entries: {count}");
+
+            var content = Il2CppYgomGame.Card.Content.Instance;
+
+            // First pass: resolve all fragments into strings
+            var fragments = new string[count];
+            var types = new Il2CppYgomGame.Duel.Engine.DialogMixTextType[count];
+            for (int i = 0; i < count; i++)
+            {
+                types[i] = Il2CppYgomGame.Duel.Engine.DialogGetMixType(i);
+                int data = Il2CppYgomGame.Duel.Engine.DialogGetMixData(i);
+
+                DebugLogger.Log(LogCategory.Game, "DuelDialog",
+                    $"  [{i}] type={types[i]}, data={data}");
+
+                fragments[i] = ResolveFragment(types[i], data, content);
+            }
+
+            // Second pass: compose text, substituting %s placeholders in AddString
+            // with the next Ins* fragment (InsCard, InsNum, InsType, InsAttr, InsString)
+            var sb = new System.Text.StringBuilder();
+            int nextIns = 0; // index of next unconsumed Ins* fragment
+
+            for (int i = 0; i < count; i++)
+            {
+                switch (types[i])
+                {
+                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddString:
+                        string text = fragments[i] ?? "";
+                        // Strip color/formatting tags like @3, @0
+                        text = System.Text.RegularExpressions.Regex.Replace(
+                            text, @"@\d", "");
+                        // Substitute %s placeholders with Ins* fragments
+                        while (text.Contains("%s"))
+                        {
+                            string replacement = "";
+                            // Find next Ins* fragment
+                            while (nextIns < count)
+                            {
+                                if (IsInsertFragment(types[nextIns]))
+                                {
+                                    replacement = fragments[nextIns] ?? "";
+                                    nextIns++;
+                                    break;
+                                }
+                                nextIns++;
+                            }
+                            int pos = text.IndexOf("%s");
+                            text = text.Substring(0, pos) + replacement
+                                + text.Substring(pos + 2);
+                        }
+                        sb.Append(text);
+                        break;
+
+                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddCr:
+                        sb.Append(' ');
+                        break;
+
+                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.Null:
+                        break;
+
+                    default:
+                        // Ins* fragments not consumed by %s — append directly
+                        if (i >= nextIns && !string.IsNullOrEmpty(fragments[i]))
+                            sb.Append(fragments[i]);
+                        break;
+                }
+            }
+
+            string result = sb.ToString().Trim();
+            // Collapse multiple spaces
+            result = System.Text.RegularExpressions.Regex.Replace(result, @"  +", " ");
+            if (string.IsNullOrEmpty(result)) return null;
+
+            DebugLogger.Log(LogCategory.Game, "DuelDialog",
+                $"Composed: {result}");
+            return result;
+        }
+
+        /// <summary>Resolves a single DialogMix fragment to its text value.</summary>
+        private static string ResolveFragment(
+            Il2CppYgomGame.Duel.Engine.DialogMixTextType type, int data,
+            Il2CppYgomGame.Card.Content content)
+        {
+            switch (type)
+            {
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddString:
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsString:
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsStringNoColor:
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsStringIfable:
+                    return content?.GetDialogText(data);
+
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsCard:
+                    return content?.GetName(data);
+
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsNum:
+                    return data.ToString();
+
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsType:
+                    return content?.GetTypeText(
+                        (Il2CppYgomGame.Card.Content.Type)data);
+
+                case Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsAttr:
+                    return content?.GetAttributeText(
+                        (Il2CppYgomGame.Card.Content.Attribute)data);
+
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>Whether a DialogMixTextType is an Ins* (insertion) fragment.</summary>
+        private static bool IsInsertFragment(
+            Il2CppYgomGame.Duel.Engine.DialogMixTextType type)
+        {
+            return type == Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsCard
+                || type == Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsNum
+                || type == Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsType
+                || type == Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsAttr
+                || type == Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsString
+                || type == Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsStringNoColor
+                || type == Il2CppYgomGame.Duel.Engine.DialogMixTextType.InsStringIfable;
         }
 
         /// <summary>Converts a Phase enum to a localized display name.</summary>

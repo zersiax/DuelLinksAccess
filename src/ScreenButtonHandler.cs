@@ -43,6 +43,9 @@ namespace DuelLinksAccess
         // Result screen delayed rescan (after NEXT button press)
         private float _resultRescanTimer = -1f;
 
+        // Tab-aware rescan: after clicking a tab button, force rescan
+        private float _tabRescanDelay = -1f;
+
         /// <summary>
         /// Screens that this handler should NOT process.
         /// Dialog is handled by DialogHandler; Duel will get its own handler.
@@ -107,6 +110,7 @@ namespace DuelLinksAccess
                 _items.Clear();
                 _screenRoot = null;
                 _resultRescanTimer = -1f;
+                _tabRescanDelay = -1f;
             }
 
             if (!_scanned)
@@ -142,6 +146,21 @@ namespace DuelLinksAccess
                 {
                     ScanResultScreen(_screenRoot);
                     _focusIndex = 0;
+                }
+            }
+
+            // Tab-aware rescan: after clicking a tab button, rescan content
+            if (_tabRescanDelay >= 0f)
+            {
+                _tabRescanDelay -= Time.deltaTime;
+                if (_tabRescanDelay <= 0f)
+                {
+                    _tabRescanDelay = -1f;
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "Tab rescan: refreshing content");
+                    _scanned = false;
+                    _scanDelay = 0.1f;
+                    _scanAttempts = 0;
                 }
             }
 
@@ -1207,6 +1226,17 @@ namespace DuelLinksAccess
 
                     string label = LabelExtractor.GetLabel(go);
 
+                    // Annotate tab buttons so users can distinguish tabs from content
+                    try
+                    {
+                        var ygomTab = go.GetComponent<Il2CppYgomSystem.UI.YgomTabButton>();
+                        if (ygomTab == null)
+                            ygomTab = go.GetComponentInParent<Il2CppYgomSystem.UI.YgomTabButton>();
+                        if (ygomTab != null)
+                            label += ygomTab.isSelected ? ", selected tab" : ", tab";
+                    }
+                    catch { }
+
                     processed.Add(go);
                     _items.Add(new ScreenItem
                     {
@@ -1584,6 +1614,21 @@ namespace DuelLinksAccess
                     _resultRescanTimer = 2f;
                 }
 
+                // Detect tab button activation — schedule content rescan
+                try
+                {
+                    var tabBtn = item.Go.GetComponent<Il2CppYgomSystem.UI.YgomTabButton>();
+                    if (tabBtn == null)
+                        tabBtn = item.Go.GetComponentInParent<Il2CppYgomSystem.UI.YgomTabButton>();
+                    if (tabBtn != null)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            "Tab button activated, scheduling content rescan");
+                        _tabRescanDelay = 1.0f;
+                    }
+                }
+                catch { }
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Activating: {item.Label} ({item.Go.name})");
 
@@ -1701,6 +1746,29 @@ namespace DuelLinksAccess
                     {
                         DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                             $"ButtonSet onClick failed: {ex.Message}");
+                    }
+                }
+
+                // Strategy 4b: TextArea with sibling ButtonSet — Htjson link handler.
+                // SetButtonLink binds webapi URLs as runtime onClick listeners on
+                // the ButtonSet, not the TextArea. Check siblings when on a TextArea.
+                if (!handled && item.Go.name == "TextArea")
+                {
+                    var itemParent = item.Go.transform.parent;
+                    if (itemParent != null)
+                    {
+                        var siblingBtnSet = itemParent.Find("ButtonSet");
+                        if (siblingBtnSet != null)
+                        {
+                            var btnSetBtn = siblingBtnSet.GetComponent<Button>();
+                            if (btnSetBtn != null && btnSetBtn.onClick != null)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    $"TextArea -> sibling ButtonSet onClick.Invoke");
+                                btnSetBtn.onClick.Invoke();
+                                handled = true;
+                            }
+                        }
                     }
                 }
 
@@ -1880,16 +1948,32 @@ namespace DuelLinksAccess
                         eventData.button = UnityEngine.EventSystems.PointerEventData.InputButton.Left;
                         eventData.clickCount = 1;
 
+                        // Populate raycast data so OnPointerClick sees a valid hit.
+                        // Some scenarios reject clicks with empty raycast info
+                        // (stage-up animations, transition screens).
+                        var rayResult = new UnityEngine.EventSystems.RaycastResult();
+                        rayResult.gameObject = go;
+                        eventData.pointerCurrentRaycast = rayResult;
+                        eventData.pointerPressRaycast = rayResult;
+                        eventData.pointerPress = go;
+                        eventData.pressPosition = eventData.position;
+
                         // Full click cycle: down → up → click
                         UnityEngine.EventSystems.ExecuteEvents.Execute(
                             go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
                         UnityEngine.EventSystems.ExecuteEvents.Execute(
                             go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        bool handled = UnityEngine.EventSystems.ExecuteEvents.Execute(
                             go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
 
+                        // Fallback: call OnPointerClick directly on the VC instance.
+                        // ExecuteEvents may fail if the VC's IPointerClickHandler
+                        // isn't found via interface lookup on this GO.
+                        if (!handled)
+                            scenarioVc.OnPointerClick(eventData);
+
                         DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                            "Advancing ScenarioPlayerPart via ExecuteEvents click cycle");
+                            $"Advancing ScenarioPlayerPart (ExecuteEvents={handled})");
                         return;
                     }
                 }

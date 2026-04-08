@@ -333,7 +333,11 @@ namespace DuelLinksAccess
                     return false;
                 }
 
-                // First encounter: try to auto-dismiss via OnPointerClick at correct position
+                // First encounter: try to auto-dismiss via OnPointerClick at correct position.
+                // Only auto-dismiss if the arrow has a physicTarget (it's blocking a
+                // specific element). Arrows without physicTarget are just pointing/guiding
+                // — auto-clicking those at screen center hits random UI elements and can
+                // cause loops (e.g., reopening the dialog we just closed).
                 if (!_orphanArrowDismissAttempted)
                 {
                     _orphanArrowDismissAttempted = true;
@@ -341,13 +345,19 @@ namespace DuelLinksAccess
 
                     var target = arrowVc.physicTarget;
                     DebugLogger.Log(LogCategory.Game, "Main",
-                        $"Auto-dismissing orphaned TutorialArrow: {name}, " +
+                        $"Orphaned TutorialArrow: {name}, " +
                         $"physicTarget={target?.name ?? "null"}, " +
                         $"dispTarget={arrowVc.dispTarget?.name ?? "null"}, " +
                         $"ipclick={arrowVc.ipclick?.Length ?? 0}");
 
-                    ClickArrowAtTarget(arrowVc);
-                    return true;
+                    if (target != null)
+                    {
+                        // Arrow is blocking a specific element — auto-dismiss
+                        ClickArrowAtTarget(arrowVc);
+                        return true;
+                    }
+                    // No physicTarget — this is a guiding arrow, not a blocker.
+                    // Fall through to announce it and let user interact naturally.
                 }
 
                 // Arrow persists after dismiss attempt — it's a pointing arrow.

@@ -41,11 +41,15 @@ namespace DuelLinksAccess
         // stacked dialog, we rescan after a delay to detect the new content
         private float _postActivationRescanDelay = -1f;
 
+        // Tab-aware rescan: after clicking a tab button, force rescan
+        // even though VC instanceId doesn't change
+        private float _tabRescanDelay = -1f;
+
         #endregion
 
         #region Types
 
-        private enum ItemType { Button, Slider, Other }
+        private enum ItemType { Button, Slider, Header, Other }
 
         private class DialogItem
         {
@@ -77,6 +81,7 @@ namespace DuelLinksAccess
                     _dialogRoot = null;
                     _items.Clear();
                     _postActivationRescanDelay = -1f;
+                    _tabRescanDelay = -1f;
                     _passthrough = false;
                     _activeManager = "dialog";
                 }
@@ -102,6 +107,7 @@ namespace DuelLinksAccess
                 _scanDelay = 2.0f;
                 _scanAttempts = 0;
                 _postActivationRescanDelay = -1f;
+                _tabRescanDelay = -1f;
                 _passthrough = false;
                 GameStateTracker.SkipTutorialArrowPart = false;
                 // Don't announce "Dialog" during duels — the dialog text
@@ -127,6 +133,21 @@ namespace DuelLinksAccess
                         _scanDelay = 0.5f;
                         _scanAttempts = 0;
                     }
+                }
+            }
+
+            // Tab-aware rescan: after clicking a tab button, rescan content
+            // even though the VC instanceId hasn't changed
+            if (_tabRescanDelay >= 0f)
+            {
+                _tabRescanDelay -= Time.deltaTime;
+                if (_tabRescanDelay <= 0f)
+                {
+                    _tabRescanDelay = -1f;
+                    MelonLogger.Msg("[Dialog] Tab rescan: refreshing content");
+                    _scanned = false;
+                    _scanDelay = 0.1f;
+                    _scanAttempts = 0;
                 }
             }
 
@@ -233,6 +254,10 @@ namespace DuelLinksAccess
                 // Find clickable buttons in the dialog hierarchy
                 FindButtons(dialogRoot);
 
+                // Find section headers (e.g. "Character Unlock Missions", "Stage Missions")
+                // and insert them in DOM order among the button items
+                FindCategoryHeaders(dialogRoot);
+
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
                 // dismiss it or pass through so other handlers can run
                 if (_items.Count == 0 && string.IsNullOrEmpty(dialogText))
@@ -262,12 +287,23 @@ namespace DuelLinksAccess
 
                         FindSliders(dialogRoot);
                         FindButtons(dialogRoot);
+                        FindCategoryHeaders(dialogRoot);
                     }
                 }
 
                 MelonLogger.Msg($"[Dialog] Found {_items.Count} interactive items");
 
                 _dialogRoot = dialogRoot;
+
+                // If dialog has tabs, announce the active tab name
+                string activeTabName = GetActiveTabName(dialogRoot);
+                if (activeTabName != null)
+                    ScreenReader.SayQueued(activeTabName + " tab");
+
+                // Debug: dump non-button text elements and datapaths to discover
+                // category headers and mission data structure
+                if (Main.DebugMode && activeTabName != null)
+                    DumpCategoryStructure(dialogRoot);
 
                 if (_items.Count > 0)
                 {
@@ -297,6 +333,71 @@ namespace DuelLinksAccess
         /// Dumps diagnostic info for the dialog: toggles, button states, special VCs.
         /// Helps debug cases where buttons appear but don't respond (e.g. Privacy Notice).
         /// </summary>
+        /// <summary>
+        /// Debug: dumps text elements and HtjsonNode datapaths to discover
+        /// mission category headers and grouping structure.
+        /// </summary>
+        private void DumpCategoryStructure(GameObject root)
+        {
+            try
+            {
+                MelonLogger.Msg("[Dialog][CatDump] === Category Structure Dump ===");
+
+                // Dump all active Text elements with their hierarchy paths
+                var texts = root.GetComponentsInChildren<Text>(true);
+                if (texts != null)
+                {
+                    foreach (var text in texts)
+                    {
+                        if (text == null || text.gameObject == null) continue;
+                        if (!text.gameObject.activeInHierarchy) continue;
+                        string val = LabelExtractor.StripRichText(text.text);
+                        if (string.IsNullOrWhiteSpace(val) || val.Length < 2) continue;
+                        if (val.All(char.IsDigit)) continue;
+
+                        // Check if this text element is part of a Selectable (button)
+                        var selectable = text.GetComponentInParent<Selectable>();
+                        string kind = selectable != null ? "BTN-TEXT" : "LABEL";
+
+                        MelonLogger.Msg($"[Dialog][CatDump] [{kind}] \"{val}\" path={GetGameObjectPath(text.gameObject)}");
+                    }
+                }
+
+                // Dump HtjsonNode datapaths from scanned items
+                foreach (var item in _items)
+                {
+                    if (item.Go == null) continue;
+                    try
+                    {
+                        var current = item.Go.transform;
+                        int depth = 0;
+                        while (current != null && depth < 3)
+                        {
+                            var node = current.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>();
+                            if (node != null && node.replaceParam != null)
+                            {
+                                Il2CppSystem.Object dpVal;
+                                if (node.replaceParam.TryGetValue("%datapath%", out dpVal) && dpVal != null)
+                                {
+                                    MelonLogger.Msg($"[Dialog][CatDump] DATAPATH \"{item.Label}\" -> {dpVal}");
+                                    break;
+                                }
+                            }
+                            current = current.parent;
+                            depth++;
+                        }
+                    }
+                    catch { }
+                }
+
+                MelonLogger.Msg("[Dialog][CatDump] === End Dump ===");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog][CatDump] Error: {ex.Message}");
+            }
+        }
+
         private void DumpDialogDiagnostics(GameObject root)
         {
             try
@@ -374,6 +475,7 @@ namespace DuelLinksAccess
                     foreach (var text in ytas)
                     {
                         if (text == null) continue;
+                        if (text.gameObject != null && !text.gameObject.activeInHierarchy) continue;
                         string t = LabelExtractor.StripRichText(text.text);
                         if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                         if (t.All(char.IsDigit)) continue;
@@ -398,6 +500,7 @@ namespace DuelLinksAccess
                         foreach (var text in texts)
                         {
                             if (text == null) continue;
+                            if (text.gameObject != null && !text.gameObject.activeInHierarchy) continue;
                             string t = LabelExtractor.StripRichText(text.text);
                             if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                             if (t.All(char.IsDigit)) continue;
@@ -415,6 +518,91 @@ namespace DuelLinksAccess
             return string.Join(". ", parts);
         }
 
+        /// <summary>
+        /// Scans for category/section headers (Text inside "div" parent) and
+        /// inserts them into _items in DOM order relative to existing items.
+        /// Called after FindButtons so headers interleave correctly with content.
+        /// </summary>
+        private void FindCategoryHeaders(GameObject root)
+        {
+            try
+            {
+                var texts = root.GetComponentsInChildren<Text>(true);
+                if (texts == null || texts.Length == 0) return;
+
+                // Collect header candidates
+                var headers = new List<DialogItem>();
+                var processed = new HashSet<GameObject>();
+                foreach (var item in _items)
+                    processed.Add(item.Go);
+
+                foreach (var text in texts)
+                {
+                    if (text == null || text.gameObject == null) continue;
+                    if (!text.gameObject.activeInHierarchy) continue;
+
+                    var go = text.gameObject;
+                    if (processed.Contains(go)) continue;
+
+                    // Category header pattern: GO named "text" inside "div" parent
+                    if (go.name != "text") continue;
+                    if (go.transform.parent == null || go.transform.parent.name != "div") continue;
+
+                    string headerText = LabelExtractor.StripRichText(text.text);
+                    if (string.IsNullOrEmpty(headerText) || headerText.Length < 3) continue;
+                    if (LabelExtractor.IsPlaceholderText(headerText)) continue;
+
+                    processed.Add(go);
+                    headers.Add(new DialogItem
+                    {
+                        Go = go,
+                        Label = headerText,
+                        Type = ItemType.Header
+                    });
+                    MelonLogger.Msg($"[Dialog] Header: \"{headerText}\" path={GetGameObjectPath(go)}");
+                }
+
+                if (headers.Count == 0) return;
+
+                // Build DOM order index: map each GO to its depth-first position
+                var allTransforms = root.GetComponentsInChildren<Transform>(true);
+                var domIndex = new Dictionary<GameObject, int>();
+                for (int i = 0; i < allTransforms.Length; i++)
+                {
+                    if (allTransforms[i] != null && allTransforms[i].gameObject != null)
+                        domIndex[allTransforms[i].gameObject] = i;
+                }
+
+                // Insert headers at correct positions among existing items
+                foreach (var header in headers)
+                {
+                    int headerIdx;
+                    if (!domIndex.TryGetValue(header.Go, out headerIdx))
+                    {
+                        _items.Add(header);
+                        continue;
+                    }
+
+                    // Find the first existing item that comes AFTER this header in DOM
+                    int insertAt = _items.Count;
+                    for (int i = 0; i < _items.Count; i++)
+                    {
+                        int itemIdx;
+                        if (domIndex.TryGetValue(_items[i].Go, out itemIdx) && itemIdx > headerIdx)
+                        {
+                            insertAt = i;
+                            break;
+                        }
+                    }
+                    _items.Insert(insertAt, header);
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] FindCategoryHeaders error: {ex.Message}");
+            }
+        }
+
         private void FindSliders(GameObject root)
         {
             try
@@ -426,7 +614,7 @@ namespace DuelLinksAccess
                 {
                     if (slider == null) continue;
                     var go = slider.gameObject;
-                    if (go == null) continue;
+                    if (go == null || !go.activeInHierarchy) continue;
 
                     string label = LabelExtractor.GetSliderLabel(slider);
                     _items.Add(new DialogItem
@@ -465,7 +653,7 @@ namespace DuelLinksAccess
                     if (!graphic.raycastTarget) continue;
 
                     var go = graphic.gameObject;
-                    if (go == null) continue;
+                    if (go == null || !go.activeInHierarchy) continue;
                     if (processed.Contains(go)) continue;
 
                     // Skip non-interactive elements (backgrounds, layouts, masks)
@@ -503,6 +691,18 @@ namespace DuelLinksAccess
                     if (string.IsNullOrEmpty(label)) label = go.name;
 
                     processed.Add(go);
+
+                    // Annotate tab buttons so users can distinguish tabs from content
+                    try
+                    {
+                        if (IsTabButton(go))
+                        {
+                            var sel = go.GetComponent<Selectable>();
+                            label += (sel != null && !sel.interactable) ? ", selected tab" : ", tab";
+                        }
+                    }
+                    catch { }
+
                     _items.Add(new DialogItem
                     {
                         Go = go,
@@ -532,6 +732,89 @@ namespace DuelLinksAccess
                     if (go.transform.IsChildOf(slider.transform))
                         return true;
                 }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// Finds the currently selected tab's label text in the dialog.
+        /// Supports both YgomTabButton and Htjson tab bars (sibling btn GOs
+        /// where the selected tab has interactable=False).
+        /// </summary>
+        private string GetActiveTabName(GameObject root)
+        {
+            // Try YgomTabButton first
+            try
+            {
+                var tabButtons = root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTabButton>(true);
+                if (tabButtons != null && tabButtons.Length > 0)
+                {
+                    foreach (var tb in tabButtons)
+                    {
+                        if (tb == null || !tb.isSelected) continue;
+                        var label = tb.selectLabel ?? tb.normalLabel;
+                        if (label != null)
+                        {
+                            string text = LabelExtractor.StripRichText(label.text);
+                            if (!string.IsNullOrEmpty(text) && !LabelExtractor.IsPlaceholderText(text))
+                                return text;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Try Htjson tab bar: sibling "btn" GOs where selected = non-interactable
+            try
+            {
+                foreach (var item in _items)
+                {
+                    if (item.Go == null || item.Go.name != "btn") continue;
+                    var sel = item.Go.GetComponent<Selectable>();
+                    if (sel == null || sel.interactable) continue;
+
+                    // This is the non-interactable (selected) tab
+                    string label = item.Label;
+                    // Strip the ", selected tab" suffix we may have added
+                    if (label.EndsWith(", selected tab"))
+                        label = label.Substring(0, label.Length - ", selected tab".Length);
+                    return label;
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Detects if a GO is a tab button. Checks for YgomTabButton component
+        /// or the Htjson tab bar pattern (multiple sibling "btn" GOs in an "hl").
+        /// </summary>
+        private bool IsTabButton(GameObject go)
+        {
+            try
+            {
+                // Check for YgomTabButton
+                var ygomTab = go.GetComponent<Il2CppYgomSystem.UI.YgomTabButton>();
+                if (ygomTab == null)
+                    ygomTab = go.GetComponentInParent<Il2CppYgomSystem.UI.YgomTabButton>();
+                if (ygomTab != null)
+                    return true;
+
+                // Htjson tab pattern: GO named "btn" inside an "hl" parent
+                // with multiple sibling "btn" GOs (tab bar layout)
+                if (go.name != "btn") return false;
+                var parent = go.transform.parent;
+                if (parent == null || parent.name != "hl") return false;
+
+                int btnCount = 0;
+                for (int i = 0; i < parent.childCount; i++)
+                {
+                    if (parent.GetChild(i).name == "btn")
+                        btnCount++;
+                }
+                return btnCount >= 3; // At least 3 tab-like siblings
             }
             catch { }
             return false;
@@ -706,7 +989,18 @@ namespace DuelLinksAccess
             else if (InputManager.TryConsumeKeyDown(KeyCode.Return)
                 || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
-                ActivateCurrentItem();
+                // Headers are non-interactive — skip to next item
+                if (_focusIndex >= 0 && _focusIndex < _items.Count
+                    && _items[_focusIndex].Type == ItemType.Header)
+                {
+                    _focusIndex++;
+                    if (_focusIndex >= _items.Count) _focusIndex = 0;
+                    AnnounceCurrentItem();
+                }
+                else
+                {
+                    ActivateCurrentItem();
+                }
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
@@ -750,7 +1044,11 @@ namespace DuelLinksAccess
             int total = _items.Count;
 
             string msg;
-            if (item.Type == ItemType.Slider && item.SliderComponent != null)
+            if (item.Type == ItemType.Header)
+            {
+                msg = $"{item.Label} heading, {pos} of {total}";
+            }
+            else if (item.Type == ItemType.Slider && item.SliderComponent != null)
             {
                 int val = Mathf.RoundToInt(item.SliderComponent.value);
                 int min = Mathf.RoundToInt(item.SliderComponent.minValue);
@@ -875,6 +1173,30 @@ namespace DuelLinksAccess
                     }
                 }
 
+                // Strategy 2c: TextArea with sibling ButtonSet — Htjson link handler.
+                // SetButtonLink binds webapi URLs as runtime onClick listeners on
+                // the ButtonSet, not the TextArea. The TextArea's Button has 0
+                // persistent listeners so onClick.Invoke() is a no-op on it.
+                if (!activated && item.Go.name == "TextArea" && btn != null
+                    && btn.onClick.GetPersistentEventCount() == 0)
+                {
+                    var itemParent = item.Go.transform.parent;
+                    if (itemParent != null)
+                    {
+                        var siblingBtnSet = itemParent.Find("ButtonSet");
+                        if (siblingBtnSet != null)
+                        {
+                            var btnSetButton = siblingBtnSet.GetComponent<Button>();
+                            if (btnSetButton != null && btnSetButton.onClick != null)
+                            {
+                                MelonLogger.Msg($"[Dialog] TextArea -> sibling ButtonSet onClick.Invoke");
+                                btnSetButton.onClick.Invoke();
+                                activated = true;
+                            }
+                        }
+                    }
+                }
+
                 // Strategy 3: Button.onClick.Invoke — works for runtime-added
                 // listeners (Htjson buttons) where ExecuteEvents fails
                 if (!activated && btn != null)
@@ -924,6 +1246,15 @@ namespace DuelLinksAccess
                 // Schedule a post-activation rescan to detect stacked dialogs
                 // (e.g. clicking "Privacy Notice" opens a new dialog on top)
                 _postActivationRescanDelay = 1.5f;
+
+                // Detect tab button activation — schedule content rescan.
+                // Tab switching doesn't change the VC instance, so the
+                // post-activation stacked-dialog check won't trigger.
+                if (IsTabButton(item.Go))
+                {
+                    MelonLogger.Msg($"[Dialog] Tab button activated, scheduling content rescan");
+                    _tabRescanDelay = 1.0f;
+                }
             }
             catch (Exception ex)
             {
