@@ -86,7 +86,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Tab and Shift Tab cycle zones. Left right navigate cards. Enter open actions. C re-read card. F field summary. P advance phase. S status. L event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots, 4 extra monster zone. L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. F1 Help. F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
             _english["debug_mode"] = "Debug mode {0}";
 
             // ===== SETTINGS =====
@@ -218,7 +218,7 @@ namespace DuelLinksAccess
             _english["duel_chain_link"] = "Chain link {0}";
 
             // ===== DUEL: FIELD NAVIGATION =====
-            _english["duel_nav_hint"] = "Press Tab to start navigating the field";
+            _english["duel_nav_hint"] = "Press an arrow key or zone hotkey to start navigating";
             _english["duel_nav_closed"] = "Navigation closed";
             _english["duel_no_cards"] = "No cards on the field";
             _english["duel_zone_empty"] = "Zone is empty";
@@ -230,6 +230,16 @@ namespace DuelLinksAccess
             _english["duel_zone_my_extra"] = "Your extra deck";
             _english["duel_zone_opp_monsters"] = "Opponent monsters";
             _english["duel_zone_opp_spells"] = "Opponent spells and traps";
+            _english["duel_zone_opp_grave"] = "Opponent graveyard";
+            _english["duel_zone_opp_extra"] = "Opponent extra deck";
+            _english["duel_zone_my_field_spell"] = "Your field spell";
+            _english["duel_zone_opp_field_spell"] = "Opponent field spell";
+            _english["duel_zone_my_banished"] = "Your banished";
+            _english["duel_zone_opp_banished"] = "Opponent banished";
+            _english["duel_lp_read"] = "Your LP: {0}. Opponent LP: {1}";
+            _english["duel_empty_slot_named"] = "Slot {0}: Empty";
+            _english["duel_grid_edge_top"] = "Top of field";
+            _english["duel_grid_edge_bottom"] = "Bottom of field";
             _english["duel_card_position"] = "{0} of {1}: {2}";
             _english["duel_empty_slot"] = "Empty";
             _english["duel_face_up"] = "Face up";
@@ -302,7 +312,7 @@ namespace DuelLinksAccess
 
             // ===== DUEL: TUTORIAL =====
             _english["duel_tutorial_arrow"] = "Press Space to continue tutorial";
-            _english["duel_tutorial_arrow_pointing"] = "Tutorial arrow. Navigate the field and press Enter to interact.";
+            _english["duel_tutorial_arrow_pointing"] = "Tutorial arrow active.";
 
             // ===== DECK EDITOR =====
             _english["deck_edit_entered"] = "Deck editor. {0} in main deck, {1} in extra deck, {2} in collection. Tab to switch zones, Left right to browse cards.";

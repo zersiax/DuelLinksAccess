@@ -7,21 +7,29 @@ using UnityEngine;
 namespace DuelLinksAccess
 {
     /// <summary>
-    /// Handles keyboard navigation of the duel field: zones, cards, and commands.
+    /// Handles keyboard navigation of the duel field using a spatial grid model.
     ///
-    /// Zone navigation (Tab / Shift+Tab):
-    ///   Hand > Your Monsters > Your Spells > Opp Monsters > Opp Spells > Graveyard
-    ///   Skips empty zones automatically.
+    /// Grid layout (bottom to top):
+    ///   Row 0: Hand (variable width)
+    ///   Row 1: My Spell/Trap (3 columns)
+    ///   Row 2: My Monster (3 columns + Extra Monster Zone)
+    ///   Row 3: Opp Monster (3 columns + Extra Monster Zone)
+    ///   Row 4: Opp Spell/Trap (3 columns)
     ///
-    /// Card navigation (Left / Right):
-    ///   Cycles through occupied slots in the current zone.
+    /// Arrow navigation:
+    ///   Up/Down — Move between rows (column preserved). Action menu when open.
+    ///   Left/Right — Move between columns within row (wraps).
+    ///
+    /// Zone hotkeys (Shift = opponent):
+    ///   C=Hand, M=Monsters, S=Spells, T=FieldSpell, G=Grave, B=Banished, D=ExtraDeck
+    ///   L=LP (read-only), 1-3=Monster slot, 4=Extra Monster Zone
     ///
     /// Actions (Enter):
     ///   Queries available commands for the selected card.
     ///   Single command: executes directly. Multiple: opens action menu (Up/Down/Enter/Escape).
     ///
     /// Other keys:
-    ///   C — Re-read current card (verbose with stats and available actions)
+    ///   V — Re-read current card (verbose with stats and available actions)
     ///   F — Field summary (card counts per zone)
     ///   P — Advance to next phase
     ///   Escape — Close action menu or exit navigation
@@ -57,6 +65,14 @@ namespace DuelLinksAccess
         private const int LocateExtra = 14;
         private const int LocateGrave = 16;
         private const int LocateDeck = 15;
+        private const int LocateExtraMonster = 6; // Confirmed via Synchro summon
+        private const int LocateFieldSpell = 12;  // Confirmed via field scan (cardId=4341 at loc=12)
+        private const int LocateBanished = 17;    // Placeholder
+
+        // Monster zone locates (left to right from player's perspective)
+        private static readonly int[] MonsterLocates = { 2, 3, 4, LocateExtraMonster };
+        // Spell/Trap zone locates (left to right)
+        private static readonly int[] SpellLocates = { 9, 10, 11 };
 
         // Field slot locate range to scan (each holds 0 or 1 card).
         private const int FieldLocateMin = 1;
@@ -78,13 +94,21 @@ namespace DuelLinksAccess
         /// <summary>Navigable zones on the duel field.</summary>
         public enum Zone
         {
+            // Grid zones (participate in arrow navigation)
             Hand,
-            MyMonster,
             MySpell,
+            MyMonster,
             OppMonster,
             OppSpell,
+            // Side zones (hotkey-only, not in arrow grid)
+            MyFieldSpell,
+            OppFieldSpell,
             MyGrave,
+            OppGrave,
+            MyBanished,
+            OppBanished,
             MyExtra,
+            OppExtra,
         }
 
 
@@ -92,23 +116,49 @@ namespace DuelLinksAccess
 
         #region Fields
 
-        private static readonly Zone[] ZoneOrder =
+        /// <summary>Defines one row of the spatial grid.</summary>
+        private struct GridRow
         {
-            Zone.Hand,
-            Zone.MyMonster,
-            Zone.MySpell,
-            Zone.OppMonster,
-            Zone.OppSpell,
-            Zone.MyGrave,
-            Zone.MyExtra,
+            public Zone Zone;
+            public int Player;
+            public int[] Locates; // locate values per column (null for Hand)
+        }
+
+        /// <summary>
+        /// Spatial grid rows, bottom to top. Row 0 = Hand, Row 4 = Opp Spells.
+        /// Monster rows have 4 columns (3 main + EMZ), spell rows have 3.
+        /// </summary>
+        private static readonly GridRow[] GridRows =
+        {
+            new GridRow { Zone = Zone.Hand,       Player = PlayerMe,  Locates = null },
+            new GridRow { Zone = Zone.MySpell,    Player = PlayerMe,  Locates = SpellLocates },
+            new GridRow { Zone = Zone.MyMonster,  Player = PlayerMe,  Locates = MonsterLocates },
+            new GridRow { Zone = Zone.OppMonster, Player = PlayerOpp, Locates = MonsterLocates },
+            new GridRow { Zone = Zone.OppSpell,   Player = PlayerOpp, Locates = SpellLocates },
+        };
+
+        private const int RowHand = 0;
+        private const int RowMySpell = 1;
+        private const int RowMyMonster = 2;
+        private const int RowOppMonster = 3;
+        private const int RowOppSpell = 4;
+
+        /// <summary>Set of grid zones for quick membership checks.</summary>
+        private static readonly HashSet<Zone> GridZones = new()
+        {
+            Zone.Hand, Zone.MySpell, Zone.MyMonster, Zone.OppMonster, Zone.OppSpell
         };
 
         // Navigation state
         private Zone _currentZone = Zone.Hand;
+        private int _currentRow = RowHand;
+        private int _currentCol;
+        private int _rememberedCol;
         private int _navIndex;
         private readonly List<int> _zoneSlots = new();   // slot index within the locate
         private readonly List<int> _zoneLocates = new(); // actual locate value per entry
         private bool _isNavigating;
+        private bool _inSideZone; // true when in a hotkey-only zone (grave, banished, etc.)
 
         // Action menu state
         private bool _inActionMenu;
@@ -201,10 +251,14 @@ namespace DuelLinksAccess
         public void Reset()
         {
             _currentZone = Zone.Hand;
+            _currentRow = RowHand;
+            _currentCol = 0;
+            _rememberedCol = 0;
             _navIndex = 0;
             _zoneSlots.Clear();
             _zoneLocates.Clear();
             _isNavigating = false;
+            _inSideZone = false;
             _awaitingTarget = false;
             _useDirectCommand = false;
             _inCardSelect = false;
@@ -228,12 +282,9 @@ namespace DuelLinksAccess
         /// </summary>
         public bool ProcessNonConflictingInput()
         {
-            if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
-            {
-                bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-                CycleZone(shift ? -1 : 1);
+            // Zone hotkeys work during dialogs (don't conflict with dialog keys)
+            if (ProcessHotkeyInput())
                 return true;
-            }
 
             if (InputManager.TryConsumeKeyDown(KeyCode.P))
             {
@@ -247,7 +298,7 @@ namespace DuelLinksAccess
                 return true;
             }
 
-            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            if (InputManager.TryConsumeKeyDown(KeyCode.V))
             {
                 if (_isNavigating)
                     ReadCurrentCard(verbose: true);
@@ -488,15 +539,23 @@ namespace DuelLinksAccess
 
         private bool ProcessNavigationInput()
         {
-            // Tab / Shift+Tab: cycle zones
-            if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
+            // Zone hotkeys (C/M/S/T/G/B/D/L + Shift, 1-4)
+            if (ProcessHotkeyInput())
+                return true;
+
+            // Up/Down: move between grid rows
+            if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
             {
-                bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-                CycleZone(shift ? -1 : 1);
+                NavigateRow(1); // Up = toward opponent
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.DownArrow))
+            {
+                NavigateRow(-1); // Down = toward player
                 return true;
             }
 
-            // Left/Right: navigate cards within zone
+            // Left/Right: navigate within zone
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow))
             {
                 NavigateCard(-1);
@@ -518,8 +577,8 @@ namespace DuelLinksAccess
                 return true;
             }
 
-            // C: re-read current card (verbose)
-            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            // V: re-read current card (verbose)
+            if (InputManager.TryConsumeKeyDown(KeyCode.V))
             {
                 if (_isNavigating)
                     ReadCurrentCard(verbose: true);
@@ -557,68 +616,289 @@ namespace DuelLinksAccess
 
         #region Zone Navigation
 
-        private void CycleZone(int direction)
+        /// <summary>
+        /// Moves cursor to a grid row (Up/Down). Preserves column via _rememberedCol.
+        /// direction: +1 = Up (toward opponent), -1 = Down (toward player).
+        /// </summary>
+        private void NavigateRow(int direction)
         {
-            _isNavigating = true;
-            int startIdx = Array.IndexOf(ZoneOrder, _currentZone);
-            int nextIdx = startIdx;
-
-            // Find next non-empty zone
-            for (int i = 0; i < ZoneOrder.Length; i++)
+            if (!_isNavigating)
             {
-                nextIdx = (nextIdx + direction + ZoneOrder.Length) % ZoneOrder.Length;
-                Zone candidate = ZoneOrder[nextIdx];
-                RefreshZoneSlots(candidate);
-                if (_zoneSlots.Count > 0)
-                {
-                    _currentZone = candidate;
-                    _navIndex = 0;
-                    AnnounceZone();
-                    ReadCurrentCard(verbose: false, queued: true);
-                    return;
-                }
+                // First press: enter hand
+                EnterGridRow(RowHand, 0);
+                return;
             }
 
-            ScreenReader.Say(Loc.Get("duel_no_cards"));
+            if (_inSideZone)
+            {
+                // Return to last grid position from side zone
+                _inSideZone = false;
+                EnterGridRow(_currentRow, _currentCol);
+                return;
+            }
+
+            int targetRow = _currentRow + direction;
+            if (targetRow < 0 || targetRow >= GridRows.Length)
+            {
+                ScreenReader.Say(Loc.Get(direction > 0
+                    ? "duel_grid_edge_top" : "duel_grid_edge_bottom"));
+                return;
+            }
+
+            // Resolve column for target row
+            int col = _rememberedCol;
+            if (targetRow == RowHand)
+            {
+                // Clamp to hand card count
+                RefreshZoneSlots(Zone.Hand);
+                int handCount = _zoneSlots.Count;
+                col = handCount > 0 ? Math.Min(col, handCount - 1) : 0;
+            }
+            else
+            {
+                int maxCol = GridRows[targetRow].Locates.Length - 1;
+                col = Math.Min(col, maxCol);
+            }
+
+            EnterGridRow(targetRow, col);
         }
 
+        /// <summary>Moves to a specific grid row and column, announces zone and card.</summary>
+        private void EnterGridRow(int row, int col)
+        {
+            _isNavigating = true;
+            _inSideZone = false;
+            _currentRow = row;
+            _currentZone = GridRows[row].Zone;
+
+            RefreshCurrentZone();
+
+            if (_currentZone == Zone.Hand)
+            {
+                // Hand: clamp col to card count
+                _currentCol = _zoneSlots.Count > 0 ? Math.Min(col, _zoneSlots.Count - 1) : 0;
+            }
+            else
+            {
+                _currentCol = Math.Min(col, GridRows[row].Locates.Length - 1);
+            }
+            _navIndex = _currentCol;
+
+            AnnounceZone();
+            ReadCurrentCard(verbose: false, queued: true);
+        }
+
+        /// <summary>
+        /// Moves cursor Left/Right within the current zone.
+        /// Grid rows: columns wrap at edges. Side/stack zones: card index wraps.
+        /// </summary>
         private void NavigateCard(int direction)
         {
             if (!_isNavigating)
             {
-                // First navigation press enters hand by default
-                _isNavigating = true;
-                _currentZone = Zone.Hand;
+                // First press: enter hand
+                EnterGridRow(RowHand, 0);
+                return;
+            }
+
+            if (_inSideZone)
+            {
+                // Side zone: navigate card index within the stack
                 RefreshCurrentZone();
-                if (_zoneSlots.Count > 0)
+                if (_zoneSlots.Count == 0)
                 {
-                    _navIndex = 0;
-                    AnnounceZone();
-                    ReadCurrentCard(verbose: false, queued: true);
+                    ScreenReader.Say(Loc.Get("duel_zone_empty"));
+                    return;
                 }
-                else
-                {
-                    // Hand empty, try cycling to first non-empty zone
-                    CycleZone(1);
-                }
+                _navIndex = (_navIndex + direction + _zoneSlots.Count) % _zoneSlots.Count;
+                ReadCurrentCard(verbose: false);
                 return;
             }
 
             RefreshCurrentZone();
-            if (_zoneSlots.Count == 0)
-            {
-                ScreenReader.Say(Loc.Get("duel_zone_empty"));
-                return;
-            }
 
-            _navIndex = (_navIndex + direction + _zoneSlots.Count) % _zoneSlots.Count;
-            ReadCurrentCard(verbose: false);
+            if (_currentZone == Zone.Hand)
+            {
+                // Hand: wrap through cards
+                if (_zoneSlots.Count == 0)
+                {
+                    ScreenReader.Say(Loc.Get("duel_zone_empty"));
+                    return;
+                }
+                _currentCol = (_currentCol + direction + _zoneSlots.Count) % _zoneSlots.Count;
+                _navIndex = _currentCol;
+                _rememberedCol = _currentCol;
+                ReadCurrentCard(verbose: false);
+            }
+            else
+            {
+                // Grid row: wrap through columns
+                int colCount = GridRows[_currentRow].Locates.Length;
+                _currentCol = (_currentCol + direction + colCount) % colCount;
+                _navIndex = _currentCol;
+                _rememberedCol = _currentCol;
+                ReadCurrentCard(verbose: false);
+            }
+        }
+
+        /// <summary>Enters a side zone (hotkey-only, not in grid). Preserves grid position.</summary>
+        private void EnterSideZone(Zone zone)
+        {
+            _isNavigating = true;
+            _inSideZone = true;
+            _currentZone = zone;
+            _navIndex = 0;
+
+            RefreshCurrentZone();
+            AnnounceZone();
+            if (_zoneSlots.Count > 0)
+                ReadCurrentCard(verbose: false, queued: true);
         }
 
         private void AnnounceZone()
         {
             string zoneName = GetZoneName(_currentZone);
-            ScreenReader.Say(Loc.Get("duel_zone_entered", zoneName, _zoneSlots.Count));
+            int cardCount;
+            if (IsFieldSlotZone(_currentZone))
+            {
+                // Count only occupied slots for the announcement
+                int player = GetZonePlayer(_currentZone);
+                cardCount = 0;
+                foreach (int loc in _zoneLocates)
+                {
+                    try
+                    {
+                        int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                            player, loc, 0);
+                        if (uid > 0) cardCount++;
+                    }
+                    catch { /* skip */ }
+                }
+            }
+            else
+            {
+                cardCount = _zoneSlots.Count;
+            }
+            ScreenReader.Say(Loc.Get("duel_zone_entered", zoneName, cardCount));
+        }
+
+        /// <summary>Processes zone hotkeys. Returns true if a key was consumed.</summary>
+        private bool ProcessHotkeyInput()
+        {
+            bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+            // Zone jump hotkeys
+            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            {
+                JumpToZone(Zone.Hand);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.M))
+            {
+                JumpToZone(shift ? Zone.OppMonster : Zone.MyMonster);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                JumpToZone(shift ? Zone.OppSpell : Zone.MySpell);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.T))
+            {
+                JumpToZone(shift ? Zone.OppFieldSpell : Zone.MyFieldSpell);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.G))
+            {
+                JumpToZone(shift ? Zone.OppGrave : Zone.MyGrave);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.B))
+            {
+                JumpToZone(shift ? Zone.OppBanished : Zone.MyBanished);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.D))
+            {
+                JumpToZone(shift ? Zone.OppExtra : Zone.MyExtra);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.L))
+            {
+                ReadLP();
+                return true;
+            }
+
+            // Number keys: direct monster slot access
+            if (InputManager.TryConsumeKeyDown(KeyCode.Alpha1))
+            {
+                JumpToMonsterSlot(0);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Alpha2))
+            {
+                JumpToMonsterSlot(1);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Alpha3))
+            {
+                JumpToMonsterSlot(2);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Alpha4))
+            {
+                JumpToMonsterSlot(3); // Extra Monster Zone
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>Jumps cursor to a zone. Grid zones set row/col; side zones preserve grid pos.</summary>
+        private void JumpToZone(Zone zone)
+        {
+            if (GridZones.Contains(zone))
+            {
+                // Find the grid row for this zone
+                for (int r = 0; r < GridRows.Length; r++)
+                {
+                    if (GridRows[r].Zone == zone)
+                    {
+                        int col = (zone == Zone.Hand) ? 0 : Math.Min(_rememberedCol,
+                            GridRows[r].Locates.Length - 1);
+                        EnterGridRow(r, col);
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                EnterSideZone(zone);
+            }
+        }
+
+        /// <summary>Jumps to a specific column in the My Monster row.</summary>
+        private void JumpToMonsterSlot(int col)
+        {
+            col = Math.Min(col, MonsterLocates.Length - 1);
+            _rememberedCol = col;
+            EnterGridRow(RowMyMonster, col);
+        }
+
+        /// <summary>Reads LP for both players without moving the cursor.</summary>
+        private void ReadLP()
+        {
+            try
+            {
+                int myLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(PlayerMe);
+                int oppLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(PlayerOpp);
+                ScreenReader.Say(Loc.Get("duel_lp_read", myLP, oppLP));
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav", $"ReadLP error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("duel_lp_read", 0, 0));
+            }
         }
 
         #endregion
@@ -649,8 +929,13 @@ namespace DuelLinksAccess
 
                 if (uniqueId <= 0)
                 {
-                    ScreenReader.Say(Loc.Get("duel_card_position",
-                        _navIndex + 1, _zoneSlots.Count, Loc.Get("duel_empty_slot")));
+                    // Grid zone: announce "Slot N: Empty"
+                    string emptyText = IsFieldSlotZone(_currentZone)
+                        ? Loc.Get("duel_empty_slot_named", _navIndex + 1)
+                        : Loc.Get("duel_card_position",
+                            _navIndex + 1, _zoneSlots.Count, Loc.Get("duel_empty_slot"));
+                    if (queued) ScreenReader.SayQueued(emptyText);
+                    else ScreenReader.Say(emptyText);
                     return;
                 }
 
@@ -658,7 +943,7 @@ namespace DuelLinksAccess
                 string cardName = ResolveCardName(cardDbId);
 
                 bool isHand = _currentZone == Zone.Hand;
-                bool isExtra = _currentZone == Zone.MyExtra;
+                bool isExtra = _currentZone == Zone.MyExtra || _currentZone == Zone.OppExtra;
                 // Hand and Extra Deck share read semantics: no face, Content-DB stats.
                 bool isContentView = isHand || isExtra;
                 bool isMyCard = player == PlayerMe;
@@ -888,6 +1173,19 @@ namespace DuelLinksAccess
             int slotIndex = _zoneSlots[_navIndex];
             int player = GetZonePlayer(_currentZone);
             int locate = _zoneLocates[_navIndex];
+
+            // Guard: check if slot is actually occupied (grid rows include empty slots)
+            try
+            {
+                int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                    player, locate, slotIndex);
+                if (uid <= 0)
+                {
+                    ScreenReader.Say(Loc.Get("duel_empty_slot_named", _navIndex + 1));
+                    return;
+                }
+            }
+            catch { /* proceed to command mask check */ }
 
             try
             {
@@ -1179,11 +1477,28 @@ namespace DuelLinksAccess
             // Don't call any game methods yet — wait for the user to pick a target.
             // The actual attack is a drag gesture: TapDown on attacker → TapUp on target.
 
-            // Switch to opponent's monster zone for target picking
+            // Check if opponent has any monsters before entering target selection
             _currentZone = Zone.OppMonster;
+            _currentRow = RowOppMonster;
+            _currentCol = 0;
+            _inSideZone = false;
             RefreshCurrentZone();
 
-            if (_zoneSlots.Count > 0)
+            // Count actual monsters (grid rows include empty slots)
+            int oppMonsterCount = 0;
+            int player2 = PlayerOpp;
+            foreach (int loc in MonsterLocates)
+            {
+                try
+                {
+                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                        player2, loc, 0);
+                    if (uid > 0) oppMonsterCount++;
+                }
+                catch { /* skip */ }
+            }
+
+            if (oppMonsterCount > 0)
             {
                 _navIndex = 0;
                 ScreenReader.Say(Loc.Get("duel_select_target"));
@@ -1191,9 +1506,9 @@ namespace DuelLinksAccess
             }
             else
             {
-                // No opponent monsters — direct attack
+                // No opponent monsters — direct attack automatically
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    "No opponent monsters — attempting direct attack");
+                    "No opponent monsters — direct attack");
                 ConfirmTargetSelection(directAttack: true);
             }
         }
@@ -1222,11 +1537,19 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
             {
                 _awaitingTarget = false;
+                // Return cursor to attacker's position
+                _currentZone = Zone.MyMonster;
+                _currentRow = RowMyMonster;
+                int atkCol = Array.IndexOf(MonsterLocates, _attackerLocate);
+                _currentCol = atkCol >= 0 ? atkCol : 0;
+                _rememberedCol = _currentCol;
+                _navIndex = _currentCol;
+                _inSideZone = false;
                 ScreenReader.Say(Loc.Get("duel_target_cancelled"));
                 return true;
             }
-            // C to re-read target card
-            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            // V to re-read target card
+            if (InputManager.TryConsumeKeyDown(KeyCode.V))
             {
                 ReadCurrentCard(verbose: true);
                 return true;
@@ -1246,6 +1569,16 @@ namespace DuelLinksAccess
                 ? _zoneSlots[_navIndex] : 0;
             int targetLocate = (!directAttack && _zoneLocates.Count > 0)
                 ? _zoneLocates[_navIndex] : 0;
+
+            // Return cursor to player's monster zone after attack
+            _currentZone = Zone.MyMonster;
+            _currentRow = RowMyMonster;
+            // Restore to attacker's column
+            int atkCol = Array.IndexOf(MonsterLocates, _attackerLocate);
+            _currentCol = atkCol >= 0 ? atkCol : 0;
+            _rememberedCol = _currentCol;
+            _navIndex = _currentCol;
+            _inSideZone = false;
 
             if (_useDirectCommand)
             {
@@ -1646,7 +1979,7 @@ namespace DuelLinksAccess
                 CancelEmotionalList();
                 return true;
             }
-            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            if (InputManager.TryConsumeKeyDown(KeyCode.V))
             {
                 if (_emoListCount > 0)
                     ReadEmotionalListCard(_emoListIndex, verbose: true);
@@ -2135,7 +2468,7 @@ namespace DuelLinksAccess
                 CancelCardSelect();
                 return true;
             }
-            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            if (InputManager.TryConsumeKeyDown(KeyCode.V))
             {
                 if (_selectLocations.Count > 0)
                     ReadSelectableCard(_selectIndex);
@@ -3035,8 +3368,8 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Rebuilds _zoneSlots and _zoneLocates for the given zone.
-        /// Field zones (monster/spell): scans locate range, classifies by BasicVal.Type.
-        /// Stack zones (hand/graveyard): sequential indices 0..count-1 at fixed locate.
+        /// Grid zones: populates ALL columns (including empty) for spatial awareness.
+        /// Side zones: sequential indices at fixed locate.
         /// </summary>
         private void RefreshZoneSlots(Zone zone)
         {
@@ -3046,53 +3379,35 @@ namespace DuelLinksAccess
 
             if (IsFieldSlotZone(zone))
             {
-                bool wantMonster = zone == Zone.MyMonster || zone == Zone.OppMonster;
-                for (int loc = FieldLocateMin; loc <= FieldLocateMax; loc++)
+                // Grid zone: use explicit locate arrays, include ALL columns
+                int[] locates = (zone == Zone.MyMonster || zone == Zone.OppMonster)
+                    ? MonsterLocates : SpellLocates;
+                for (int col = 0; col < locates.Length; col++)
                 {
-                    try
-                    {
-                        int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                            player, loc, 0);
-                        if (uid <= 0) continue;
-
-                        // Classify by field position first: locates 2-4 are monster zones,
-                        // 9-11 are spell/trap zones. This prevents equipped monster cards
-                        // (which retain their monster BasicVal.Type) from appearing in
-                        // the wrong zone when equipped to spell/trap positions.
-                        bool isMonsterZone = loc >= 1 && loc <= 8;
-                        bool isMonster;
-                        int bvType = -1;
-                        int cardId = 0;
-                        try
-                        {
-                            var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
-                            Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
-                                player, loc, 0, ref bv);
-                            bvType = (int)bv.Type;
-                            cardId = bv.CardID;
-                            // Use locate to determine zone, not card type.
-                            // Monster cards equipped to spell zones should be in MySpell.
-                            isMonster = isMonsterZone;
-                        }
-                        catch { isMonster = isMonsterZone; }
-
-                        DebugLogger.Log(LogCategory.Game, "FieldNav",
-                            $"ZoneScan: p={player} loc={loc} uid={uid} cardId={cardId} " +
-                            $"bvType={bvType} isMonsterZone={isMonsterZone} " +
-                            $"match={isMonster == wantMonster}");
-
-                        if (isMonster == wantMonster)
-                        {
-                            _zoneSlots.Add(0);   // field slots always use index 0
-                            _zoneLocates.Add(loc);
-                        }
-                    }
-                    catch { /* skip */ }
+                    _zoneSlots.Add(0);   // field slots always use index 0
+                    _zoneLocates.Add(locates[col]);
                 }
+            }
+            else if (IsSingleSlotZone(zone))
+            {
+                // Field spell: single locate, only add if occupied
+                int locate = GetSideZoneLocate(zone);
+                try
+                {
+                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                        player, locate, 0);
+                    if (uid > 0)
+                    {
+                        _zoneSlots.Add(0);
+                        _zoneLocates.Add(locate);
+                    }
+                }
+                catch { /* empty */ }
             }
             else
             {
-                int locate = GetStackZoneLocate(zone);
+                // Stack zone (hand, grave, banished, extra deck)
+                int locate = GetSideZoneLocate(zone);
                 int count = GetCardCount(player, locate);
                 for (int i = 0; i < count; i++)
                 {
@@ -3102,64 +3417,72 @@ namespace DuelLinksAccess
             }
 
             DebugLogger.Log(LogCategory.Game, "FieldNav",
-                $"RefreshZone {zone}: player={player} found={_zoneSlots.Count} cards" +
+                $"RefreshZone {zone}: player={player} found={_zoneSlots.Count} entries" +
                 (_zoneLocates.Count > 0 ? $" at locates=[{string.Join(",", _zoneLocates)}]" : ""));
         }
 
         /// <summary>
-        /// Counts monsters and spells on field by scanning all field locate values
-        /// and classifying via BasicVal.Type.
+        /// Counts monsters and spells on field using the known locate arrays.
         /// </summary>
         private static void CountFieldCards(int player, out int monsters, out int spells)
         {
             monsters = 0;
             spells = 0;
-            for (int loc = FieldLocateMin; loc <= FieldLocateMax; loc++)
+            foreach (int loc in MonsterLocates)
             {
                 try
                 {
                     int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
                         player, loc, 0);
-                    if (uid <= 0) continue;
-
-                    try
-                    {
-                        var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
-                        Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
-                            player, loc, 0, ref bv);
-                        if (bv.Type != 0) monsters++;
-                        else spells++;
-                    }
-                    catch { monsters++; /* assume monster on error */ }
+                    if (uid > 0) monsters++;
+                }
+                catch { /* skip */ }
+            }
+            foreach (int loc in SpellLocates)
+            {
+                try
+                {
+                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                        player, loc, 0);
+                    if (uid > 0) spells++;
                 }
                 catch { /* skip */ }
             }
         }
 
-        /// <summary>Whether this zone scans individual field locate values.</summary>
+        /// <summary>Whether this zone is a grid zone with fixed field slot columns.</summary>
         private static bool IsFieldSlotZone(Zone zone)
         {
             return zone == Zone.MyMonster || zone == Zone.OppMonster
                 || zone == Zone.MySpell || zone == Zone.OppSpell;
         }
 
+        /// <summary>Whether this zone is a single-card field slot (field spell).</summary>
+        private static bool IsSingleSlotZone(Zone zone)
+        {
+            return zone == Zone.MyFieldSpell || zone == Zone.OppFieldSpell;
+        }
+
         private static int GetZonePlayer(Zone zone)
         {
             return zone switch
             {
-                Zone.OppMonster or Zone.OppSpell => PlayerOpp,
+                Zone.OppMonster or Zone.OppSpell or Zone.OppFieldSpell
+                    or Zone.OppGrave or Zone.OppBanished or Zone.OppExtra => PlayerOpp,
                 _ => PlayerMe
             };
         }
 
-        /// <summary>Gets the fixed locate value for multi-card stack zones.</summary>
-        private static int GetStackZoneLocate(Zone zone)
+        /// <summary>Gets the fixed locate value for stack and side zones.</summary>
+        private static int GetSideZoneLocate(Zone zone)
         {
             return zone switch
             {
                 Zone.Hand => LocateHand,
-                Zone.MyGrave => LocateGrave,
-                Zone.MyExtra => LocateExtra,
+                Zone.MyGrave or Zone.OppGrave => LocateGrave,
+                Zone.MyExtra or Zone.OppExtra => LocateExtra,
+                Zone.MyBanished or Zone.OppBanished => LocateBanished,
+                Zone.MyFieldSpell or Zone.OppFieldSpell => LocateFieldSpell,
                 _ => LocateHand
             };
         }
@@ -3175,6 +3498,12 @@ namespace DuelLinksAccess
                 Zone.MyExtra => Loc.Get("duel_zone_my_extra"),
                 Zone.OppMonster => Loc.Get("duel_zone_opp_monsters"),
                 Zone.OppSpell => Loc.Get("duel_zone_opp_spells"),
+                Zone.OppGrave => Loc.Get("duel_zone_opp_grave"),
+                Zone.OppExtra => Loc.Get("duel_zone_opp_extra"),
+                Zone.MyFieldSpell => Loc.Get("duel_zone_my_field_spell"),
+                Zone.OppFieldSpell => Loc.Get("duel_zone_opp_field_spell"),
+                Zone.MyBanished => Loc.Get("duel_zone_my_banished"),
+                Zone.OppBanished => Loc.Get("duel_zone_opp_banished"),
                 _ => "Unknown"
             };
         }

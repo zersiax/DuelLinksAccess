@@ -48,9 +48,18 @@ namespace DuelLinksAccess
         private TicketExchangeHandler _ticketExchangeHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
-        // when neither DuelHandler nor DialogHandler is handling them
-        private bool _orphanArrowDismissAttempted;
+        // when neither DuelHandler nor DialogHandler is handling them.
+        // Tracked by GO instance id so consecutive arrows (same name, new
+        // instance) each get their own chance. _orphanArrowHandled is set
+        // after we successfully invoke a click path to prevent double-fire.
+        private int _orphanArrowInstanceId = -1;
+        private float _orphanArrowFirstSeen = -1f;
+        private bool _orphanArrowHandled;
         private bool _orphanArrowAnnounced;
+        // Fallback timeout: wait this long with no resolvable target before
+        // invoking ipclick[] directly. Gives the game time to settle after a
+        // dialog pop so we don't re-trigger a just-dismissed dialog.
+        private const float OrphanArrowIpclickTimeout = 1.5f;
 
         #endregion
 
@@ -294,10 +303,17 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Handles TutorialArrow overlays on the dialog stack when neither DuelHandler
-        /// nor DialogHandler is active. Uses arrowVc.OnPointerClick with the correct
-        /// position — physicTarget screen pos for pointing arrows, screen center for
-        /// click-to-continue. First attempt auto-dismisses; if arrow persists it's a
-        /// pointing arrow and Enter/Space retries.
+        /// nor DialogHandler is active. Strategy:
+        /// 1. Re-poll physicTarget/dispTarget each frame. If either becomes non-null,
+        ///    click via that target (ClickArrowAtTarget).
+        /// 2. If targets stay null for <see cref="OrphanArrowIpclickTimeout"/> seconds
+        ///    and ipclick[] has handlers, invoke them directly (YgomButton → MonoBehaviour
+        ///    → ExecuteEvents). This is the documented fallback for "pointing" arrows
+        ///    whose UI handler is attached to a specific button (e.g. Missions footer).
+        /// 3. User can press Enter/Space at any time to trigger the fallback manually.
+        /// Instance-id tracking ensures each newly pushed arrow gets a fresh chance.
+        /// Returns true only while we're actively processing an arrow — returning false
+        /// lets ScreenButtonHandler still scan the underlying screen.
         /// </summary>
         private bool HandleOrphanedTutorialArrow()
         {
@@ -306,70 +322,157 @@ namespace DuelLinksAccess
                 var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
                 if (namedManager == null) return false;
 
-                Il2CppYgomSystem.UI.ViewControllerManager mgr;
-                if (!namedManager.TryGetValue("dialog", out mgr)) return false;
-
-                var topVc = mgr?.GetStackTopViewController();
-                if (topVc?.gameObject == null)
-                {
-                    _orphanArrowDismissAttempted = false;
-                    _orphanArrowAnnounced = false;
-                    return false;
-                }
-
-                string name = topVc.gameObject.name;
-                if (name != "TutorialArrow" && name != "TutorialArrowPart")
-                {
-                    _orphanArrowDismissAttempted = false;
-                    _orphanArrowAnnounced = false;
-                    return false;
-                }
-
-                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                // Check dialog manager first (missions/home-screen arrows),
+                // then content manager (in-screen tutorial overlays like
+                // the shop or Duel Trials). Whichever has the arrow wins.
+                var arrowVc = TryGetArrowOnTop(namedManager, "dialog",
+                    out var topGo, out string mgrKind);
                 if (arrowVc == null)
                 {
-                    _orphanArrowDismissAttempted = false;
-                    _orphanArrowAnnounced = false;
+                    arrowVc = TryGetArrowOnTop(namedManager, "content",
+                        out topGo, out mgrKind);
+                }
+
+                if (arrowVc == null)
+                {
+                    ResetOrphanArrowState();
                     return false;
                 }
 
-                // First encounter: try to auto-dismiss via OnPointerClick at correct position.
-                // Only auto-dismiss if the arrow has a physicTarget (it's blocking a
-                // specific element). Arrows without physicTarget are just pointing/guiding
-                // — auto-clicking those at screen center hits random UI elements and can
-                // cause loops (e.g., reopening the dialog we just closed).
-                if (!_orphanArrowDismissAttempted)
+                // Duel Trials protection: a TutorialArrowPart on content with
+                // an HtjsonPage underneath is the quiz-banner navigation case.
+                // Auto-clicking would select a random banner. The user is
+                // supposed to navigate the banners via ScreenButtonHandler.
+                if (mgrKind == "content" && HasHtjsonPageBeneath(namedManager))
                 {
-                    _orphanArrowDismissAttempted = true;
-                    _orphanArrowAnnounced = false;
-
-                    var target = arrowVc.physicTarget;
-                    DebugLogger.Log(LogCategory.Game, "Main",
-                        $"Orphaned TutorialArrow: {name}, " +
-                        $"physicTarget={target?.name ?? "null"}, " +
-                        $"dispTarget={arrowVc.dispTarget?.name ?? "null"}, " +
-                        $"ipclick={arrowVc.ipclick?.Length ?? 0}");
-
-                    if (target != null)
+                    // Still track so we don't spam logs, but don't auto-click.
+                    int protectedId = topGo.GetInstanceID();
+                    if (protectedId != _orphanArrowInstanceId)
                     {
-                        // Arrow is blocking a specific element — auto-dismiss
-                        ClickArrowAtTarget(arrowVc);
-                        return true;
+                        _orphanArrowInstanceId = protectedId;
+                        _orphanArrowFirstSeen = UnityEngine.Time.time;
+                        _orphanArrowHandled = true;  // disable all auto paths
+                        _orphanArrowAnnounced = false;
+                        DebugLogger.Log(LogCategory.Game, "Main",
+                            $"Orphan TutorialArrow in content over HtjsonPage " +
+                            $"(Duel Trials style), skipping auto-click");
                     }
-                    // No physicTarget — this is a guiding arrow, not a blocker.
-                    // Fall through to announce it and let user interact naturally.
+                    return false;
                 }
 
-                // Arrow persists after dismiss attempt — it's a pointing arrow.
-                // Don't block ScreenButtonHandler — let user navigate to the target
-                // and press Enter. ScreenButtonHandler.ActivateViaTutorialArrow
-                // will route the click through the arrow.
+                string name = topGo.name;
+
+                // New arrow instance (different GO than last frame) — reset state
+                // so we give this arrow its own chance.
+                int instanceId = topGo.GetInstanceID();
+                if (instanceId != _orphanArrowInstanceId)
+                {
+                    _orphanArrowInstanceId = instanceId;
+                    _orphanArrowFirstSeen = UnityEngine.Time.time;
+                    _orphanArrowHandled = false;
+                    _orphanArrowAnnounced = false;
+                    DebugLogger.Log(LogCategory.Game, "Main",
+                        $"Orphan TutorialArrow detected in {mgrKind}: {name}, " +
+                        $"physicTarget={arrowVc.physicTarget?.name ?? "null"}, " +
+                        $"dispTarget={arrowVc.dispTarget?.name ?? "null"}, " +
+                        $"ipclick={arrowVc.ipclick?.Length ?? 0}");
+                }
+
+                // Re-poll targets every frame — the arrow may populate them
+                // late, or we might catch a dispTarget even when physicTarget
+                // is null (both are "often null" per game-api.md).
+                var physicTarget = arrowVc.physicTarget;
+                var dispTarget = arrowVc.dispTarget;
+
+                // Announce once so the user knows an arrow is blocking.
+                // Only announce for dialog-manager arrows when SBH has
+                // nothing meaningful going on — otherwise the announcement
+                // collides with SBH's item/text announcement.
                 if (!_orphanArrowAnnounced)
                 {
                     _orphanArrowAnnounced = true;
-                    ScreenReader.Say(Loc.Get("duel_tutorial_arrow_pointing"));
+                    if (mgrKind == "dialog" && _screenButtonHandler?.IsActive != true)
+                        ScreenReader.Say(Loc.Get("duel_tutorial_arrow_pointing"));
                 }
 
+                // Path 2: manual user trigger (dialog manager only).
+                // Gated on:
+                //   - !_orphanArrowHandled: each arrow instance gets at most
+                //     one manual attempt — prevents the "stuck on stage
+                //     mission popup" input-stealing loop where we kept
+                //     re-firing ipclick on every Enter press.
+                //   - SBH idle: when SBH has items or text mode, the user's
+                //     Enter/Space belongs to SBH (navigate items, advance
+                //     scenario text). We only claim keys when SBH has
+                //     nothing else to do with them.
+                if (mgrKind == "dialog"
+                    && !_orphanArrowHandled
+                    && _screenButtonHandler?.IsActive != true)
+                {
+                    bool userPressedAdvance =
+                        InputManager.TryConsumeKeyDown(UnityEngine.KeyCode.Return)
+                        || InputManager.TryConsumeKeyDown(UnityEngine.KeyCode.KeypadEnter)
+                        || InputManager.TryConsumeKeyDown(UnityEngine.KeyCode.Space);
+
+                    if (userPressedAdvance)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "Main",
+                            "Orphan TutorialArrow: user pressed advance key, " +
+                            "invoking ipclick directly");
+                        InvokeArrowIpclickDirect(arrowVc);
+                        // Always mark handled — if the attempt failed, the
+                        // user can press F9 (debug) or wait for a new arrow
+                        // instance. This prevents infinite key stealing.
+                        _orphanArrowHandled = true;
+                        return true;
+                    }
+                }
+
+                // Auto-click after timeout. Once per arrow instance. Unified
+                // for both target-resolved and null-target cases — the
+                // delay gives the game and any focus state time to settle
+                // (Home→Shop arrow failed when we clicked immediately but
+                // worked when F9 fired 11s later; same coords, same
+                // function, only difference was timing/focus).
+                if (!_orphanArrowHandled)
+                {
+                    float elapsed = UnityEngine.Time.time - _orphanArrowFirstSeen;
+                    if (elapsed >= OrphanArrowIpclickTimeout)
+                    {
+                        if (physicTarget != null || dispTarget != null)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "Main",
+                                $"Orphan TutorialArrow target resolved after " +
+                                $"{elapsed:F1}s " +
+                                $"(physic={physicTarget?.name ?? "null"}, " +
+                                $"disp={dispTarget?.name ?? "null"}), clicking");
+                            ClickArrowAtTarget(arrowVc);
+                            _orphanArrowHandled = true;
+                            return mgrKind == "dialog";
+                        }
+
+                        var ipclick = arrowVc.ipclick;
+                        if (ipclick != null && ipclick.Length > 0)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "Main",
+                                $"Orphan TutorialArrow: null targets after " +
+                                $"{elapsed:F1}s, auto-invoking ipclick");
+                            InvokeArrowIpclickDirect(arrowVc);
+                            _orphanArrowHandled = true;
+                            return mgrKind == "dialog";
+                        }
+
+                        // No usable target or ipclick — mark handled so we
+                        // stop re-evaluating this instance.
+                        DebugLogger.Log(LogCategory.Game, "Main",
+                            "Orphan TutorialArrow: null targets and no " +
+                            "ipclick handlers; cannot auto-advance");
+                        _orphanArrowHandled = true;
+                    }
+                }
+
+                // Announcing/waiting state — never block other handlers so
+                // ScreenButtonHandler can still scan the underlying screen.
                 return false;
             }
             catch (System.Exception ex)
@@ -381,10 +484,156 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Returns the TutorialArrowViewController on top of the named
+        /// manager's stack, or null if the top isn't an arrow. Out params
+        /// provide the GO (for instance tracking) and the manager name.
+        /// </summary>
+        private static Il2CppYgomGame.Menu.TutorialArrowViewController TryGetArrowOnTop(
+            Il2CppSystem.Collections.Generic.Dictionary<string,
+                Il2CppYgomSystem.UI.ViewControllerManager> namedManager,
+            string key,
+            out GameObject topGo,
+            out string managerKind)
+        {
+            topGo = null;
+            managerKind = null;
+            if (!namedManager.TryGetValue(key, out var mgr) || mgr == null) return null;
+            var topVc = mgr.GetStackTopViewController();
+            if (topVc?.gameObject == null) return null;
+            string name = topVc.gameObject.name;
+            if (name != "TutorialArrow" && name != "TutorialArrowPart") return null;
+            var vc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+            if (vc == null) return null;
+            topGo = topVc.gameObject;
+            managerKind = key;
+            return vc;
+        }
+
+        /// <summary>
+        /// Returns true if the content-manager stack has an HtjsonPage one
+        /// level beneath the top VC. Used to detect Duel Trials quiz-banner
+        /// screens where the user is expected to navigate manually rather
+        /// than have us auto-click the arrow.
+        /// </summary>
+        private static bool HasHtjsonPageBeneath(
+            Il2CppSystem.Collections.Generic.Dictionary<string,
+                Il2CppYgomSystem.UI.ViewControllerManager> namedManager)
+        {
+            try
+            {
+                if (!namedManager.TryGetValue("content", out var contentMgr)) return false;
+                if (contentMgr == null) return false;
+                int count = contentMgr.GetStackCount();
+                if (count < 2) return false;
+                var belowVc = contentMgr.GetStackViewController(count - 2);
+                if (belowVc?.gameObject == null) return false;
+                return belowVc.gameObject.name == "HtjsonPage";
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Resets orphan arrow tracking when no arrow is on the dialog stack.
+        /// </summary>
+        private void ResetOrphanArrowState()
+        {
+            _orphanArrowInstanceId = -1;
+            _orphanArrowFirstSeen = -1f;
+            _orphanArrowHandled = false;
+            _orphanArrowAnnounced = false;
+        }
+
+        /// <summary>
+        /// Invokes each handler in arrowVc.ipclick[] directly. Bypasses the
+        /// arrow's IsCollider raycast check entirely — safe for UI buttons
+        /// whose handler IS the specific target button (documented in
+        /// game-api.md). Mirrors DialogHandler.ActivateViaTutorialArrow:
+        /// prefers YgomButton.OnPointerClick, falls back to ExecuteEvents on
+        /// the handler's MonoBehaviour GameObject.
+        /// </summary>
+        /// <returns>True if at least one handler was successfully dispatched.</returns>
+        private static bool InvokeArrowIpclickDirect(
+            Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
+        {
+            try
+            {
+                var ipclick = arrowVc.ipclick;
+                if (ipclick == null || ipclick.Length == 0)
+                {
+                    DebugLogger.Log(LogCategory.Game, "Main",
+                        "InvokeArrowIpclickDirect: no ipclick handlers");
+                    return false;
+                }
+
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current)
+                {
+                    position = new Vector2(Screen.width / 2f, Screen.height / 2f)
+                };
+
+                int dispatched = 0;
+                for (int i = 0; i < ipclick.Length; i++)
+                {
+                    var handler = ipclick[i];
+                    if (handler == null) continue;
+
+                    try
+                    {
+                        // Prefer YgomButton cast — it's the game's button type
+                        // and its OnPointerClick runs the full click pipeline.
+                        var button = handler.TryCast<Il2CppYgomSystem.UI.YgomButton>();
+                        if (button != null)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "Main",
+                                $"ipclick[{i}]: YgomButton on " +
+                                $"{button.gameObject?.name ?? "?"}");
+                            button.OnPointerClick(eventData);
+                            dispatched++;
+                            continue;
+                        }
+
+                        // Fall back to MonoBehaviour + ExecuteEvents for any
+                        // other IPointerClickHandler implementation.
+                        var mb = handler.TryCast<MonoBehaviour>();
+                        if (mb?.gameObject != null)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "Main",
+                                $"ipclick[{i}]: {mb.GetType().Name} on " +
+                                $"{mb.gameObject.name}");
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(
+                                mb.gameObject, eventData,
+                                UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                            dispatched++;
+                            continue;
+                        }
+
+                        DebugLogger.Log(LogCategory.Game, "Main",
+                            $"ipclick[{i}]: unknown handler type, skipping");
+                    }
+                    catch (System.Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "Main",
+                            $"ipclick[{i}] invoke error: {ex.Message}");
+                    }
+                }
+
+                DebugLogger.Log(LogCategory.Game, "Main",
+                    $"InvokeArrowIpclickDirect: dispatched {dispatched}/" +
+                    $"{ipclick.Length} handler(s)");
+                return dispatched > 0;
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "Main",
+                    $"InvokeArrowIpclickDirect error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Clicks a TutorialArrow via arrowVc.OnPointerClick at the correct position.
-        /// For pointing arrows (physicTarget != null): uses physicTarget's screen position
-        /// so the arrow's IsCollider check passes and the click routes through to ipclick.
-        /// For click-to-continue (physicTarget == null): uses screen center.
+        /// Prefers physicTarget, falls back to dispTarget (both "often null" per
+        /// game-api.md). If both are null, uses screen center (click-to-continue).
         /// </summary>
         internal static void ClickArrowAtTarget(
             Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
@@ -392,8 +641,12 @@ namespace DuelLinksAccess
             var eventData = new UnityEngine.EventSystems.PointerEventData(
                 UnityEngine.EventSystems.EventSystem.current);
 
-            var physicTarget = arrowVc.physicTarget;
-            if (physicTarget != null)
+            // Prefer physicTarget (has collider for raycast); fall back to
+            // dispTarget (display-only target). Either works for click routing.
+            var clickTarget = arrowVc.physicTarget ?? arrowVc.dispTarget;
+            string targetKind = arrowVc.physicTarget != null ? "physicTarget" : "dispTarget";
+
+            if (clickTarget != null)
             {
                 // Use the arrow's own targetCamera for coordinate conversion —
                 // Camera.main is NOT the right camera for 3D world targets.
@@ -403,34 +656,35 @@ namespace DuelLinksAccess
                 if (cam != null)
                 {
                     Vector3 screenPos = cam.WorldToScreenPoint(
-                        physicTarget.transform.position);
+                        clickTarget.transform.position);
                     eventData.position = new Vector2(screenPos.x, screenPos.y);
                     DebugLogger.Log(LogCategory.Game, "Main",
-                        $"Clicking arrow at physicTarget pos " +
+                        $"Clicking arrow at {targetKind} pos " +
                         $"({screenPos.x:F0}, {screenPos.y:F0}) via " +
-                        $"{cam.name} for {physicTarget.name}");
+                        $"{cam.name} for {clickTarget.name}");
                 }
                 else
                 {
                     eventData.position = new Vector2(
                         Screen.width / 2f, Screen.height / 2f);
                     DebugLogger.Log(LogCategory.Game, "Main",
-                        "No camera for physicTarget, using screen center");
+                        $"No camera for {targetKind}, using screen center");
                 }
             }
             else
             {
-                // No physicTarget — click-to-continue, screen center is fine
+                // No target at all — click-to-continue, screen center is fine
                 eventData.position = new Vector2(
                     Screen.width / 2f, Screen.height / 2f);
                 DebugLogger.Log(LogCategory.Game, "Main",
-                    "No physicTarget, clicking arrow at screen center");
+                    "No physicTarget or dispTarget, clicking arrow at screen center");
             }
 
             // RegistPointerCurrentRaycast populates the eventData with raycast
             // results that IsCollider needs — without it, OnPointerClick silently fails
             // even with the correct screen position.
             bool registered = false;
+            bool hasTarget = arrowVc.physicTarget != null || arrowVc.dispTarget != null;
             try
             {
                 registered = arrowVc.RegistPointerCurrentRaycast(eventData);
@@ -446,35 +700,107 @@ namespace DuelLinksAccess
             if (registered)
             {
                 arrowVc.OnPointerClick(eventData);
+                return;
             }
-            else
+
+            // Registration failed. For arrows with a real world/UI target
+            // (physicTarget or dispTarget), hardware mouse at that position
+            // is the only reliable path — ipclick direct invocation NREs
+            // when the handler is SingleViewController (3D collider case).
+            // For targetless arrows (click-to-continue), ipclick direct is
+            // still the right fallback.
+            if (hasTarget)
             {
-                // Fallback: call ipclick handlers directly (bypasses IsCollider check)
-                try
+                if (ClickViaHardwareMouse(eventData.position, "orphan arrow"))
+                    return;
+                // Hardware click couldn't find the game window — fall through
+                // to ipclick as a last resort
+                DebugLogger.Log(LogCategory.Game, "Main",
+                    "Hardware mouse unavailable, falling back to ipclick direct");
+            }
+
+            // Targetless (or hardware-mouse unavailable) fallback:
+            // call ipclick handlers directly (bypasses IsCollider check)
+            try
+            {
+                var ipclick = arrowVc.ipclick;
+                if (ipclick != null && ipclick.Length > 0)
                 {
-                    var ipclick = arrowVc.ipclick;
-                    if (ipclick != null && ipclick.Length > 0)
+                    foreach (var handler in ipclick)
                     {
-                        foreach (var handler in ipclick)
-                        {
-                            if (handler == null) continue;
-                            handler.OnPointerClick(eventData);
-                        }
-                        DebugLogger.Log(LogCategory.Game, "Main",
-                            $"Called {ipclick.Length} ipclick handler(s) directly");
+                        if (handler == null) continue;
+                        handler.OnPointerClick(eventData);
                     }
-                    else
-                    {
-                        // No ipclick handlers — try OnPointerClick anyway as last resort
-                        arrowVc.OnPointerClick(eventData);
-                    }
-                }
-                catch (System.Exception ex)
-                {
                     DebugLogger.Log(LogCategory.Game, "Main",
-                        $"ipclick fallback error: {ex.Message}");
+                        $"Called {ipclick.Length} ipclick handler(s) directly");
+                }
+                else
+                {
+                    // No ipclick handlers — try OnPointerClick anyway as last resort
                     arrowVc.OnPointerClick(eventData);
                 }
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "Main",
+                    $"ipclick fallback error: {ex.Message}");
+                try { arrowVc.OnPointerClick(eventData); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Simulates a real mouse click at the given Unity screen position by
+        /// calling SetCursorPos + mouse_event. This is the only reliable way
+        /// to click 3D world colliders (e.g. TutorialArrow pointing at
+        /// Collider_Cardshop) — Unity's event system populates raycast data
+        /// properly only for real OS-level clicks. Converts Unity coords
+        /// (origin bottom-left, client-relative) to Windows screen coords.
+        /// Returns false if the game window handle couldn't be found.
+        /// </summary>
+        internal static bool ClickViaHardwareMouse(Vector2 unityPos, string reason)
+        {
+            try
+            {
+                // Unity: (0,0)=bottom-left client. Windows: (0,0)=top-left screen.
+                int clientX = (int)unityPos.x;
+                int clientY = Screen.height - (int)unityPos.y;
+
+                POINT pt;
+                pt.X = clientX;
+                pt.Y = clientY;
+                var hwnd = FindWindow(null, "Yu-Gi-Oh! DUEL LINKS");
+                if (hwnd == System.IntPtr.Zero) hwnd = GetActiveWindow();
+
+                if (hwnd == System.IntPtr.Zero || !ClientToScreen(hwnd, ref pt))
+                {
+                    DebugLogger.Log(LogCategory.Game, "Main",
+                        $"Hardware mouse ({reason}): no window handle or ClientToScreen failed");
+                    return false;
+                }
+
+                // Force the game window to foreground before clicking. If a
+                // screen reader (NVDA) or other app briefly stole focus,
+                // SetCursorPos + mouse_event would otherwise route to the
+                // wrong window. Windows may refuse this call when the
+                // calling process doesn't own the foreground window; that's
+                // fine — the click still works if the game is already focused.
+                bool fg = SetForegroundWindow(hwnd);
+
+                DebugLogger.Log(LogCategory.Game, "Main",
+                    $"Hardware mouse ({reason}): click at screen ({pt.X}, {pt.Y}) " +
+                    $"from Unity ({unityPos.x:F0}, {unityPos.y:F0}), " +
+                    $"SetForegroundWindow={fg}");
+
+                SetCursorPos(pt.X, pt.Y);
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, System.UIntPtr.Zero);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, System.UIntPtr.Zero);
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "Main",
+                    $"Hardware mouse ({reason}) error: {ex.Message}");
+                return false;
             }
         }
 
@@ -676,9 +1002,13 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// F9: Two-pronged approach to click through TutorialArrow:
-        /// 1) Bypass arrow — call ipclick handlers directly with physicTarget position
-        /// 2) Hardware mouse simulation via SetCursorPos + mouse_event
+        /// F9 (debug): Hardware mouse click at the current TutorialArrow's
+        /// physicTarget. Checks both dialog and content managers — some
+        /// arrows (shop tutorial, missions tutorial) are in dialog, others
+        /// (post-shop tutorial overlay on ShopLineup) are in content.
+        /// Uses ClickViaHardwareMouse — the only reliable click path for 3D
+        /// world colliders since ipclick direct invocation NREs on
+        /// SingleViewController handlers.
         /// </summary>
         private void SimulateClickAtArrowTarget()
         {
@@ -686,95 +1016,93 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg("=== F9: Simulating click at arrow target ===");
 
-                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
-                if (namedManager == null) { ScreenReader.Say("No manager"); return; }
+                var arrowVc = FindCurrentArrowVc(out string mgrName);
+                if (arrowVc == null) { ScreenReader.Say("No tutorial arrow active"); return; }
 
-                Il2CppYgomSystem.UI.ViewControllerManager mgr;
-                if (!namedManager.TryGetValue("dialog", out mgr)) { ScreenReader.Say("No dialog manager"); return; }
-
-                var topVc = mgr?.GetStackTopViewController();
-                if (topVc?.gameObject == null) { ScreenReader.Say("No dialog VC"); return; }
-
-                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
-                if (arrowVc == null) { ScreenReader.Say("Not a TutorialArrow"); return; }
+                MelonLogger.Msg($"F9: found TutorialArrow in {mgrName} manager");
 
                 var physicTarget = arrowVc.physicTarget;
-                if (physicTarget == null) { ScreenReader.Say("No physics target"); return; }
+                var dispTarget = arrowVc.dispTarget;
+                var clickTarget = physicTarget ?? dispTarget;
+                if (clickTarget == null) { ScreenReader.Say("Arrow has no physics or display target"); return; }
 
                 var cam = arrowVc.targetCamera;
                 if (cam == null) cam = Camera.main;
                 if (cam == null) { ScreenReader.Say("No camera"); return; }
 
-                Vector3 screenPos = cam.WorldToScreenPoint(physicTarget.transform.position);
-                MelonLogger.Msg($"Target: Unity ({screenPos.x:F0}, {screenPos.y:F0}), screen {Screen.width}x{Screen.height}");
+                Vector3 screenPos = cam.WorldToScreenPoint(clickTarget.transform.position);
+                MelonLogger.Msg($"Target ({(physicTarget != null ? "physicTarget" : "dispTarget")}={clickTarget.name}): " +
+                    $"Unity ({screenPos.x:F0}, {screenPos.y:F0}), screen {Screen.width}x{Screen.height}");
 
-                // --- Approach 1: Direct ipclick invocation with correct position ---
-                var ipclickHandlers = arrowVc.ipclick;
-                if (ipclickHandlers != null && ipclickHandlers.Length > 0)
-                {
-                    MelonLogger.Msg($"Approach 1: Calling {ipclickHandlers.Length} ipclick handler(s) at target position");
-                    var eventData = new UnityEngine.EventSystems.PointerEventData(
-                        UnityEngine.EventSystems.EventSystem.current);
-                    eventData.position = new Vector2(screenPos.x, screenPos.y);
-
-                    for (int i = 0; i < ipclickHandlers.Length; i++)
-                    {
-                        var handler = ipclickHandlers[i];
-                        if (handler == null) continue;
-
-                        // Get the MonoBehaviour behind the interface
-                        var mb = handler.TryCast<MonoBehaviour>();
-                        string handlerName = mb != null ? mb.gameObject.name : "unknown";
-                        MelonLogger.Msg($"  ipclick[{i}]: {handlerName}");
-
-                        try
-                        {
-                            handler.OnPointerClick(eventData);
-                            MelonLogger.Msg($"  ipclick[{i}] invoked OK");
-                        }
-                        catch (System.Exception ex)
-                        {
-                            MelonLogger.Msg($"  ipclick[{i}] error: {ex.Message}");
-                        }
-                    }
-                }
+                if (ClickViaHardwareMouse(new Vector2(screenPos.x, screenPos.y), "F9"))
+                    ScreenReader.Say("Click simulated");
                 else
-                {
-                    MelonLogger.Msg("No ipclick handlers found");
-                }
-
-                // --- Approach 2: Hardware mouse simulation via SetCursorPos + mouse_event ---
-                // Unity: (0,0)=bottom-left. Windows: (0,0)=top-left.
-                int clientX = (int)screenPos.x;
-                int clientY = Screen.height - (int)screenPos.y;
-
-                // Convert client coords to screen coords
-                POINT pt;
-                pt.X = clientX;
-                pt.Y = clientY;
-                var hwnd = FindWindow(null, "Yu-Gi-Oh! DUEL LINKS");
-                if (hwnd == System.IntPtr.Zero) hwnd = GetActiveWindow();
-
-                if (hwnd != System.IntPtr.Zero && ClientToScreen(hwnd, ref pt))
-                {
-                    MelonLogger.Msg($"Approach 2: Hardware click at screen ({pt.X}, {pt.Y})");
-                    SetCursorPos(pt.X, pt.Y);
-                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, System.UIntPtr.Zero);
-                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, System.UIntPtr.Zero);
-                    MelonLogger.Msg("Hardware click sent");
-                }
-                else
-                {
-                    MelonLogger.Msg($"ClientToScreen failed or no window handle");
-                }
-
-                ScreenReader.Say("Click simulated");
+                    ScreenReader.Say("Hardware click failed");
             }
             catch (System.Exception ex)
             {
                 MelonLogger.Msg($"SimulateClick error: {ex.Message}");
                 ScreenReader.Say($"Click failed: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Locates a TutorialArrowViewController on the top of either the
+        /// dialog or content manager stack. Checks dialog first (the common
+        /// case). Returns null if no arrow is active. Outputs the manager
+        /// name where the arrow was found for diagnostics.
+        /// </summary>
+        private static Il2CppYgomGame.Menu.TutorialArrowViewController FindCurrentArrowVc(
+            out string managerName)
+        {
+            managerName = null;
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return null;
+
+                // Dialog manager first — missions/home-screen tutorial arrows live here
+                if (namedManager.TryGetValue("dialog", out var dialogMgr))
+                {
+                    var top = dialogMgr?.GetStackTopViewController();
+                    if (top?.gameObject != null &&
+                        (top.gameObject.name == "TutorialArrow"
+                         || top.gameObject.name == "TutorialArrowPart"))
+                    {
+                        var vc = top.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                        if (vc != null)
+                        {
+                            managerName = "dialog";
+                            return vc;
+                        }
+                    }
+                }
+
+                // Content manager — in-screen tutorial overlays (shop tutorial,
+                // Duel Trials quiz arrows, etc.)
+                if (namedManager.TryGetValue("content", out var contentMgr))
+                {
+                    var top = contentMgr?.GetStackTopViewController();
+                    if (top?.gameObject != null &&
+                        (top.gameObject.name == "TutorialArrow"
+                         || top.gameObject.name == "TutorialArrowPart"))
+                    {
+                        var vc = top.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                        if (vc != null)
+                        {
+                            managerName = "content";
+                            return vc;
+                        }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "Main",
+                    $"FindCurrentArrowVc error: {ex.Message}");
+            }
+
+            return null;
         }
 
         // Windows API for hardware mouse simulation
@@ -786,6 +1114,9 @@ namespace DuelLinksAccess
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern System.IntPtr GetActiveWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(System.IntPtr hWnd);
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool ClientToScreen(System.IntPtr hWnd, ref POINT lpPoint);

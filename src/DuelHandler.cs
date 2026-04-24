@@ -243,7 +243,7 @@ namespace DuelLinksAccess
             }
 
             if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
-                || InputManager.TryConsumeKeyDown(KeyCode.L))
+                || InputManager.TryConsumeKeyDown(KeyCode.J))
             {
                 _eventLog.StopBrowsing();
                 return;
@@ -258,16 +258,16 @@ namespace DuelLinksAccess
 
         private void ProcessDuelKeys()
         {
-            // S = Status report (LP, phase, turn)
-            if (InputManager.TryConsumeKeyDown(KeyCode.S))
+            // I = Status report (LP, phase, turn) — was S, now S is spell zone hotkey
+            if (InputManager.TryConsumeKeyDown(KeyCode.I))
             {
                 string status = DuelEventAnnouncer.GetStatusText();
                 ScreenReader.Say(status);
                 return;
             }
 
-            // L = Open event log
-            if (InputManager.TryConsumeKeyDown(KeyCode.L))
+            // J = Open event log — was L, now L is LP hotkey
+            if (InputManager.TryConsumeKeyDown(KeyCode.J))
             {
                 _eventLog.StartBrowsing();
                 return;
