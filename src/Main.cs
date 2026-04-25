@@ -46,6 +46,7 @@ namespace DuelLinksAccess
         private DeckEditHandler _deckEditHandler;
         private ShopHandler _shopHandler;
         private TicketExchangeHandler _ticketExchangeHandler;
+        private HomeHandler _homeHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
         // when neither DuelHandler nor DialogHandler is handling them.
@@ -86,6 +87,7 @@ namespace DuelLinksAccess
             _deckEditHandler = new DeckEditHandler();
             _shopHandler = new ShopHandler();
             _ticketExchangeHandler = new TicketExchangeHandler();
+            _homeHandler = new HomeHandler();
         }
 
         private void OnScreenChanged(GameStateTracker.GameScreen oldScreen,
@@ -295,6 +297,10 @@ namespace DuelLinksAccess
             // Ticket exchange handler — intercepts CardGetterViewController screens
             _ticketExchangeHandler?.Update();
             if (_ticketExchangeHandler?.IsActive == true) return;
+
+            // Home screen handler — dedicated navigation for the world map
+            _homeHandler?.Update();
+            if (_homeHandler?.IsActive == true) return;
 
             // Generic screen button handler — fallback for non-dialog, non-duel screens
             _screenButtonHandler?.Update();

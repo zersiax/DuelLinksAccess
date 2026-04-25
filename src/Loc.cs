@@ -149,6 +149,36 @@ namespace DuelLinksAccess
             _english["map_npc_bonus"] = "Bonus Duelist";
             _english["map_school"] = "Duel Trials";
 
+            // ===== HOME SCREEN =====
+            _english["home_area_selector"] = "Area: {0}. Left/Right to change.";
+            _english["home_area_left"] = "Previous area";
+            _english["home_area_right"] = "Next area";
+            _english["home_area_changed"] = "Area: {0}";
+            _english["home_area_themepark"] = "Theme Park";
+            _english["home_gate"] = "Gate";
+            _english["home_colosseum"] = "Colosseum";
+            _english["home_shop"] = "Shop";
+            _english["home_labo"] = "Labo";
+            _english["home_duel_center"] = "Duel Center";
+            _english["home_events"] = "Events and Campaigns";
+            _english["home_gifts"] = "Gift Box";
+            _english["home_info"] = "Info";
+            _english["home_user_info"] = "My Profile";
+            _english["home_option"] = "Options";
+            _english["home_neuron_code"] = "Neuron Code";
+            _english["home_character"] = "{0}";
+            _english["home_character_unknown"] = "Character";
+            _english["home_deck_select"] = "Select Deck";
+            _english["home_deck_edit"] = "Edit Deck";
+            _english["home_missions"] = "Missions";
+            _english["home_missions_stage"] = "Missions: {0}";
+            _english["home_chara_selector"] = "Character: {0}. Left/Right to change.";
+            _english["home_chara_exp_up"] = "Level up {0}";
+            _english["home_chara_deck"] = "Deck: {0}";
+            _english["home_chara_change_series"] = "Change Series";
+            _english["home_items"] = "Home screen: {0} items";
+            _english["home_item"] = "{2}, {0} of {1}";
+
             // ===== SHORTCUT PANEL =====
             _english["shortcut_trader"] = "Card Trader";
             _english["shortcut_duelchallenge"] = "Duel Trials";

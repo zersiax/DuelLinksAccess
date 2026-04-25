@@ -55,6 +55,7 @@ namespace DuelLinksAccess
             GameStateTracker.GameScreen.Unknown,
             GameStateTracker.GameScreen.Dialog,
             GameStateTracker.GameScreen.Duel,
+            GameStateTracker.GameScreen.Home,  // handled by HomeHandler
         };
 
         #endregion
