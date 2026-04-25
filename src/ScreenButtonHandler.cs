@@ -46,6 +46,10 @@ namespace DuelLinksAccess
         // Tab-aware rescan: after clicking a tab button, force rescan
         private float _tabRescanDelay = -1f;
 
+        // Title screen: background poll for buttons that load after the initial scans
+        private float _titlePollTimer = -1f;
+        private bool _titleAnnounced;
+
         /// <summary>
         /// Screens that this handler should NOT process.
         /// Dialog is handled by DialogHandler; Duel will get its own handler.
@@ -112,6 +116,8 @@ namespace DuelLinksAccess
                 _screenRoot = null;
                 _resultRescanTimer = -1f;
                 _tabRescanDelay = -1f;
+                _titlePollTimer = -1f;
+                _titleAnnounced = false;
             }
 
             if (!_scanned)
@@ -138,6 +144,50 @@ namespace DuelLinksAccess
             // In text mode, poll for text changes to auto-read new dialogue
             if (_textMode)
                 PollTextChanges();
+
+            // Title screen: after initial scans found nothing, keep polling every 2s.
+            // Buttons (e.g. "Iniciar partida") may load after network auth completes.
+            // Allow Enter/Space to do a hardware mouse click as fallback while waiting.
+            if (_scanned
+                && _items.Count == 0
+                && !_textMode
+                && GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Title)
+            {
+                if (!_titleAnnounced)
+                {
+                    _titleAnnounced = true;
+                    _titlePollTimer = 2f;
+                    ScreenReader.Say(Loc.Get("title_press_enter"));
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "Title: no items after initial scan, starting background poll");
+                }
+
+                _titlePollTimer -= Time.deltaTime;
+                if (_titlePollTimer <= 0f)
+                {
+                    _titlePollTimer = 2f;
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "Title: background rescan");
+                    ScanScreen();
+                    if (_items.Count > 0)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Title: found {_items.Count} item(s) on background scan");
+                        _focusIndex = 0;
+                        AnnounceCurrentItem();
+                    }
+                }
+
+                // Fallback: hardware mouse click when no button has appeared yet
+                if (_items.Count == 0
+                    && (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                        || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
+                        || InputManager.TryConsumeKeyDown(KeyCode.Space)))
+                {
+                    Main.ClickViaHardwareMouse(
+                        new Vector2(Screen.width / 2f, Screen.height / 2f), "title screen");
+                }
+            }
 
             // Delayed rescan for result screens (after NEXT button animations)
             if (_resultRescanTimer > 0f)
@@ -180,6 +230,8 @@ namespace DuelLinksAccess
             _lastReadText = "";
             _items.Clear();
             _screenRoot = null;
+            _titlePollTimer = -1f;
+            _titleAnnounced = false;
         }
 
         private void ScanScreen()
