@@ -91,6 +91,7 @@ namespace DuelLinksAccess
                     _tutorialArrowAnnounced = false;
                     _tutorialArrowDismissAttempted = false;
                     DuelEventAnnouncer.Reset();
+                    DuelSpeechWatcher.Reset();
                 }
                 return;
             }
@@ -108,6 +109,8 @@ namespace DuelLinksAccess
                 _eventLog.Clear();
                 _fieldNav.Reset();
             }
+
+            DuelSpeechWatcher.Update();
 
             // Log browsing mode takes priority for navigation keys
             if (_eventLog.IsBrowsing)
