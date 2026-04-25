@@ -274,6 +274,12 @@ namespace DuelLinksAccess
             // a frame to update before we can read the new phase)
             DuelEventAnnouncer.Update();
 
+            // Speech watcher runs unconditionally: character intro lines fire
+            // before DuelHandler.IsActive becomes true (duel HUD is up but
+            // the DuelStart event hasn't fired yet), so we can't gate this
+            // on the duel handler's active state.
+            DuelSpeechWatcher.Update();
+
             // Duel handler runs first — announces events, provides log/status.
             // Key consumption via InputManager prevents conflicts with other handlers.
             _duelHandler?.Update();

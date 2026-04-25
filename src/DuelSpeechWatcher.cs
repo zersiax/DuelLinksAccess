@@ -14,14 +14,21 @@ namespace DuelLinksAccess
         private static string _lastFarText;
 
         /// <summary>
-        /// Call every frame while a duel is active.
+        /// Call every frame. No-op when the duel HUD is absent.
+        /// Self-resets tracked text when the HUD disappears so the same phrase
+        /// can be re-announced the next time a duel starts.
         /// </summary>
         internal static void Update()
         {
             try
             {
                 var hud = DuelClient.instance?.duelHUD;
-                if (hud == null) return;
+                if (hud == null)
+                {
+                    _lastNearText = null;
+                    _lastFarText = null;
+                    return;
+                }
 
                 WatchNearText(hud);
                 WatchFarText(hud);
@@ -30,13 +37,6 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.State, "DuelSpeech", $"Update error: {ex.Message}");
             }
-        }
-
-        /// <summary>Resets tracked state. Call when a duel ends.</summary>
-        internal static void Reset()
-        {
-            _lastNearText = null;
-            _lastFarText = null;
         }
 
         private static void WatchNearText(DuelHUD hud)
