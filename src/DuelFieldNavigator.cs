@@ -1859,11 +1859,19 @@ namespace DuelLinksAccess
                     return false;
                 }
 
-                // Don't re-enter if we already handled this active list instance
-                if (_emoListHandled) return false;
-
+                // Don't re-enter if we already handled this active list instance.
+                // Exception: tribute summon reuses the same EmotionalList GO with
+                // fewer items after each tribute — detect the count change and re-enter.
                 var items = emoList.itemList;
                 if (items == null || items.Count == 0) return false;
+
+                if (_emoListHandled)
+                {
+                    if (items.Count == _emoListCount)
+                        return false;
+                    // Count changed after confirm — new round of selection, re-enter
+                    _emoListHandled = false;
+                }
 
                 EnterEmotionalList(emoList);
                 return true;
