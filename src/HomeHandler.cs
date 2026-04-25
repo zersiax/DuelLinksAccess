@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.RegularExpressions;
 using MelonLoader;
 using UnityEngine;
@@ -213,6 +214,13 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // G — gem balance
+            if (InputManager.TryConsumeKeyDown(KeyCode.G))
+            {
+                AnnounceGemBalance();
+                return;
+            }
+
             // Enter — activate
             if (InputManager.TryConsumeKeyDown(KeyCode.Return) ||
                 InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
@@ -294,8 +302,12 @@ namespace DuelLinksAccess
             AddDirectButtonItem(view.ArrowLButton, Loc.Get("home_area_left"));
             AddDirectButtonItem(view.ArrowRButton, Loc.Get("home_area_right"));
 
-            // Header buttons
-            AddButtonItem(view.gameObject, "Layer4/SingleHeaderBG/GeneralInfomationButton/YgomButton", Loc.Get("home_events"));
+            // Header buttons — Events badge shows active event count
+            string eventsLabel = Loc.Get("home_events");
+            string eventsBadge = ReadChildBadge(view.generalInfomationButton);
+            if (!string.IsNullOrEmpty(eventsBadge))
+                eventsLabel = $"{eventsLabel} ({eventsBadge})";
+            AddButtonItem(view.gameObject, "Layer4/SingleHeaderBG/GeneralInfomationButton/YgomButton", eventsLabel);
             AddButtonItem(view.gameObject, "Layer4/SingleHeaderBG/HeaderButtons/PresentButton", Loc.Get("home_gifts"));
             AddButtonItem(view.gameObject, "Layer4/SingleHeaderBG/HeaderButtons/InfoButton", Loc.Get("home_info"));
             AddButtonItem(view.gameObject, "Layer4/SingleHeaderBG/HeaderButtons/UserInfoButton", Loc.Get("home_user_info"));
@@ -866,6 +878,58 @@ namespace DuelLinksAccess
         #endregion
 
         #region Helpers
+
+        private void AnnounceGemBalance()
+        {
+            try
+            {
+                var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedMgr == null) return;
+                Il2CppYgomSystem.UI.ViewControllerManager baseMgr;
+                if (!namedMgr.TryGetValue("base", out baseMgr) || baseMgr == null) return;
+                var topVc = baseMgr.GetStackTopViewController();
+                if (topVc == null) return;
+                var header = topVc.TryCast<Il2CppYgomGame.Menu.HeaderViewController>();
+                if (header == null) return;
+
+                var parts = new System.Collections.Generic.List<string>();
+                var gems = header.gemNumber?.text?.Trim();
+                if (!string.IsNullOrEmpty(gems)) parts.Add(gems + " " + Loc.Get("shop_gems"));
+                var cr = header.crNumber?.text?.Trim();
+                if (!string.IsNullOrEmpty(cr)) parts.Add(cr + " " + Loc.Get("shop_crystals"));
+
+                if (parts.Count > 0)
+                    ScreenReader.Say(string.Join(", ", parts));
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "HomeHandler", $"AnnounceGemBalance error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Scans active child Text components of a GO for a numeric badge value.
+        /// Returns the number string (e.g. "7") or null if none found.
+        /// </summary>
+        private static string ReadChildBadge(GameObject go)
+        {
+            if (go == null) return null;
+            try
+            {
+                var texts = go.GetComponentsInChildren<Text>(false);
+                if (texts == null) return null;
+                foreach (var t in texts)
+                {
+                    if (t == null || !t.gameObject.activeInHierarchy) continue;
+                    string val = t.text?.Trim();
+                    if (!string.IsNullOrEmpty(val) && val.Length <= 3
+                        && val.All(char.IsDigit) && int.Parse(val) > 0)
+                        return val;
+                }
+            }
+            catch { }
+            return null;
+        }
 
         /// <summary>
         /// Finds items whose labels collide and appends " 1", " 2" etc. so the user
