@@ -62,8 +62,6 @@ namespace DuelLinksAccess
         // Delayed initial scan (assets load asynchronously)
         private float _initialScanDelay;
         private bool _initialScanDone;
-        private int _initialScanAttempts;
-        private const int MaxScanAttempts = 5;
 
         #endregion
 
@@ -102,19 +100,15 @@ namespace DuelLinksAccess
                 _initialScanDelay -= Time.deltaTime;
                 if (_initialScanDelay <= 0f)
                 {
-                    _initialScanAttempts++;
                     if (TryBuildItems())
                     {
                         _initialScanDone = true;
                         Activate();
                     }
-                    else if (_initialScanAttempts >= MaxScanAttempts)
-                    {
-                        _initialScanDone = true;
-                        DebugLogger.Log(LogCategory.Handler, "HomeHandler", "Scan gave up after max attempts");
-                    }
                     else
                     {
+                        // Keep retrying — VC content loads asynchronously after
+                        // scene transitions (e.g. returning from a duel).
                         _initialScanDelay = 0.5f;
                     }
                 }
@@ -135,7 +129,6 @@ namespace DuelLinksAccess
             _items.Clear();
             _focusIndex = 0;
             _initialScanDone = false;
-            _initialScanAttempts = 0;
             _initialScanDelay = 0.6f;
         }
 
