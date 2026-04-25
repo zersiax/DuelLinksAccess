@@ -150,7 +150,7 @@ namespace DuelLinksAccess
             _english["map_school"] = "Duel Trials";
 
             // ===== HOME SCREEN =====
-            _english["home_area_selector"] = "Area: {0}. Left/Right to change.";
+            _english["home_area_selector"] = "Area: {0}";
             _english["home_area_left"] = "Previous area";
             _english["home_area_right"] = "Next area";
             _english["home_area_changed"] = "Area: {0}";

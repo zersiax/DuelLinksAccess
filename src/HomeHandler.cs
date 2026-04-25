@@ -311,6 +311,8 @@ namespace DuelLinksAccess
             // Footer left — missions with live stage label
             AddButtonItem(view.gameObject, "Layer4/SingleFooter/MenuRoot/MenuLeftBase/Mission",
                 GetMissionLabel());
+
+            NumberDuplicateLabels();
         }
 
         private void AddMapObjectItems(SingleViewController view)
@@ -864,6 +866,30 @@ namespace DuelLinksAccess
         #endregion
 
         #region Helpers
+
+        /// <summary>
+        /// Finds items whose labels collide and appends " 1", " 2" etc. so the user
+        /// can distinguish them. Only applies to items that share an identical label
+        /// — unique labels are left untouched.
+        /// </summary>
+        private void NumberDuplicateLabels()
+        {
+            var counts = new Dictionary<string, int>();
+            foreach (var item in _items)
+            {
+                if (!counts.ContainsKey(item.Label)) counts[item.Label] = 0;
+                counts[item.Label]++;
+            }
+
+            var seen = new Dictionary<string, int>();
+            foreach (var item in _items)
+            {
+                if (counts[item.Label] <= 1) continue;
+                if (!seen.ContainsKey(item.Label)) seen[item.Label] = 0;
+                seen[item.Label]++;
+                item.Label = $"{item.Label} {seen[item.Label]}";
+            }
+        }
 
         /// <summary>
         /// Returns true if the string contains hiragana, katakana, or CJK ideographs.
