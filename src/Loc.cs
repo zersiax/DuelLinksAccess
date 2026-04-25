@@ -155,6 +155,7 @@ namespace DuelLinksAccess
             _english["home_area_right"] = "Next area";
             _english["home_area_changed"] = "Area: {0}";
             _english["home_area_themepark"] = "Theme Park";
+            _english["home_area_unknown"] = "Area {0}";
             _english["home_gate"] = "Gate";
             _english["home_colosseum"] = "Colosseum";
             _english["home_shop"] = "Shop";

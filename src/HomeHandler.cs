@@ -560,27 +560,17 @@ namespace DuelLinksAccess
             try
             {
                 var area = GetCurrentMapArea();
-                var raw = SingleUtil.mapAreaToString(area, true);
-                if (string.IsNullOrWhiteSpace(raw)) raw = SingleUtil.mapAreaToString(area, false);
-
-                if (!string.IsNullOrWhiteSpace(raw))
-                {
-                    if (raw.Contains("Street", StringComparison.OrdinalIgnoreCase)) return Loc.Get("map_area_street");
-                    if (raw.Contains("Alley", StringComparison.OrdinalIgnoreCase)) return Loc.Get("map_area_alley");
-                    if (raw.Contains("Park", StringComparison.OrdinalIgnoreCase)) return Loc.Get("map_area_park");
-                    if (raw.Contains("Shop", StringComparison.OrdinalIgnoreCase)) return Loc.Get("map_area_shop");
-                    if (raw.Contains("Themepark", StringComparison.OrdinalIgnoreCase)) return Loc.Get("home_area_themepark");
-                    return raw;
-                }
-
-                return area switch
+                var label = area switch
                 {
                     MapArea.Street => Loc.Get("map_area_street"),
                     MapArea.Alley  => Loc.Get("map_area_alley"),
                     MapArea.Park   => Loc.Get("map_area_park"),
                     MapArea.Shop   => Loc.Get("map_area_shop"),
-                    _ => _mapAreaIndex.ToString()
+                    _              => Loc.Get("home_area_unknown", _mapAreaIndex)
                 };
+                DebugLogger.Log(LogCategory.Handler, "HomeHandler",
+                    $"GetAreaLabel: area={area}, index={_mapAreaIndex}, label={label}");
+                return label;
             }
             catch (Exception ex)
             {
