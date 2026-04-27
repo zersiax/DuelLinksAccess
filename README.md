@@ -44,7 +44,7 @@ Press **F1** at any time to hear the full key list. A quick summary:
 - **Left / Right** — move between columns
 - **Zone hotkeys:** `C` hand, `M` monsters, `S` spells, `T` field spell, `G` graveyard, `B` banished, `D` extra deck
 - **Hold Shift** with any zone hotkey to target the opponent's side
-- **1 / 2 / 3** — jump to monster slots; **4** — Extra Monster Zone
+- **1 / 2 / 3** — jump directly to a monster slot
 - **Enter** — open actions for the current card (summon, attack, activate, etc.)
 - **V** — re-read the current card with full details
 - **L** — read life points
@@ -75,6 +75,54 @@ Press **F1** at any time to hear the full key list. A quick summary:
 - **Enter** — select card
 - **Space** — confirm exchange
 - **G** — ticket count
+
+## The Home and Duel World screen
+
+The main screen of the game is currently pretty vague and complicated. A lot of elements on the screen currently do nothing, and they are still listed because this game often names things oddly, or not at all. So I'm making sure everything that could possibly be clickable is generally available for the player to click, just so you always have a way out if things break. As we learn more about what everything does, we can start removing items we know 100% will never be needed. For now, here's a list of the important items on the screen and what they do.
+
+First, a note on the Space key. At times, the game "scans" for objects a bit too quickly, which causes some things to not register in time. This is why sometimes you have 30 elements on the screen and other times 38 on that same screen. A good rule is to hit Space a second or two after a window loads — that way you always have the latest and most accurate list. This will be improved in the future.
+
+- **Arrow L / Arrow R:** the screen we're on, apart from the options, is actually a map of sorts. There are NPCs walking around, and the map is divided into several areas: street, alley, park, shop, etc. The on-screen Arrow L and Arrow R buttons move between those areas but currently don't tell you which one you're on. The keyboard left/right arrows do the same thing and announce the area name. After using either, press Space to rescan.
+- Past the arrows is something that probably either doesn't speak, or speaks Japanese characters. This option almost certainly does nothing — you can ignore it.
+- **Present:** a gift icon at the top of the screen where mission rewards and other game rewards can be picked up.
+- **Info:** news, notifications, and other things the game wants to surface.
+- **Userinfo:** essentially your profile. Not sure how accessible this is yet, but it holds your wins, losses, and similar stats.
+- **Option:** settings, data transfer, and license agreements.
+- **Neuron code:** not entirely sure what this does — likely a friend-code system.
+- **Shop banners and shop htjson banner entries:** generally ignorable. They're upsells; they all just route into the shop as far as I know.
+- Items labeled **"card"** appear to be background images.
+- **List Open:** currently unknown, doesn't seem to do much.
+- **Home:** important. Switches between Duel World and Duel Home. Some things, like Duel Trials, can only be accessed from one of the two modes. Always press Space a second or two after pressing this to find the new content.
+- **Menu right base:** does nothing.
+- **Select Chara:** change the character you play as.
+- **Select Deck:** pick a different deck if you have others.
+- **Edit Deck:** opens the deck editor. Basic accessibility — most things work, but going through large amounts of cards is not very efficient yet.
+- **Missions:** opens the missions screen. Missions are quests like "play X card 5 times" or "Defeat Joey". The Stage missions (under the World tab) are particularly important — completing them advances your stage and unlocks new features.
+- Another string in Japanese: doesn't do anything important.
+- **Gate:** duel NPCs at the gate (costs Gate Keys) or out on the map (costs nothing). Gate duels need to be unlocked via certain missions.
+- **PvP Arena:** self-explanatory — this is where you fight other players.
+- **Shop:** opens the shop. Tricky to make work well because the server returns image-only banners for some packs/promotions. Most things should still be reachable.
+- **Duel Studio:** something to do with cinematics, not entirely sure.
+- **MapObjectRoot#:** buildings on the map that lead you to different screens. Still working on labeling these better.
+- **Standard / Legendary Duelist:** NPCs on the map you can fight.
+- **Gift:** a gift on the map that gives you items.
+
+When you press the **Home** button (and Space to rescan), a number of new items appear in each area. Most are MapObjectRoot entries, plus a few others:
+
+- **World:** takes the place of the Home option and switches the screen back to the one described above.
+- **BG:** appears to open a list of beginner missions.
+- **Standard / Legendary:** seem to duplicate the duelists further down the list.
+- **Erase UI:** unclear — best left alone for now.
+- **Character deck duel:** unlocks once you have character decks. Not sure yet whether this is purely PvP or has an NPC component.
+- **Short Cut:** adds another batch of items to the screen.
+
+Once you press **Short Cut** (yes, the name is awkward), these extra options appear:
+
+- **Event:** shortcut to the event gate for the current event.
+- **Card Trader EX:** related to the Card Trader NPC found in one of the map areas.
+- **Shortcut button entry:** route to various game screens — needs better labeling.
+- **Duel Trials:** puzzles and quizzes that teach you how to play with certain decks. They become important around stage 4 or 5.
+- **Card Trader:** still investigating how this differs from Card Trader EX above.
 
 ## What's supported
 
