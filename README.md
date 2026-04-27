@@ -35,6 +35,7 @@ Press **F1** at any time to hear the full key list. A quick summary:
 - **Tab** — re-read the current item
 - **Ctrl+R** — repeat the last announcement
 - **F1** — help
+- **F11** — activate the current tutorial arrow target (fallback when Enter on the highlighted item doesn't advance the tutorial — e.g. the Shop button on Home during the boot tutorial)
 - **F12** — toggle debug mode
 - **Ctrl+F11** — open mod settings
 

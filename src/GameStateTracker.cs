@@ -247,6 +247,90 @@ namespace DuelLinksAccess
             }
         }
 
+        // Priority order for finding orphan TutorialArrows. Dialog first because
+        // most arrows live there; content next for in-screen overlays (Duel Trials,
+        // shop tutorial); then the rest as a catch-all so we don't go blind when
+        // a new game version pushes an arrow somewhere unexpected.
+        private static readonly string[] ArrowManagerPriority = new[]
+        {
+            "dialog", "dialogbase", "content", "overlay", "sub", "subcontent"
+        };
+
+        /// <summary>
+        /// Walks every named manager looking for a TutorialArrow / TutorialArrowPart
+        /// on top of its stack. Used by Main.HandleOrphanedTutorialArrow, the F11
+        /// activation path, and ScreenButtonHandler's arrow routing wrappers so
+        /// every site sees arrows in the same set of managers.
+        ///
+        /// Returns true with the arrow VC, its GameObject (for instance tracking),
+        /// and the manager key it was found in. Walks the priority list first,
+        /// then any remaining managers in dictionary order.
+        /// </summary>
+        public static bool TryFindArrowAcrossManagers(
+            Il2CppSystem.Collections.Generic.Dictionary<string,
+                Il2CppYgomSystem.UI.ViewControllerManager> namedManager,
+            out Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc,
+            out UnityEngine.GameObject topGo,
+            out string mgrKey)
+        {
+            arrowVc = null;
+            topGo = null;
+            mgrKey = null;
+            if (namedManager == null) return false;
+
+            foreach (string key in ArrowManagerPriority)
+            {
+                if (TryGetArrowFromManager(namedManager, key, out arrowVc, out topGo))
+                {
+                    mgrKey = key;
+                    return true;
+                }
+            }
+
+            foreach (var entry in namedManager)
+            {
+                bool alreadyTried = false;
+                for (int i = 0; i < ArrowManagerPriority.Length; i++)
+                {
+                    if (ArrowManagerPriority[i] == entry.Key) { alreadyTried = true; break; }
+                }
+                if (alreadyTried) continue;
+
+                if (TryGetArrowFromManager(namedManager, entry.Key, out arrowVc, out topGo))
+                {
+                    mgrKey = entry.Key;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryGetArrowFromManager(
+            Il2CppSystem.Collections.Generic.Dictionary<string,
+                Il2CppYgomSystem.UI.ViewControllerManager> namedManager,
+            string key,
+            out Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc,
+            out UnityEngine.GameObject topGo)
+        {
+            arrowVc = null;
+            topGo = null;
+            try
+            {
+                if (!namedManager.TryGetValue(key, out var mgr) || mgr == null) return false;
+                var topVc = mgr.GetStackTopViewController();
+                if (topVc?.gameObject == null) return false;
+                string name = topVc.gameObject.name;
+                if (name != "TutorialArrow" && name != "TutorialArrowPart") return false;
+                var vc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                if (vc == null) return false;
+                arrowVc = vc;
+                topGo = topVc.gameObject;
+                return true;
+            }
+            catch { return false; }
+        }
+
         /// <summary>
         /// Called by Harmony patch on ViewControllerManager.PushChildViewController.
         /// Logs navigation for debugging.

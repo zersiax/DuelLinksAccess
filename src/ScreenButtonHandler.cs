@@ -1987,6 +1987,37 @@ namespace DuelLinksAccess
                     return;
                 }
 
+                // Final fallback before clicking the root: many text-mode
+                // screens (ResultBasePage post-duel in particular) start with
+                // their NEXT/OK button INACTIVE — SBH's initial scan finds
+                // zero items and enters text mode; once the page animation
+                // finishes the button activates but we don't re-scan. Look
+                // for a Selectable named NEXT/OK in the children and click it
+                // before falling back to the no-op root click. Confirmed
+                // failure on the post-duel "Character Level" screen where
+                // Enter did nothing and only Escape/GoBack worked.
+                var advanceTarget = FindAdvanceButtonInChildren(_screenRoot);
+                if (advanceTarget != null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Advancing via late-activated button: {advanceTarget.name}");
+                    var data = new UnityEngine.EventSystems.PointerEventData(
+                        UnityEngine.EventSystems.EventSystem.current);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        advanceTarget, data,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        advanceTarget, data,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                    UnityEngine.EventSystems.ExecuteEvents.Execute(
+                        advanceTarget, data,
+                        UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                    // Schedule a rescan so the next page (e.g. ResultBasePage
+                    // page 2 with assessment/score/rewards) gets picked up.
+                    _resultRescanTimer = 2f;
+                    return;
+                }
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     "Advancing screen (click)");
                 ClickGameObject(_screenRoot);
@@ -1995,6 +2026,44 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"[ScreenBtn] Advance error: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Searches the screen root's children for a Selectable with a
+        /// commonly-named advance button (NEXT/OK/etc.). Used by
+        /// AdvanceScreen as a last resort when the screen entered text mode
+        /// because its buttons were inactive at scan time and have since
+        /// activated (most often the post-duel ResultBasePage's NEXT).
+        /// Returns the GameObject of the first interactable match, or null.
+        /// </summary>
+        private static GameObject FindAdvanceButtonInChildren(GameObject root)
+        {
+            if (root == null) return null;
+            try
+            {
+                var selectables = root.GetComponentsInChildren<Selectable>(true);
+                if (selectables == null) return null;
+                foreach (var sel in selectables)
+                {
+                    if (sel == null) continue;
+                    if (sel.gameObject == null
+                        || !sel.gameObject.activeInHierarchy
+                        || !sel.interactable)
+                        continue;
+                    string n = sel.gameObject.name;
+                    if (string.IsNullOrEmpty(n)) continue;
+                    // Match common advance-button GO names case-insensitively.
+                    string lower = n.ToLowerInvariant();
+                    if (lower == "next" || lower == "nextbutton"
+                        || lower == "ok" || lower == "okbutton"
+                        || lower == "btnnext" || lower == "btnok")
+                    {
+                        return sel.gameObject;
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
 
         /// <summary>
@@ -2010,60 +2079,22 @@ namespace DuelLinksAccess
                 var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
                 if (namedManager == null) return false;
 
-                Il2CppYgomSystem.UI.ViewControllerManager mgr;
-                if (!namedManager.TryGetValue("dialog", out mgr)) return false;
-
-                var topVc = mgr?.GetStackTopViewController();
-                if (topVc?.gameObject == null) return false;
-
-                string name = topVc.gameObject.name;
-                if (name != "TutorialArrow" && name != "TutorialArrowPart")
-                    return false;
-
-                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
-                if (arrowVc == null) return false;
-
-                var ipclick = arrowVc.ipclick;
-                if (ipclick == null || ipclick.Length == 0) return false;
-
-                var eventData = new UnityEngine.EventSystems.PointerEventData(
-                    UnityEngine.EventSystems.EventSystem.current);
-                eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
-
-                for (int i = 0; i < ipclick.Length; i++)
+                if (!GameStateTracker.TryFindArrowAcrossManagers(
+                        namedManager,
+                        out var arrowVc,
+                        out _,
+                        out string _))
                 {
-                    try
-                    {
-                        var handler = ipclick[i];
-                        if (handler == null) continue;
-
-                        var button = handler.TryCast<Il2CppYgomSystem.UI.YgomButton>();
-                        if (button != null)
-                        {
-                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                                $"Advancing scenario via ipclick[{i}] YgomButton on {button.gameObject?.name ?? "?"}");
-                            button.OnPointerClick(eventData);
-                            return true;
-                        }
-
-                        var mb = handler.TryCast<MonoBehaviour>();
-                        if (mb?.gameObject != null)
-                        {
-                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                                $"Advancing scenario via ipclick[{i}] {mb.GetIl2CppType().Name} on {mb.gameObject.name}");
-                            UnityEngine.EventSystems.ExecuteEvents.Execute(
-                                mb.gameObject, eventData,
-                                UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
-                            return true;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        MelonLogger.Msg($"[ScreenBtn] ipclick[{i}] error: {ex.Message}");
-                    }
+                    return false;
                 }
 
-                return false;
+                // Delegate to Main.InvokeArrowIpclickDirect — same direct
+                // interface call (handler.OnPointerClick) that worked at
+                // pre-alpha2 a5044b5 for the boot tutorial Shop/Gate steps.
+                // The previous local implementation here used
+                // ExecuteEvents.Execute on the handler GO, which is
+                // unreliable in IL2CPP and silently misses the SVC handler.
+                return Main.InvokeArrowIpclickDirect(arrowVc);
             }
             catch
             {
@@ -2287,14 +2318,19 @@ namespace DuelLinksAccess
                 var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
                 if (namedManager == null) return false;
 
-                Il2CppYgomSystem.UI.ViewControllerManager mgr;
-                if (!namedManager.TryGetValue("dialog", out mgr)) return false;
+                // Walk every named manager — game versions / tutorial steps
+                // sometimes push arrows into managers we didn't anticipate.
+                if (!GameStateTracker.TryFindArrowAcrossManagers(
+                        namedManager,
+                        out var arrowVc,
+                        out _,
+                        out string mgrKey))
+                {
+                    return false;
+                }
 
-                var topVc = mgr?.GetStackTopViewController();
-                if (topVc == null) return false;
-
-                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
-                if (arrowVc == null) return false;
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"ActivateViaTutorialArrow: found arrow in {mgrKey} manager");
 
                 var ipclick = arrowVc.ipclick;
                 if (ipclick == null || ipclick.Length == 0)
@@ -2309,10 +2345,55 @@ namespace DuelLinksAccess
                     return true;
                 }
 
-                // Pointing arrow: click at the physicTarget's screen position.
-                // The arrow VC checks if the click position overlaps with the
-                // target collider — screen center doesn't hit it.
+                // Classify the arrow shape — Shape C (3D world Collider) needs
+                // the ipclick + hardware-mouse pair from game-api.md:543, not
+                // the OnPointerClick path which silently fails for world
+                // colliders. Shape A/B keep the existing OnPointerClick path.
+                var shape = Main.ClassifyArrowShape(arrowVc);
                 var physicTarget = arrowVc.physicTarget;
+
+                if (shape == Main.ArrowShape.WorldColliderPointer)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"WorldColliderPointer: invoking ipclick + hardware mouse " +
+                        $"for {physicTarget?.gameObject?.name ?? "?"}");
+
+                    Main.InvokeArrowIpclickDirect(arrowVc);
+
+                    if (physicTarget != null)
+                    {
+                        var cam = arrowVc.targetCamera;
+                        if (cam == null) cam = Camera.main;
+                        if (cam != null)
+                        {
+                            Vector3 worldScreen = cam.WorldToScreenPoint(
+                                physicTarget.transform.position);
+                            Main.ClickViaHardwareMouse(
+                                new Vector2(worldScreen.x, worldScreen.y),
+                                "ScreenBtn-Activate");
+                        }
+                    }
+
+                    ScreenReader.Say(label);
+                    // Return false so ActivateCurrentItem's later strategies
+                    // ALSO run — most importantly TryCallVcMethod which calls
+                    // On{Name}Button() (e.g. OnGateButton, OnShopButton).
+                    // World buttons' YgomButton OnPointerClick only plays a
+                    // sound; the actual navigation lives in the VC method
+                    // (ScreenButtonHandler.cs:1696-1698). When the boot
+                    // tutorial gates navigation, the VC method is silently
+                    // blocked and our ipclick advances the tutorial. When
+                    // the tutorial isn't gating (e.g. stage-mission arrows
+                    // pointing at the Gate), ipclick alone only fires the
+                    // sound and the VC method is what actually navigates.
+                    // Firing both is universally safe.
+                    return false;
+                }
+
+                // Shape A/B: existing OnPointerClick path. Pointing arrow:
+                // click at the physicTarget's screen position. The arrow VC
+                // checks if the click position overlaps with the target
+                // collider — screen center doesn't hit it.
                 var eventData = new UnityEngine.EventSystems.PointerEventData(
                     UnityEngine.EventSystems.EventSystem.current);
 
