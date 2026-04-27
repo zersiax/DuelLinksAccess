@@ -12,9 +12,14 @@ namespace DuelLinksAccess
     /// Grid layout (bottom to top):
     ///   Row 0: Hand (variable width)
     ///   Row 1: My Spell/Trap (3 columns)
-    ///   Row 2: My Monster (3 columns + Extra Monster Zone)
-    ///   Row 3: Opp Monster (3 columns + Extra Monster Zone)
+    ///   Row 2: My Monster (3 columns)
+    ///   Row 3: Opp Monster (3 columns)
     ///   Row 4: Opp Spell/Trap (3 columns)
+    ///
+    /// Speed Duel uses 3 main monster zones. The Extra Monster Zone (used by
+    /// Synchro/Xyz/Link/Fusion summons) is folded into the monster count in
+    /// the field summary (F key) and announced via summon events; it does not
+    /// have its own grid column or hotkey.
     ///
     /// Arrow navigation:
     ///   Up/Down — Move between rows (column preserved). Action menu when open.
@@ -22,7 +27,7 @@ namespace DuelLinksAccess
     ///
     /// Zone hotkeys (Shift = opponent):
     ///   C=Hand, M=Monsters, S=Spells, T=FieldSpell, G=Grave, B=Banished, D=ExtraDeck
-    ///   L=LP (read-only), 1-3=Monster slot, 4=Extra Monster Zone
+    ///   L=LP (read-only), 1-3=Monster slot
     ///
     /// Actions (Enter):
     ///   Queries available commands for the selected card.
@@ -56,7 +61,12 @@ namespace DuelLinksAccess
         //
         // Confirmed locate assignments (same numbering for both players,
         // differentiated by the player parameter):
-        //   2, 3, 4    → Monster zones (3 slots, Speed Duel)
+        //   1, 2, 3    → Monster zones (3 slots, Speed Duel — game v10.7.0).
+        //                 Confirmed empirically via CardMove p3 decode
+        //                 ((locate << 1) | player): a third Normal Summon
+        //                 lands at loc=1 (e.g. p3=0x4002), with first/second
+        //                 at loc=2/loc=3. loc=4 is never occupied in Speed
+        //                 Duel and was previously assumed to be a slot.
         //   9, 10, 11  → Spell/Trap zones (3 slots; 9 and 10 confirmed from
         //                 CardSet events + RefreshZone scan; 11 presumed)
         //   5-8        → Unknown (possibly field spell, pendulum, extra monster,
@@ -69,8 +79,14 @@ namespace DuelLinksAccess
         private const int LocateFieldSpell = 12;  // Confirmed via field scan (cardId=4341 at loc=12)
         private const int LocateBanished = 17;    // Placeholder
 
-        // Monster zone locates (left to right from player's perspective)
-        private static readonly int[] MonsterLocates = { 2, 3, 4, LocateExtraMonster };
+        // Monster zone locates (column 0 → 2 from player's perspective).
+        // Speed Duel: 3 main monster zones at locates 1, 2, 3 (game v10.7.0).
+        // Earlier guess of {2, 3, 4} was wrong — loc=4 is never occupied; the
+        // third Normal Summon lands at loc=1 (CardMove p3=0x4002 decoded as
+        // (locate << 1) | player). The Extra Monster Zone (locate=6, used by
+        // Synchro/Xyz/Link/Fusion summons) is folded into CountFieldCards for
+        // the F-key summary but is NOT a navigable column.
+        private static readonly int[] MonsterLocates = { 1, 2, 3 };
         // Spell/Trap zone locates (left to right)
         private static readonly int[] SpellLocates = { 9, 10, 11 };
 
@@ -126,7 +142,8 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Spatial grid rows, bottom to top. Row 0 = Hand, Row 4 = Opp Spells.
-        /// Monster rows have 4 columns (3 main + EMZ), spell rows have 3.
+        /// Monster and spell rows each have 3 columns (Speed Duel format). The
+        /// Extra Monster Zone is a separate single-slot side zone, not a column.
         /// </summary>
         private static readonly GridRow[] GridRows =
         {
@@ -829,7 +846,7 @@ namespace DuelLinksAccess
                 return true;
             }
 
-            // Number keys: direct monster slot access
+            // Number keys: direct monster slot access (3 main zones, Speed Duel)
             if (InputManager.TryConsumeKeyDown(KeyCode.Alpha1))
             {
                 JumpToMonsterSlot(0);
@@ -843,11 +860,6 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.Alpha3))
             {
                 JumpToMonsterSlot(2);
-                return true;
-            }
-            if (InputManager.TryConsumeKeyDown(KeyCode.Alpha4))
-            {
-                JumpToMonsterSlot(3); // Extra Monster Zone
                 return true;
             }
 
@@ -984,21 +996,43 @@ namespace DuelLinksAccess
 
                     if (isMonster)
                     {
-                        // Determine ATK/DEF position from command mask:
-                        // TurnAtk available → currently DEF, TurnDef available → currently ATK.
-                        // Face-down monsters are always in DEF (Yu-Gi-Oh rule).
+                        // Determine ATK/DEF position. Cached value (from CutinTurn
+                        // events in DuelEventAnnouncer) is authoritative once a
+                        // position change has happened — the command-mask heuristic
+                        // breaks for the rest of the turn after a change because
+                        // both TurnAtk and TurnDef bits drop until next turn.
                         bool isDefense = !isFaceUp; // face-down = always DEF
                         if (isFaceUp)
                         {
+                            int uid = 0;
                             try
                             {
-                                uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
-                                if ((cmdMask & CmdTurnAtk) != 0)
-                                    isDefense = true;  // can switch TO ATK → in DEF
-                                // If TurnDef is set, isDefense stays false (in ATK)
-                                // If neither, default to ATK (just summoned/already switched)
+                                uid = Il2CppYgomGame.Duel.Engine
+                                    .DLL_DuelGetCardUniqueID(player, locate, slotIndex);
                             }
                             catch { }
+
+                            bool? cachedDef = DuelPositionTracker.IsDefense(uid);
+                            if (cachedDef.HasValue)
+                            {
+                                isDefense = cachedDef.Value;
+                            }
+                            else
+                            {
+                                // Fall back to command-mask heuristic when the
+                                // tracker has nothing (e.g., monster summoned
+                                // before a CutinTurn event ever fired for it).
+                                // TurnAtk available → currently DEF.
+                                // TurnDef available → currently ATK.
+                                try
+                                {
+                                    uint cmdMask = SafeGetCommandMask(
+                                        player, locate, slotIndex);
+                                    if ((cmdMask & CmdTurnAtk) != 0)
+                                        isDefense = true;
+                                }
+                                catch { }
+                            }
                         }
 
                         parts.Add(isDefense
@@ -1484,18 +1518,34 @@ namespace DuelLinksAccess
             _inSideZone = false;
             RefreshCurrentZone();
 
-            // Count actual monsters (grid rows include empty slots)
-            int oppMonsterCount = 0;
+            // Filter the navigable target list to only OCCUPIED opp slots so the
+            // user can't navigate to (or accidentally Enter on) "Slot N: Empty".
+            // Without this, pressing Enter on an empty slot fires
+            // OnSelectAttacked(opp, emptyLocate, 0); the drag fails and the
+            // OnDoCardCommand(Attack) fallback lets the game route the attack
+            // to the only legal target — which sounds like a direct attack to
+            // the player even though the engine treated it as a battle.
             int player2 = PlayerOpp;
-            foreach (int loc in MonsterLocates)
+            int oppMonsterCount = 0;
+            for (int i = _zoneSlots.Count - 1; i >= 0; i--)
             {
+                int loc = _zoneLocates[i];
+                bool occupied = false;
                 try
                 {
                     int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
                         player2, loc, 0);
-                    if (uid > 0) oppMonsterCount++;
+                    occupied = uid > 0;
                 }
-                catch { /* skip */ }
+                catch { occupied = false; }
+
+                if (occupied)
+                    oppMonsterCount++;
+                else
+                {
+                    _zoneSlots.RemoveAt(i);
+                    _zoneLocates.RemoveAt(i);
+                }
             }
 
             if (oppMonsterCount > 0)
@@ -1521,12 +1571,12 @@ namespace DuelLinksAccess
         {
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow))
             {
-                NavigateCard(-1);
+                NavigateTarget(-1);
                 return true;
             }
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.RightArrow))
             {
-                NavigateCard(1);
+                NavigateTarget(1);
                 return true;
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Return))
@@ -1555,6 +1605,26 @@ namespace DuelLinksAccess
                 return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// Wraps the cursor through only the occupied opp slots filled in by
+        /// BeginTargetSelection. Using the standard NavigateCard would walk
+        /// the full grid-row width (including the empty columns we filtered
+        /// out), letting the user re-encounter the "Slot N: Empty" announcement
+        /// the filter was supposed to hide.
+        /// </summary>
+        private void NavigateTarget(int direction)
+        {
+            int count = _zoneSlots.Count;
+            if (count <= 0)
+            {
+                ScreenReader.Say(Loc.Get("duel_zone_empty"));
+                return;
+            }
+            _navIndex = (_navIndex + direction + count) % count;
+            _currentCol = _navIndex;
+            ReadCurrentCard(verbose: false);
         }
 
         /// <summary>
@@ -2026,10 +2096,11 @@ namespace DuelLinksAccess
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
                 if (emoList == null) return;
 
+                int itemIdx = ResolveItemIndex(emoList, index);
                 var items = emoList.itemList;
-                if (items == null || index >= items.Count) return;
+                if (items == null || itemIdx < 0 || itemIdx >= items.Count) return;
 
-                var item = items[index];
+                var item = items[itemIdx];
                 if (item == null)
                 {
                     ScreenReader.Say(Loc.Get("duel_card_select_item",
@@ -2076,7 +2147,8 @@ namespace DuelLinksAccess
                     cardDbId = mixedId;
 
                 MelonLoader.MelonLogger.Msg(
-                    $"[FieldNav] EmoCard[{index}]: mixedId={mixedId} uniqueId={uid} cid={cid} resolved={cardDbId}");
+                    $"[FieldNav] EmoCard[visual={index}, itemIdx={itemIdx}]: " +
+                    $"mixedId={mixedId} uniqueId={uid} cid={cid} resolved={cardDbId}");
 
                 string info = cardDbId > 0
                     ? (verbose ? CardFormatter.FormatVerbose(cardDbId) : CardFormatter.FormatCompact(cardDbId))
@@ -2091,6 +2163,33 @@ namespace DuelLinksAccess
                     $"ReadEmotionalListCard error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("duel_card_select_item",
                     index + 1, _emoListCount, Loc.Get("duel_unknown_card")));
+            }
+        }
+
+        /// <summary>
+        /// Maps a visual position in cardList to the corresponding itemList index
+        /// using ListCard.Index. cardList is the rendered visual order; itemList
+        /// is the underlying data. They are not guaranteed to share an ordering
+        /// (the game may sort the visuals), so reading itemList[i] while clicking
+        /// cardList[i] can target a different card than the user heard.
+        /// Falls back to the visual index when ListCard.Index is unavailable.
+        /// </summary>
+        private static int ResolveItemIndex(
+            Il2CppYgomGame.Duel.EmotionalList emoList, int visualIndex)
+        {
+            if (emoList == null || visualIndex < 0) return visualIndex;
+            try
+            {
+                var cards = emoList.cardList;
+                if (cards == null || visualIndex >= cards.Count) return visualIndex;
+                var listCard = cards[visualIndex];
+                if (listCard == null) return visualIndex;
+                int idx = listCard.Index;
+                return idx >= 0 ? idx : visualIndex;
+            }
+            catch
+            {
+                return visualIndex;
             }
         }
 
@@ -2206,11 +2305,14 @@ namespace DuelLinksAccess
             try
             {
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
-                var items = emoList?.itemList;
-                if (items == null || index < 0 || index >= items.Count)
+                if (emoList == null) return Loc.Get("duel_unknown_card");
+
+                int itemIdx = ResolveItemIndex(emoList, index);
+                var items = emoList.itemList;
+                if (items == null || itemIdx < 0 || itemIdx >= items.Count)
                     return Loc.Get("duel_unknown_card");
 
-                var item = items[index];
+                var item = items[itemIdx];
                 if (item == null) return Loc.Get("duel_unknown_card");
 
                 int mixedId = item.mixedId;
@@ -3422,7 +3524,10 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Counts monsters and spells on field using the known locate arrays.
+        /// Counts monsters and spells on field. The Extra Monster Zone (loc=6)
+        /// is folded into the monster count so Synchro/Xyz/Link/Fusion summons
+        /// still appear in the field summary even though it isn't a navigable
+        /// column in the monster row.
         /// </summary>
         private static void CountFieldCards(int player, out int monsters, out int spells)
         {
@@ -3438,6 +3543,13 @@ namespace DuelLinksAccess
                 }
                 catch { /* skip */ }
             }
+            try
+            {
+                int emzUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                    player, LocateExtraMonster, 0);
+                if (emzUid > 0) monsters++;
+            }
+            catch { /* skip */ }
             foreach (int loc in SpellLocates)
             {
                 try

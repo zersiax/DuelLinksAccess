@@ -468,9 +468,11 @@ namespace DuelLinksAccess
                             continue; // Still in the section, skip
                     }
 
-                    // Skip button labels (handled separately below)
-                    if (val == "NEXT" || val == "OK" || val == "END"
-                        || val == "WATCH AGAIN" || val == "Rate")
+                    // Skip button labels (handled separately below). Match the
+                    // same case-insensitive set used by FindResultButtons.
+                    string valUpper = val.ToUpperInvariant();
+                    if (valUpper == "NEXT" || valUpper == "OK" || valUpper == "END"
+                        || valUpper == "WATCH AGAIN" || valUpper == "RATE")
                         continue;
 
                     // Skip duplicate numbers that are just reward quantities
@@ -538,8 +540,13 @@ namespace DuelLinksAccess
                 string val = text.text?.Trim();
                 if (string.IsNullOrEmpty(val)) continue;
 
-                if (val != "NEXT" && val != "OK" && val != "END"
-                    && val != "WATCH AGAIN" && val != "Rate") continue;
+                // Case-insensitive match — game v10.7.0 displays "Next" (Title
+                // case) on the post-duel Character Level page; older versions
+                // used "NEXT" (all caps) and the exact match missed v10.7.0's
+                // button text, leaving the screen stuck in text mode.
+                string upper = val.ToUpperInvariant();
+                if (upper != "NEXT" && upper != "OK" && upper != "END"
+                    && upper != "WATCH AGAIN" && upper != "RATE") continue;
 
                 // Find the parent button GO (Label → btn)
                 var btnGo = text.transform.parent?.gameObject;
@@ -2053,10 +2060,17 @@ namespace DuelLinksAccess
                     string n = sel.gameObject.name;
                     if (string.IsNullOrEmpty(n)) continue;
                     // Match common advance-button GO names case-insensitively.
+                    // Use StartsWith on the multi-char prefixes so suffixed names
+                    // like "NextButton0" / "NextButton1" / "OkButton2" match —
+                    // the post-duel ResultBasePage in game v10.7.0 names its
+                    // advance button "NextButton0" (HtjsonNode template
+                    // %nextbuttonid%=NextButton0), and exact-match missed it.
                     string lower = n.ToLowerInvariant();
-                    if (lower == "next" || lower == "nextbutton"
-                        || lower == "ok" || lower == "okbutton"
-                        || lower == "btnnext" || lower == "btnok")
+                    if (lower == "next" || lower == "ok"
+                        || lower.StartsWith("nextbutton")
+                        || lower.StartsWith("okbutton")
+                        || lower.StartsWith("btnnext")
+                        || lower.StartsWith("btnok"))
                     {
                         return sel.gameObject;
                     }

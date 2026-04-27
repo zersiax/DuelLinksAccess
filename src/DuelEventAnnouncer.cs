@@ -1,8 +1,53 @@
 using System;
+using System.Collections.Generic;
 using MelonLoader;
 
 namespace DuelLinksAccess
 {
+    /// <summary>
+    /// Tracks the ATK/DEF battle position of monsters by their runtime uniqueId.
+    /// The command-mask heuristic (TurnAtk/TurnDef bits) only works the turn AFTER
+    /// a position change — once a monster has changed position this turn, both bits
+    /// drop and the heuristic falls back to ATK regardless of actual orientation.
+    /// CutinTurn / CutinReverse events fire in real time when the engine animates
+    /// a position change, so this cache is the authoritative source.
+    /// </summary>
+    public static class DuelPositionTracker
+    {
+        // uniqueId -> true if currently in defense position
+        private static readonly Dictionary<int, bool> _isDefense = new();
+
+        public static void Reset() => _isDefense.Clear();
+
+        public static void SetAttack(int uniqueId)
+        {
+            if (uniqueId > 0) _isDefense[uniqueId] = false;
+        }
+
+        public static void SetDefense(int uniqueId)
+        {
+            if (uniqueId > 0) _isDefense[uniqueId] = true;
+        }
+
+        public static void Toggle(int uniqueId)
+        {
+            if (uniqueId <= 0) return;
+            _isDefense[uniqueId] = !(_isDefense.TryGetValue(uniqueId, out bool cur) && cur);
+        }
+
+        public static void Forget(int uniqueId)
+        {
+            if (uniqueId > 0) _isDefense.Remove(uniqueId);
+        }
+
+        /// <summary>Returns null if the uid has no cached position.</summary>
+        public static bool? IsDefense(int uniqueId)
+        {
+            if (uniqueId <= 0) return null;
+            return _isDefense.TryGetValue(uniqueId, out bool isDef) ? (bool?)isDef : null;
+        }
+    }
+
     /// <summary>
     /// Processes duel events from DuelClient.RunEffect and generates announcements.
     /// Translates Engine.ViewType events into human-readable screen reader output.
@@ -82,6 +127,7 @@ namespace DuelLinksAccess
                     _lastPhase = -1;
                     // Don't reset LP here — LifeSet fires BEFORE DuelStart
                     // and already sets the correct starting values
+                    DuelPositionTracker.Reset();
                     Announce(Loc.Get("duel_started"));
                     break;
 
@@ -89,6 +135,7 @@ namespace DuelLinksAccess
                     Announce(Loc.Get("duel_ended"));
                     InDuel = false;
                     DuelEnded = true;
+                    DuelPositionTracker.Reset();
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.TurnChange:
@@ -128,10 +175,12 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunSummon:
+                    DuelPositionTracker.SetAttack(TryResolveUniqueId(param2, param3));
                     AnnounceCardEvent("duel_summoned", param1, param2, param3);
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunSpSummon:
+                    DuelPositionTracker.SetAttack(TryResolveUniqueId(param2, param3));
                     AnnounceCardEvent("duel_sp_summoned", param1, param2, param3);
                     break;
 
@@ -139,8 +188,32 @@ namespace DuelLinksAccess
                     AnnounceCardEvent("duel_activated", param1, param2, param3);
                     break;
 
+                case Il2CppYgomGame.Duel.Engine.ViewType.CardSet:
+                    // Set monster (face-down DEF) or set spell/trap. Position
+                    // tracking only matters for monsters; setting an invalid uid
+                    // for a spell is harmless because no field reader will look
+                    // at a spell's ATK/DEF anyway.
+                    DuelPositionTracker.SetDefense(TryResolveUniqueId(param2, param3));
+                    Announce(Loc.Get("duel_card_set"));
+                    break;
+
+                case Il2CppYgomGame.Duel.Engine.ViewType.CutinTurn:
+                    // Battle position change (ATK ↔ DEF) animation. Update cache
+                    // and announce — the user issued the command but the field
+                    // readout would otherwise show the stale position until the
+                    // next turn (when TurnAtk/TurnDef bits return to cmdMask).
+                    HandlePositionChange(param1, param2, param3);
+                    break;
+
+                case Il2CppYgomGame.Duel.Engine.ViewType.CutinReverse:
+                    // Flip-summon (face-down DEF -> face-up ATK) animation.
+                    DuelPositionTracker.SetAttack(TryResolveUniqueId(param2, param3));
+                    AnnounceCardEvent("duel_summoned", param1, param2, param3);
+                    break;
+
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardBreak:
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardExplosion:
+                    DuelPositionTracker.Forget(TryResolveUniqueId(param2, param3));
                     AnnounceCardEvent("duel_destroyed", param1, param2, param3);
                     break;
 
@@ -175,10 +248,6 @@ namespace DuelLinksAccess
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunFusion:
                     Announce(Loc.Get("duel_fusion"));
-                    break;
-
-                case Il2CppYgomGame.Duel.Engine.ViewType.CardSet:
-                    Announce(Loc.Get("duel_card_set"));
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardFlipTurn:
@@ -361,6 +430,75 @@ namespace DuelLinksAccess
             string cardName = TryGetCardName(param2) ?? TryGetCardName(param3);
             string name = cardName ?? Loc.Get("duel_a_card");
             Announce(Loc.Get(locKey, name));
+        }
+
+        /// <summary>
+        /// Picks the first of two candidate ints that resolves to a valid card
+        /// via DLL_DuelGetCardIDByUniqueID2. Used to extract the uniqueId from
+        /// an event's p2/p3 — different events use different slots.
+        /// Returns 0 if neither resolves.
+        /// </summary>
+        private static int TryResolveUniqueId(int candidateA, int candidateB)
+        {
+            foreach (int candidate in new[] { candidateA, candidateB })
+            {
+                if (candidate <= 0) continue;
+                try
+                {
+                    uint cardId = Il2CppYgomGame.Duel.Engine
+                        .DLL_DuelGetCardIDByUniqueID2(candidate);
+                    if (cardId > 0 && cardId < 100000) return candidate;
+                }
+                catch { }
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Handles a CutinTurn event: toggles the cached position for the affected
+        /// monster and announces the new position. Without this, ReadCurrentCard
+        /// reports the wrong position from the moment of the change until the next
+        /// turn (when TurnAtk/TurnDef bits return to the command mask).
+        ///
+        /// Empirically, CutinTurn uses p1=player, p2=field locate, p3=unknown
+        /// (1 in observed cases). Earlier code assumed p2=uniqueId, which by
+        /// coincidence resolved to a real *but wrong* card whenever the locate
+        /// happened to match a low uniqueId in the duel — we'd announce the
+        /// position change against the wrong card name AND seed the position
+        /// cache under the wrong uniqueId, so ReadCurrentCard's tracker lookup
+        /// would never hit and the field readout stayed stale.
+        /// </summary>
+        private static void HandlePositionChange(int param1, int param2, int param3)
+        {
+            int player = param1;
+            int locate = param2;
+
+            int uid = 0;
+            try
+            {
+                uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                    player, locate, 0);
+            }
+            catch { }
+
+            DebugLogger.Log(LogCategory.Game, "DuelEvent",
+                $"CutinTurn: p1={param1}, p2={param2}, p3={param3}, " +
+                $"player={player}, locate={locate}, uid={uid}");
+
+            if (uid <= 0) return;
+
+            DuelPositionTracker.Toggle(uid);
+            bool isDef = DuelPositionTracker.IsDefense(uid) ?? false;
+
+            string cardName = TryGetCardName(uid) ?? Loc.Get("duel_a_card");
+            string position = isDef
+                ? Loc.Get("duel_defense_position")
+                : Loc.Get("duel_attack_position");
+
+            string locKey = player == 1
+                ? "duel_position_changed_opponent"
+                : "duel_position_changed";
+            Announce(Loc.Get(locKey, position, cardName));
         }
 
         /// <summary>
