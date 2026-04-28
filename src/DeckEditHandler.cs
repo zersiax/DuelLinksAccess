@@ -400,6 +400,17 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // U — set the currently-open deck as the active/main deck.
+            // Routes through DeckEdit2ViewController.confirmSet() (the same
+            // entry point the in-editor "Use this deck" button calls) so the
+            // game's normal confirmation dialog fires; DialogHandler picks
+            // that up and the user confirms with Enter as usual.
+            if (InputManager.TryConsumeKeyDown(KeyCode.U))
+            {
+                SetUseDeck();
+                return;
+            }
+
             // Escape — go back
             if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
                 || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
@@ -671,20 +682,94 @@ namespace DuelLinksAccess
             }
         }
 
+        /// <summary>
+        /// Marks the currently-open deck as the player's active/main deck.
+        /// Calls DeckEdit2ViewController.confirmSet() — the public entry point
+        /// the in-editor "Use this deck" button calls. Server-side, this ends
+        /// up at API.User_set_use_deck(charaId, deckId). The game raises a
+        /// confirmation dialog before committing, so the user lands on a
+        /// standard yes/no dialog that DialogHandler already drives.
+        /// </summary>
+        private void SetUseDeck()
+        {
+            if (_vc == null)
+            {
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+                return;
+            }
+
+            try
+            {
+                _vc.confirmSet();
+                ScreenReader.Say(Loc.Get("deck_use_deck_pressed"));
+            }
+            catch (NullReferenceException)
+            {
+                // Empirical: confirmSet throws NullReferenceException inside the
+                // game's own code when the currently-open deck is ALREADY the
+                // active one — its "previous active deck" reference is null
+                // because there's nothing to swap. Treat as a soft "no-op" and
+                // announce that, rather than the generic "Operation failed".
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    "SetUseDeck: confirmSet NRE — deck is already active");
+                ScreenReader.Say(Loc.Get("deck_already_active"));
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"SetUseDeck error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
         private void GoBack()
         {
             try
             {
-                // Use the standard back navigation
                 var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
-                if (namedMgr == null) return;
+                if (namedMgr == null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                        "GoBack: namedManager == null");
+                    return;
+                }
 
                 Il2CppYgomSystem.UI.ViewControllerManager contentMgr;
                 if (!namedMgr.TryGetValue("content", out contentMgr) || contentMgr == null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                        "GoBack: no 'content' manager");
                     return;
+                }
 
                 var topVc = contentMgr.GetStackTopViewController();
-                topVc?.SendBack();
+                string topName = topVc?.gameObject?.name ?? "(null)";
+
+                // _vc.Mode is informative — different MODEs (Structure, DeckLocked,
+                // ViewContribute, etc.) use the same DeckEdit2ViewController GO
+                // but behave differently, including refusing SendBack in some cases.
+                string modeStr = "(no _vc)";
+                try
+                {
+                    if (_vc != null)
+                        modeStr = _vc.Mode.ToString();
+                }
+                catch { modeStr = "(Mode threw)"; }
+
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"GoBack: topVc={topName}, _vc.Mode={modeStr}, calling SendBack()");
+
+                if (topVc == null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                        "GoBack: topVc == null, nothing to send back");
+                    return;
+                }
+
+                topVc.SendBack();
+
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    "GoBack: SendBack() returned");
             }
             catch (Exception ex)
             {

@@ -86,7 +86,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. U set as active deck. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
             _english["debug_mode"] = "Debug mode {0}";
             _english["tutorial_arrow_activated"] = "Tutorial arrow activated";
             _english["tutorial_arrow_no_arrow"] = "No tutorial arrow active";
@@ -341,6 +341,8 @@ namespace DuelLinksAccess
             _english["deck_level"] = "Level";
             _english["deck_skill"] = "Skill: {0}. Press K to change.";
             _english["deck_no_skill"] = "No skill set. Press K to select.";
+            _english["deck_use_deck_pressed"] = "Setting as your active deck";
+            _english["deck_already_active"] = "Already your active deck";
             _english["deck_reason_full"] = "deck full, maximum {0}";
             _english["deck_reason_limit"] = "already have {0} copies";
             _english["deck_reason_no_copies"] = "no more copies available";
