@@ -375,8 +375,19 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // S — announce current skill
-            if (InputManager.TryConsumeKeyDown(KeyCode.S))
+            // Ctrl+S — save deck. MUST be checked before bare S, otherwise
+            // TryConsumeKeyDown(KeyCode.S) for the skill announcement consumes
+            // the key first and the Ctrl+S handler never sees it.
+            bool ctrlHeld = Input.GetKey(KeyCode.LeftControl)
+                || Input.GetKey(KeyCode.RightControl);
+            if (ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                SaveDeck();
+                return;
+            }
+
+            // S — announce current skill (only when Ctrl is NOT held)
+            if (!ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
             {
                 AnnounceCurrentSkill();
                 return;
@@ -386,14 +397,6 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.K))
             {
                 OpenSkillSelection();
-                return;
-            }
-
-            // Ctrl+S — save deck
-            if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl))
-                && InputManager.TryConsumeKeyDown(KeyCode.S))
-            {
-                SaveDeck();
                 return;
             }
 

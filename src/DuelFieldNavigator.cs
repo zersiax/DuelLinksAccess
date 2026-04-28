@@ -79,14 +79,18 @@ namespace DuelLinksAccess
         private const int LocateFieldSpell = 12;  // Confirmed via field scan (cardId=4341 at loc=12)
         private const int LocateBanished = 17;    // Placeholder
 
-        // Monster zone locates (column 0 → 2 from player's perspective).
-        // Speed Duel: 3 main monster zones at locates 1, 2, 3 (game v10.7.0).
-        // Earlier guess of {2, 3, 4} was wrong — loc=4 is never occupied; the
-        // third Normal Summon lands at loc=1 (CardMove p3=0x4002 decoded as
-        // (locate << 1) | player). The Extra Monster Zone (locate=6, used by
-        // Synchro/Xyz/Link/Fusion summons) is folded into CountFieldCards for
-        // the F-key summary but is NOT a navigable column.
-        private static readonly int[] MonsterLocates = { 1, 2, 3 };
+        // Monster zone locates ordered by the engine's auto-placement sequence
+        // for Speed Duel: first Normal Summon lands at loc=2, second at loc=3,
+        // third at loc=1 (decoded from CardMove p3 as (locate << 1) | player).
+        // Listing {2, 3, 1} instead of {1, 2, 3} keeps the announcement aligned
+        // with summon order: a single monster reads "1 of 3: <name>" rather
+        // than "2 of 3: <name>" with an empty leftmost slot the player can't
+        // do anything with. Trade-off: column index no longer matches the
+        // spatial layout 1→2→3, but Speed Duel never displays "loc 1" labels
+        // anywhere visible to the player anyway.
+        // EMZ (loc=6, Synchro/Xyz/Link/Fusion) is folded into CountFieldCards
+        // for the F-key summary but is NOT a navigable column.
+        private static readonly int[] MonsterLocates = { 2, 3, 1 };
         // Spell/Trap zone locates (left to right)
         private static readonly int[] SpellLocates = { 9, 10, 11 };
 

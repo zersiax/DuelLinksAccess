@@ -2008,17 +2008,47 @@ namespace DuelLinksAccess
                 {
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                         $"Advancing via late-activated button: {advanceTarget.name}");
-                    var data = new UnityEngine.EventSystems.PointerEventData(
-                        UnityEngine.EventSystems.EventSystem.current);
-                    UnityEngine.EventSystems.ExecuteEvents.Execute(
-                        advanceTarget, data,
-                        UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
-                    UnityEngine.EventSystems.ExecuteEvents.Execute(
-                        advanceTarget, data,
-                        UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
-                    UnityEngine.EventSystems.ExecuteEvents.Execute(
-                        advanceTarget, data,
-                        UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+
+                    // Htjson buttons hang their handler on Button.onClick (the
+                    // unityEvent), and ExecuteEvents.pointerClickHandler may
+                    // not fire those listeners — that's the same trap we hit
+                    // for Htjson ButtonSet activation in 2026-04-05. Always
+                    // try Button.onClick.Invoke() first; fall back to the
+                    // pointer-event sequence for native Selectables that don't
+                    // have an onClick listener.
+                    bool fired = false;
+                    try
+                    {
+                        var btn = advanceTarget.GetComponent<UnityEngine.UI.Button>();
+                        if (btn != null && btn.onClick != null)
+                        {
+                            btn.onClick.Invoke();
+                            fired = true;
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                "Advance: fired Button.onClick.Invoke()");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"Advance onClick.Invoke error: {ex.Message}");
+                    }
+
+                    if (!fired)
+                    {
+                        var data = new UnityEngine.EventSystems.PointerEventData(
+                            UnityEngine.EventSystems.EventSystem.current);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            advanceTarget, data,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            advanceTarget, data,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.Execute(
+                            advanceTarget, data,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                    }
+
                     // Schedule a rescan so the next page (e.g. ResultBasePage
                     // page 2 with assessment/score/rewards) gets picked up.
                     _resultRescanTimer = 2f;
@@ -2036,44 +2066,51 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Searches the screen root's children for a Selectable with a
-        /// commonly-named advance button (NEXT/OK/etc.). Used by
-        /// AdvanceScreen as a last resort when the screen entered text mode
-        /// because its buttons were inactive at scan time and have since
-        /// activated (most often the post-duel ResultBasePage's NEXT).
-        /// Returns the GameObject of the first interactable match, or null.
+        /// Searches the screen root's descendants for a "next" / "ok" advance
+        /// button by GO name. Used by AdvanceScreen as a last resort when the
+        /// screen entered text mode because its buttons were inactive at scan
+        /// time, OR when the screen renders the advance control as a non-Text-
+        /// labeled element that <see cref="FindResultButtons"/> can't pick up
+        /// (the post-duel ResultBasePage in game v10.7.0 has no "Next"/"NEXT"
+        /// Text component near the button; the button is just a GO named
+        /// "NextButton0" on a Htjson page).
+        /// Walks every Transform (not just Selectables) so we still find the
+        /// button when it's wired up via Htjson onClick handlers rather than
+        /// a Unity Selectable. Returns the first matching GameObject, or null.
         /// </summary>
         private static GameObject FindAdvanceButtonInChildren(GameObject root)
         {
             if (root == null) return null;
             try
             {
-                var selectables = root.GetComponentsInChildren<Selectable>(true);
-                if (selectables == null) return null;
-                foreach (var sel in selectables)
+                // GetComponentsInChildren<Transform>(true) walks every GO in the
+                // tree (including inactive ones). We *do* filter for active in
+                // the hierarchy — clicking a deactivated GO is a no-op.
+                var transforms = root.GetComponentsInChildren<Transform>(true);
+                if (transforms == null) return null;
+                foreach (var t in transforms)
                 {
-                    if (sel == null) continue;
-                    if (sel.gameObject == null
-                        || !sel.gameObject.activeInHierarchy
-                        || !sel.interactable)
-                        continue;
-                    string n = sel.gameObject.name;
+                    if (t == null || t.gameObject == null) continue;
+                    if (!t.gameObject.activeInHierarchy) continue;
+
+                    string n = t.gameObject.name;
                     if (string.IsNullOrEmpty(n)) continue;
-                    // Match common advance-button GO names case-insensitively.
-                    // Use StartsWith on the multi-char prefixes so suffixed names
-                    // like "NextButton0" / "NextButton1" / "OkButton2" match —
-                    // the post-duel ResultBasePage in game v10.7.0 names its
-                    // advance button "NextButton0" (HtjsonNode template
-                    // %nextbuttonid%=NextButton0), and exact-match missed it.
+
                     string lower = n.ToLowerInvariant();
-                    if (lower == "next" || lower == "ok"
+                    if (!(lower == "next" || lower == "ok"
                         || lower.StartsWith("nextbutton")
                         || lower.StartsWith("okbutton")
                         || lower.StartsWith("btnnext")
-                        || lower.StartsWith("btnok"))
-                    {
-                        return sel.gameObject;
-                    }
+                        || lower.StartsWith("btnok")))
+                        continue;
+
+                    // For Selectables, also require interactable. For non-
+                    // Selectable Htjson buttons we can't check interactable so
+                    // we trust activeInHierarchy.
+                    var sel = t.gameObject.GetComponent<Selectable>();
+                    if (sel != null && !sel.interactable) continue;
+
+                    return t.gameObject;
                 }
             }
             catch { }
