@@ -67,10 +67,15 @@ namespace DuelLinksAccess
         //                 lands at loc=1 (e.g. p3=0x4002), with first/second
         //                 at loc=2/loc=3. loc=4 is never occupied in Speed
         //                 Duel and was previously assumed to be a slot.
-        //   9, 10, 11  → Spell/Trap zones (3 slots; 9 and 10 confirmed from
-        //                 CardSet events + RefreshZone scan; 11 presumed)
-        //   5-8        → Unknown (possibly field spell, pendulum, extra monster,
-        //                 or unused in Speed Duel format)
+        //   8, 9, 10   → Spell/Trap zones (3 slots, Speed Duel). Confirmed
+        //                 2026-05-01 via SpellProbe diagnostic: a duel with
+        //                 3 set spells produced occupied locates {8, 9, 10}
+        //                 (cardIds 12470, 5538, 12458). First spell set lands
+        //                 at loc=9 (middle), second at loc=10 (right), third
+        //                 at loc=8 (left) — same middle/right/left fill order
+        //                 as monsters. loc=11 is never occupied and was
+        //                 previously assumed to be a slot.
+        //   5-7        → Unknown (possibly pendulum or unused in Speed Duel)
         private const int LocateHand = 13;
         private const int LocateExtra = 14;
         private const int LocateGrave = 16;
@@ -91,8 +96,12 @@ namespace DuelLinksAccess
         // EMZ (loc=6, Synchro/Xyz/Link/Fusion) is folded into CountFieldCards
         // for the F-key summary but is NOT a navigable column.
         private static readonly int[] MonsterLocates = { 2, 3, 1 };
-        // Spell/Trap zone locates (left to right)
-        private static readonly int[] SpellLocates = { 9, 10, 11 };
+        // Spell/Trap zone locates ordered by the engine's auto-placement
+        // sequence (middle, right, left) — see comment block above. Listing
+        // {9, 10, 8} instead of {8, 9, 10} keeps the announcement aligned
+        // with set order: a single set spell reads "1 of 3" rather than
+        // "2 of 3" with an empty leftmost slot.
+        private static readonly int[] SpellLocates = { 9, 10, 8 };
 
         // Field slot locate range to scan (each holds 0 or 1 card).
         private const int FieldLocateMin = 1;

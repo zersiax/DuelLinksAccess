@@ -17,7 +17,7 @@ using System.Collections;
 //   See docs/technical-reference.md section "CRITICAL: Accessing Game Code"
 // ============================================================================
 
-[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.1.3", "DuelLinksAccess Team")]
+[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.1.4", "DuelLinksAccess Team")]
 [assembly: MelonGame("Konami Digital Entertainment Co., Ltd.", "Yu-Gi-Oh! DUEL LINKS")]
 
 namespace DuelLinksAccess
@@ -603,7 +603,20 @@ namespace DuelLinksAccess
             try
             {
                 var physicTarget = arrowVc.physicTarget;
-                if (physicTarget == null) return ArrowShape.ClickToContinue;
+                if (physicTarget == null)
+                {
+                    // A null-physicTarget arrow with an ipclick handler is
+                    // pointing at a specific UI button (e.g. Stage-7 Vagrant
+                    // shop tutorial: ipclick = Trainer Purchase button; GX
+                    // Series-unlock: ipclick = SeriesButton). Auto-firing the
+                    // ipclick reopens the very screen the user just closed,
+                    // creating an inescapable loop. Treat as UISelectablePointer
+                    // so the user navigates to the button and presses Enter.
+                    // Genuine cutscene "click anywhere" arrows have no ipclick.
+                    int ipclickCount = arrowVc.ipclick?.Length ?? 0;
+                    if (ipclickCount > 0) return ArrowShape.UISelectablePointer;
+                    return ArrowShape.ClickToContinue;
+                }
 
                 // 3D world target: arrow's own targetCamera is something
                 // other than Camera.main (typically "SingleCamera" or another

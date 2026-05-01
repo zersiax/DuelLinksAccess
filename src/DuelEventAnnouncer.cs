@@ -211,6 +211,15 @@ namespace DuelLinksAccess
                     AnnounceCardEvent("duel_summoned", param1, param2, param3);
                     break;
 
+                case Il2CppYgomGame.Duel.Engine.ViewType.CutinFlip:
+                    // Forced face-down -> face-up flip (e.g. attacked face-down
+                    // monster). Battle position remains DEF — only the face
+                    // changes. Without this, ReadCurrentCard sees isFaceUp=true,
+                    // misses the cache (resumed duels never recorded the initial
+                    // CardSet), falls back to cmdMask, and reports ATK.
+                    HandleFlip(param1, param2);
+                    break;
+
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardBreak:
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardExplosion:
                     DuelPositionTracker.Forget(TryResolveUniqueId(param2, param3));
@@ -499,6 +508,27 @@ namespace DuelLinksAccess
                 ? "duel_position_changed_opponent"
                 : "duel_position_changed";
             Announce(Loc.Get(locKey, position, cardName));
+        }
+
+        /// <summary>
+        /// Handles a CutinFlip event: a face-down monster has been turned
+        /// face-up (typically because it was attacked). Position stays in
+        /// defense; only the face changes. Empirically p1=player, p2=locate.
+        /// </summary>
+        private static void HandleFlip(int player, int locate)
+        {
+            int uid = 0;
+            try
+            {
+                uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
+                    player, locate, 0);
+            }
+            catch { }
+
+            DebugLogger.Log(LogCategory.Game, "DuelEvent",
+                $"CutinFlip: player={player}, locate={locate}, uid={uid}");
+
+            if (uid > 0) DuelPositionTracker.SetDefense(uid);
         }
 
         /// <summary>
