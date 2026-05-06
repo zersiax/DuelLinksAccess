@@ -110,10 +110,17 @@ namespace DuelLinksAccess
                 _tabRescanDelay = -1f;
                 _passthrough = false;
                 GameStateTracker.SkipTutorialArrowPart = false;
-                // Don't announce "Dialog" during duels — the dialog text
-                // itself will be read once scanned
-                if (!DuelEventAnnouncer.InDuel)
+                // TutorialArrowPart is an overlay — scan fast and don't
+                // announce "Dialog" (it will be dismissed to expose the
+                // real dialog below, which gets its own announcement).
+                if (currentName == "TutorialArrowPart")
+                {
+                    _scanDelay = 0.3f;
+                }
+                else if (!DuelEventAnnouncer.InDuel)
+                {
                     ScreenReader.Say(Loc.Get("screen_dialog"));
+                }
             }
 
             // Post-activation rescan: after clicking a button, check if a new
@@ -264,11 +271,17 @@ namespace DuelLinksAccess
                 {
                     if (IsTutorialArrowOnTop())
                     {
-                        // Don't click the arrow — screen-center click lands on
-                        // underlying quiz banners in Duel Trials. Just return;
-                        // the passthrough logic in Update() will set
-                        // SkipTutorialArrowPart + ForceReevaluate so the screen
-                        // reclassifies and ScreenButtonHandler takes over.
+                        // If a real dialog VC sits below the overlay in the dialog
+                        // manager, dismiss the overlay so that dialog becomes
+                        // accessible. Only for dialog manager — content-manager
+                        // arrows (Duel Trials quiz banners) must not be touched.
+                        if (_activeManager == "dialog" && HasDialogBeneathArrow())
+                        {
+                            MelonLogger.Msg("[Dialog] TutorialArrow overlay over real dialog — dismissing");
+                            DismissTutorialArrowOverlay();
+                        }
+                        // Standalone arrow (nothing below) or content manager:
+                        // passthrough logic in Update() handles it.
                         return;
                     }
 
@@ -1440,6 +1453,47 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Returns true when the dialog manager stack has a real VC below the
+        /// top TutorialArrow overlay (stack depth >= 2).
+        /// </summary>
+        private bool HasDialogBeneathArrow()
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return false;
+                Il2CppYgomSystem.UI.ViewControllerManager mgr;
+                if (!namedManager.TryGetValue("dialog", out mgr) || mgr == null) return false;
+                return mgr.GetStackCount() >= 2;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Dismisses the TutorialArrow overlay via OnPointerClick at screen centre.
+        /// After dismissal the underlying dialog VC becomes the new stack top and
+        /// DialogHandler will re-scan it on the next vcChanged cycle.
+        /// </summary>
+        private void DismissTutorialArrowOverlay()
+        {
+            try
+            {
+                var topVc = GetTopVc(_activeManager);
+                if (topVc == null) return;
+                var arrowVc = topVc.TryCast<Il2CppYgomGame.Menu.TutorialArrowViewController>();
+                if (arrowVc == null) return;
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+                eventData.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
+                arrowVc.OnPointerClick(eventData);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] DismissTutorialArrowOverlay error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Routes a click through the TutorialArrow by tapping the arrow VC itself.
         /// Clicks the TutorialArrow's ipclick target directly. The tutorial system
         /// requires clicks to route through the arrow — but arrowVc.OnPointerClick
@@ -1580,6 +1634,37 @@ namespace DuelLinksAccess
                         var ipclick = arrowVc.ipclick;
                         var target = arrowVc.physicTarget;
                         MelonLogger.Msg($"[Dialog][Type]   Arrow: ipclick={ipclick?.Length ?? 0}, physicTarget={target?.gameObject?.name ?? "null"}");
+
+                        if (ipclick != null && ipclick.Length > 0)
+                        {
+                            for (int i = 0; i < ipclick.Length; i++)
+                            {
+                                try
+                                {
+                                    var handler = ipclick[i];
+                                    if (handler == null) { MelonLogger.Msg($"[Dialog][Type]   ipclick[{i}]: null"); continue; }
+
+                                    // IPointerClickHandler is an interface — cast through Il2CppObjectBase
+                                    var il2cppObj = handler.TryCast<Il2CppSystem.Object>();
+                                    string typeName2 = il2cppObj?.GetIl2CppType()?.Name ?? handler.GetType().Name;
+
+                                    var mb = handler.TryCast<MonoBehaviour>();
+                                    string goName2 = mb?.gameObject?.name ?? "no-GO";
+                                    string goPath = "";
+                                    if (mb?.gameObject != null)
+                                    {
+                                        var t = mb.gameObject.transform.parent;
+                                        int d = 0;
+                                        while (t != null && d < 4) { goPath = t.name + "/" + goPath; t = t.parent; d++; }
+                                    }
+                                    MelonLogger.Msg($"[Dialog][Type]   ipclick[{i}]: GO={goName2}, type={typeName2}, path={goPath}{goName2}");
+                                }
+                                catch (Exception ex2)
+                                {
+                                    MelonLogger.Msg($"[Dialog][Type]   ipclick[{i}]: error={ex2.Message}");
+                                }
+                            }
+                        }
                     }
                 }
 

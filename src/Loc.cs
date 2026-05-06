@@ -319,6 +319,9 @@ namespace DuelLinksAccess
             // ===== DUEL: TUTORIAL =====
             _english["duel_tutorial_arrow"] = "Press Space to continue tutorial";
             _english["duel_tutorial_arrow_pointing"] = "Tutorial arrow active. Navigate to its target with arrow keys and press Enter, or press F11 if the target isn't reachable.";
+            _english["tutorial_arrow_target_named"] = "Tutorial: navigate to {0} and press Enter";
+            _english["tutorial_arrow_back"] = "Tutorial: navigate back to find the target button.";
+            _english["tutorial_arrow_back_named"] = "Tutorial: press Escape to go back, then navigate to {0}.";
 
             // ===== DECK EDITOR =====
             _english["deck_edit_entered"] = "Deck editor. {0} in main deck, {1} in extra deck, {2} in collection. Tab to switch zones, Left right to browse cards.";

@@ -407,19 +407,59 @@ namespace DuelLinksAccess
                 var dispTarget = arrowVc.dispTarget;
 
                 // Announce once per arrow instance so the user knows an arrow
-                // is active and how to advance it. Shape C (3D world Collider,
-                // e.g. shop or gate on Home) MUST always announce — the user
-                // can't always navigate to a 3D collider via SBH, and without
-                // the announcement they have no idea F11 is needed. Shape A
-                // and B keep the SBH-idle gate so we don't talk over SBH's
-                // item announcements during normal navigation.
+                // is active and how to advance it. Shape C (3D world Collider)
+                // always announces immediately. Shape B (UISelectablePointer)
+                // delays 1.5s to avoid being cut off by the home-screen
+                // re-scan speech (SBH rescan takes ~1.2s). Shape A (click-to-
+                // continue) auto-dismisses quickly so no announcement needed.
                 if (!_orphanArrowAnnounced)
                 {
-                    _orphanArrowAnnounced = true;
                     var announceShape = ClassifyArrowShape(arrowVc);
                     bool sbhIdle = _screenButtonHandler?.IsActive != true;
-                    if (announceShape == ArrowShape.WorldColliderPointer || sbhIdle)
+                    // UISelectablePointer always uses its own delayed path —
+                    // exclude it from the sbhIdle fast branch to avoid a race
+                    // where SBH going idle (screen=Dialog) fires the generic
+                    // message before the home-screen speech finishes.
+                    if (announceShape == ArrowShape.WorldColliderPointer
+                        || (sbhIdle && announceShape != ArrowShape.UISelectablePointer))
+                    {
+                        _orphanArrowAnnounced = true;
                         ScreenReader.Say(Loc.Get("duel_tutorial_arrow_pointing"));
+                    }
+                    else if (announceShape == ArrowShape.UISelectablePointer)
+                    {
+                        // Wait until home-screen speech settles before announcing.
+                        float elapsed = UnityEngine.Time.time - _orphanArrowFirstSeen;
+                        if (elapsed >= 1.5f)
+                        {
+                            _orphanArrowAnnounced = true;
+                            // Prefer the SBH item label (live, post-dedup) over the
+                            // ipclick GO label (may be a static parent like "ステージ").
+                            var ipclickGo = GetIpclickGO(arrowVc);
+                            string liveLabel = _screenButtonHandler?.GetLabelForDescendant(ipclickGo);
+                            bool sbhActiveNoTarget = _screenButtonHandler?.IsActive == true
+                                && string.IsNullOrEmpty(liveLabel);
+                            string msg;
+                            if (sbhActiveNoTarget)
+                            {
+                                // SBH active but no item matches the target — user is on a
+                                // different screen (e.g. Home VC after series change).
+                                string fallback = GetIpclickTargetLabel(arrowVc);
+                                msg = !string.IsNullOrEmpty(fallback)
+                                    ? Loc.Get("tutorial_arrow_back_named", fallback)
+                                    : Loc.Get("tutorial_arrow_back");
+                            }
+                            else
+                            {
+                                string label = !string.IsNullOrEmpty(liveLabel)
+                                    ? liveLabel : GetIpclickTargetLabel(arrowVc);
+                                msg = !string.IsNullOrEmpty(label)
+                                    ? Loc.Get("tutorial_arrow_target_named", label)
+                                    : Loc.Get("duel_tutorial_arrow_pointing");
+                            }
+                            ScreenReader.SayQueued(msg);
+                        }
+                    }
                 }
 
                 // Path 2: manual user trigger (any manager).
@@ -637,6 +677,38 @@ namespace DuelLinksAccess
                 // no auto-click, user-driven).
                 return ArrowShape.UISelectablePointer;
             }
+        }
+
+        /// <summary>Returns the GameObject of ipclick[0], or null.</summary>
+        private static GameObject GetIpclickGO(
+            Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
+        {
+            try
+            {
+                var ipclick = arrowVc?.ipclick;
+                if (ipclick == null || ipclick.Length == 0) return null;
+                return ipclick[0]?.TryCast<MonoBehaviour>()?.gameObject;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Returns the display label of ipclick[0]'s target GO via LabelExtractor, or null.
+        /// Falls back when SBH has no live label for the target.
+        /// </summary>
+        private static string GetIpclickTargetLabel(
+            Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
+        {
+            try
+            {
+                var go = GetIpclickGO(arrowVc);
+                if (go == null) return null;
+                string label = LabelExtractor.GetLabel(go);
+                if (!string.IsNullOrEmpty(label) && !LabelExtractor.IsPlaceholderText(label))
+                    return label;
+            }
+            catch { }
+            return null;
         }
 
         /// <summary>

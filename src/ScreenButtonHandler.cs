@@ -82,6 +82,30 @@ namespace DuelLinksAccess
             && (_items.Count > 0 || _textMode);
 
         /// <summary>
+        /// Returns the label of the first item whose GO is <paramref name="root"/> or a
+        /// descendant of it, or null if no such item is in the current scan.
+        /// Used by Main to get the live (post-dedup) label for a tutorial arrow's
+        /// ipclick target — the SBH child item may carry a more up-to-date label
+        /// than the parent ipclick GO's own text (e.g. SeriesLogo "MAX" vs SeriesButton "ステージ").
+        /// </summary>
+        public string GetLabelForDescendant(GameObject root)
+        {
+            if (root == null) return null;
+            var rootT = root.transform;
+            foreach (var item in _items)
+            {
+                if (item.Go == null) continue;
+                var t = item.Go.transform;
+                while (t != null)
+                {
+                    if (t == rootT) return item.Label;
+                    t = t.parent;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Called every frame by Main.UpdateHandlers().
         /// </summary>
         public void Update()
@@ -2402,6 +2426,14 @@ namespace DuelLinksAccess
                 // colliders. Shape A/B keep the existing OnPointerClick path.
                 var shape = Main.ClassifyArrowShape(arrowVc);
                 var physicTarget = arrowVc.physicTarget;
+
+                // Shape B (UISelectablePointer): ipclick set, physicTarget null.
+                // arrowVc.OnPointerClick at screen center is a no-op — the arrow's
+                // position check finds no target. Let normal activation handle the
+                // button; calling ScreenReader.Say here AND letting normal activation
+                // also announce produces a double-announcement on every key press.
+                if (shape == Main.ArrowShape.UISelectablePointer)
+                    return false;
 
                 if (shape == Main.ArrowShape.WorldColliderPointer)
                 {

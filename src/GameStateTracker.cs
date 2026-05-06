@@ -447,13 +447,17 @@ namespace DuelLinksAccess
             // Announce screen change to user
             // Skip empty strings (e.g. Duel — handled by DuelEventAnnouncer)
             // Skip Dialog announcements during a duel (DialogHandler reads the text)
+            // Skip Dialog when it's a TutorialArrowPart overlay — DialogHandler
+            // will scan and dismiss it; the real dialog (or home screen) announces itself.
             string locKey = GetScreenLocKey(newScreen);
             if (locKey != null)
             {
                 bool suppressDuelDialog = newScreen == GameScreen.Dialog
                     && DuelEventAnnouncer.InDuel;
+                bool suppressTutorialArrow = newScreen == GameScreen.Dialog
+                    && LastViewControllerName == "TutorialArrowPart";
                 string text = Loc.Get(locKey);
-                if (!string.IsNullOrEmpty(text) && !suppressDuelDialog)
+                if (!string.IsNullOrEmpty(text) && !suppressDuelDialog && !suppressTutorialArrow)
                 {
                     ScreenReader.Say(text);
                 }
