@@ -150,6 +150,17 @@ namespace DuelLinksAccess
             _english["map_gift"] = "Gift";
             _english["map_card_trader"] = "Card Trader";
             _english["map_npc_trainer"] = "Trainer";
+
+            // ===== CARD TRADER =====
+            _english["trader_entered"] = "Card Trader";
+            _english["trader_items"] = "Card Trader: {0} items";
+            _english["trader_no_items"] = "No trade items available";
+            _english["trader_selected"] = "Selected: {0}";
+            _english["trader_cost_gold"] = "{0} gold";
+            _english["trader_cost_card"] = "{1} ×{0}";
+            _english["trader_stock"] = "Stock: {0}";
+            _english["trader_gold"] = "Gold: {0}";
+            _english["trader_gold_unknown"] = "Gold balance unavailable";
             _english["map_npc_bonus"] = "Bonus Duelist";
             _english["map_school"] = "Duel Trials";
 

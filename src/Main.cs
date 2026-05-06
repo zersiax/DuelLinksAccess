@@ -46,6 +46,7 @@ namespace DuelLinksAccess
         private DeckEditHandler _deckEditHandler;
         private ShopHandler _shopHandler;
         private TicketExchangeHandler _ticketExchangeHandler;
+        private CardTraderHandler _cardTraderHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
         // when neither DuelHandler nor DialogHandler is handling them.
@@ -94,6 +95,7 @@ namespace DuelLinksAccess
             _deckEditHandler = new DeckEditHandler();
             _shopHandler = new ShopHandler();
             _ticketExchangeHandler = new TicketExchangeHandler();
+            _cardTraderHandler = new CardTraderHandler();
         }
 
         private void OnScreenChanged(GameStateTracker.GameScreen oldScreen,
@@ -296,6 +298,10 @@ namespace DuelLinksAccess
             // a frame to update before we can read the new phase)
             DuelEventAnnouncer.Update();
 
+            // Character speech bubbles — runs unconditionally because intro lines
+            // fire before DuelHandler becomes active (HUD is up, DuelStart not yet fired)
+            DuelSpeechWatcher.Update();
+
             // Duel handler runs first — announces events, provides log/status.
             // Key consumption via InputManager prevents conflicts with other handlers.
             _duelHandler?.Update();
@@ -319,6 +325,10 @@ namespace DuelLinksAccess
             // Ticket exchange handler — intercepts CardGetterViewController screens
             _ticketExchangeHandler?.Update();
             if (_ticketExchangeHandler?.IsActive == true) return;
+
+            // Card Trader handler — intercepts CardTraderViewController2 screens
+            _cardTraderHandler?.Update();
+            if (_cardTraderHandler?.IsActive == true) return;
 
             // Generic screen button handler — fallback for non-dialog, non-duel screens
             _screenButtonHandler?.Update();
