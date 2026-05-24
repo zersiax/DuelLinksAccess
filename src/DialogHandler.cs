@@ -1211,8 +1211,10 @@ namespace DuelLinksAccess
                 }
 
                 // Strategy 3: Button.onClick.Invoke — works for runtime-added
-                // listeners (Htjson buttons) where ExecuteEvents fails
-                if (!activated && btn != null)
+                // listeners (Htjson buttons) where ExecuteEvents fails.
+                // Guard on btn.interactable: genuinely disabled game buttons (e.g. NEXT
+                // before settings are configured) must not be bypassed this way.
+                if (!activated && btn != null && btn.interactable)
                 {
                     MelonLogger.Msg($"[Dialog] Using Button.onClick.Invoke()");
                     btn.onClick.Invoke();

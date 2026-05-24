@@ -59,26 +59,29 @@ namespace DuelLinksAccess
         /// <summary>Fired when an event should be announced and logged.</summary>
         public static event Action<string> OnAnnouncement;
 
-        /// <summary>Whether a duel is currently in progress.</summary>
-        public static bool InDuel { get; private set; }
+        /// <summary>Whether a duel is currently in progress. Backed by DuelState.</summary>
+        public static bool InDuel => DuelState.InDuel;
 
         /// <summary>Whether the duel has ended but we're still on the result screen.</summary>
-        public static bool DuelEnded { get; private set; }
+        public static bool DuelEnded => DuelState.DuelEnded;
 
         // Throttle duplicate messages
         private static string _lastMessage = "";
         private static float _lastMessageTime;
         private const float ThrottleSeconds = 0.3f;
 
-        // Track state to detect changes and compute deltas
-        private static int _lastTurnPlayer = -1;
-        private static int _lastPhase = -1;
-        private static int _lastMyLP = -1;
-        private static int _lastOppLP = -1;
+        // Last-announced state — used purely for de-duplication so we don't
+        // re-announce the same phase/turn back-to-back. Actual state lives
+        // in DuelState (LP, phase, turn player, etc.).
+        private static int _lastAnnouncedTurnPlayer = -1;
+        private static int _lastAnnouncedPhase = -1;
 
-        // Deferred announcements — engine hasn't updated state yet when
-        // RunEffect fires, so we read values next frame
+        // Phase announcements debounce so the rapid Draw → Standby → Main
+        // burst at turn start collapses to a single "Main Phase" — Tolk's
+        // interrupt=true would otherwise chop each one off.
         private static bool _pendingPhaseAnnouncement;
+        private static float _pendingPhaseDeadline = -1f;
+        private const float PhaseDebounceSeconds = 0.30f;
 
         // Deferred dialog text — rapid-fire RunDialog events (multiple per
         // phase transition) replace each other so only the last one speaks
@@ -89,21 +92,90 @@ namespace DuelLinksAccess
         #region Public Methods
 
         /// <summary>
+        /// Server seat of the local player. Delegates to DuelState, which
+        /// detects from the visual layer (nearHandCard's CardPlace.team) —
+        /// reliable in single-player and PvP/Ranked alike, and works at
+        /// duel start before any user action.
+        /// </summary>
+        public static int MyPlayerNum() => DuelState.MyPlayerNum();
+
+        /// <summary>
+        /// Kept for compatibility with PvP hand-play / field-play coroutines
+        /// that arm seat capture before firing OnCommand. DuelState detects
+        /// the seat from the visual layer at duel start, so this is now a
+        /// no-op — left in place so existing call sites don't need surgery.
+        /// </summary>
+        public static void ArmLocalSeatCapture()
+        {
+            // Intentionally empty — DuelState.MyPlayerNum() reads from the
+            // visual layer and doesn't need an event-action capture trigger.
+        }
+
+        /// <summary>Diagnostic: dumps engine seat / player-type info to the log once.</summary>
+        public static void DumpPlayerSeats()
+        {
+            int rawGet = -99, rawMyself = -99, rawRival = -99;
+            int type0 = -99, type1 = -99;
+            int isMyself0 = -99, isMyself1 = -99, isRival0 = -99, isRival1 = -99;
+            int battlePos = -99, tagFaced0 = -99, tagFaced1 = -99;
+            try { rawGet = Il2CppYgomGame.Duel.Engine.DLL_DuelGetMyPlayerNum(); } catch { }
+            try { rawMyself = Il2CppYgomGame.Duel.Engine.DLL_DuelMyself(); } catch { }
+            try { rawRival = Il2CppYgomGame.Duel.Engine.DLL_DuelRival(); } catch { }
+            try { type0 = Il2CppYgomGame.Duel.Engine.DLL_DuelGetPlayerType(0); } catch { }
+            try { type1 = Il2CppYgomGame.Duel.Engine.DLL_DuelGetPlayerType(1); } catch { }
+            try { isMyself0 = Il2CppYgomGame.Duel.Engine.DLL_DuelIsMyself(0); } catch { }
+            try { isMyself1 = Il2CppYgomGame.Duel.Engine.DLL_DuelIsMyself(1); } catch { }
+            try { isRival0 = Il2CppYgomGame.Duel.Engine.DLL_DuelIsRival(0); } catch { }
+            try { isRival1 = Il2CppYgomGame.Duel.Engine.DLL_DuelIsRival(1); } catch { }
+            try { battlePos = Il2CppYgomGame.Duel.Engine.DLL_DuelGetBattlePlayerPos(); } catch { }
+            try { tagFaced0 = Il2CppYgomGame.Duel.Engine.DLL_DuelGetTagPlayerFaced(0); } catch { }
+            try { tagFaced1 = Il2CppYgomGame.Duel.Engine.DLL_DuelGetTagPlayerFaced(1); } catch { }
+
+            DebugLogger.Log(LogCategory.Game, "DuelPlayer",
+                $"Seats: GetMyPlayerNum={rawGet}, Myself={rawMyself}, Rival={rawRival}, " +
+                $"PlayerType(0)={type0}, PlayerType(1)={type1}, " +
+                $"IsMyself(0)={isMyself0}, IsMyself(1)={isMyself1}, " +
+                $"IsRival(0)={isRival0}, IsRival(1)={isRival1}, " +
+                $"BattlePlayerPos={battlePos}, TagFaced(0)={tagFaced0}, TagFaced(1)={tagFaced1}");
+        }
+
+        /// <summary>
         /// Called each frame from Main.OnUpdate(). Handles deferred announcements
         /// that need the engine to finish updating before we read state.
         /// </summary>
         public static void Update()
         {
-            if (_pendingPhaseAnnouncement)
+            // Phase announcements are debounced: wait until the deadline has
+            // passed with no further PhaseChange events before speaking, so
+            // the rapid Draw → Standby → Main burst at turn start collapses
+            // to a single "Main Phase" announcement instead of being chopped
+            // up by Tolk's interrupt behavior.
+            if (_pendingPhaseAnnouncement
+                && UnityEngine.Time.unscaledTime >= _pendingPhaseDeadline)
             {
                 _pendingPhaseAnnouncement = false;
+                _pendingPhaseDeadline = -1f;
                 AnnouncePhaseChange();
             }
 
             if (_pendingDialogText != null)
             {
-                Announce(_pendingDialogText);
-                _pendingDialogText = null;
+                // Drop the deferred dialog if a card-selection picker has
+                // become active in the meantime — the picker prompt is the
+                // relevant cue. Engine fires RunDialog "You succeeded in
+                // Special Summoning a monster. Check the field?" with p3=2
+                // BEFORE opening the material EmotionalList; without this
+                // suppression the user hears a misleading completion message
+                // before the actual material picker reads its options.
+                if (IsEmotionalListActive())
+                {
+                    _pendingDialogText = null;
+                }
+                else
+                {
+                    Announce(_pendingDialogText);
+                    _pendingDialogText = null;
+                }
             }
         }
 
@@ -113,6 +185,11 @@ namespace DuelLinksAccess
         /// </summary>
         public static void OnRunEffect(int id, int param1, int param2, int param3)
         {
+            // Update the central duel-state adapter first so any consumer
+            // that reads DuelState during this event cycle (announcer below,
+            // field navigator, status hotkey) sees the fresh values.
+            DuelState.OnRunEffect(id, param1, param2, param3);
+
             var viewType = (Il2CppYgomGame.Duel.Engine.ViewType)id;
 
             DebugLogger.Log(LogCategory.Game, "DuelEvent",
@@ -121,20 +198,18 @@ namespace DuelLinksAccess
             switch (viewType)
             {
                 case Il2CppYgomGame.Duel.Engine.ViewType.DuelStart:
-                    InDuel = true;
-                    DuelEnded = false;
-                    _lastTurnPlayer = -1;
-                    _lastPhase = -1;
-                    // Don't reset LP here — LifeSet fires BEFORE DuelStart
-                    // and already sets the correct starting values
+                    // DuelState handles InDuel/DuelEnded flags and clears its
+                    // own state. We just reset our announcement-dedup vars
+                    // and the position tracker, then announce.
+                    _lastAnnouncedTurnPlayer = -1;
+                    _lastAnnouncedPhase = -1;
                     DuelPositionTracker.Reset();
+                    DumpPlayerSeats();
                     Announce(Loc.Get("duel_started"));
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.DuelEnd:
                     Announce(Loc.Get("duel_ended"));
-                    InDuel = false;
-                    DuelEnded = true;
                     DuelPositionTracker.Reset();
                     break;
 
@@ -143,8 +218,9 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.PhaseChange:
-                    // Defer to next frame — engine hasn't updated the phase yet
-                    // when RunEffect fires, causing an off-by-one announcement
+                    // DuelState already captured the phase value from p2.
+                    // We only need to schedule the debounced announcement.
+                    _pendingPhaseDeadline = UnityEngine.Time.unscaledTime + PhaseDebounceSeconds;
                     _pendingPhaseAnnouncement = true;
                     break;
 
@@ -152,18 +228,29 @@ namespace DuelLinksAccess
                     // LifeDamage fires twice per damage event (p3=257 then p3=256).
                     // Only announce on first fire (p3 bit 0 set). p2 carries the
                     // exact damage amount (negative = took damage, positive = gain).
+                    // DuelState has already applied the delta when we get here.
                     if ((param3 & 1) == 1)
                         AnnounceLPDamage(param1, param2);
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeSet:
-                    TrackLP(param1, param2);
+                    // DuelState tracks; nothing to do here for announcements
+                    // (the initial 4000 isn't worth speaking).
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.WaitInput:
-                    // Resumed duels never fire DuelStart, so set InDuel here too
-                    if (!InDuel) InDuel = true;
-                    Announce(Loc.Get("duel_your_move"));
+                    // Resumed duels never fire DuelStart; DuelState catches
+                    // that and sets InDuel itself.
+                    // Suppress "Your move" when the engine is in mid-selection
+                    // (LockOn = spell target, Selection = tribute/material pick).
+                    // The next EmotionalList prompt or selection cue gets the
+                    // user's attention more accurately than a generic turn cue.
+                    // Without this, after picking the first XYZ material the
+                    // game emits WaitInput(p1=8=Selection) and the user hears
+                    // "Your move", thinks the summon completed, navigates away,
+                    // and accidentally cancels the in-flight summon.
+                    if (!IsMidSelectionInput())
+                        Announce(Loc.Get("duel_your_move"));
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.CpuThinking:
@@ -274,17 +361,17 @@ namespace DuelLinksAccess
 
             try
             {
-                int myLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(0);
-                int oppLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(1);
-                uint phaseVal = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCurrentPhase();
-                uint turnNum = Il2CppYgomGame.Duel.Engine.DLL_DuelGetTurnNum();
-                int turnPlayer = Il2CppYgomGame.Duel.Engine.DLL_DuelWhichTurnNow();
+                int me = DuelState.MyPlayerNum();
+                int myLP = DuelState.GetLP(me);
+                int oppLP = DuelState.GetLP(1 - me);
+                int turnNum = DuelState.TurnNumber;
+                int turnPlayer = DuelState.CurrentTurnPlayer;
+                var phaseEnum = DuelState.CurrentPhase;
 
-                var phaseEnum = (Il2CppYgomGame.Duel.Engine.Phase)phaseVal;
                 string phase = phaseEnum == Il2CppYgomGame.Duel.Engine.Phase.Null
                     ? Loc.Get("duel_phase_cutscene")
                     : GetPhaseName(phaseEnum);
-                string whose = turnPlayer == 0
+                string whose = turnPlayer == me
                     ? Loc.Get("duel_your_turn")
                     : Loc.Get("duel_opponent_turn");
 
@@ -297,18 +384,16 @@ namespace DuelLinksAccess
             }
         }
 
-        /// <summary>Resets all tracked state.</summary>
+        /// <summary>Resets announcement-side state. DuelState resets itself.</summary>
         public static void Reset()
         {
-            InDuel = false;
-            DuelEnded = false;
             _lastMessage = "";
-            _lastTurnPlayer = -1;
-            _lastPhase = -1;
-            _lastMyLP = -1;
-            _lastOppLP = -1;
+            _lastAnnouncedTurnPlayer = -1;
+            _lastAnnouncedPhase = -1;
             _pendingPhaseAnnouncement = false;
+            _pendingPhaseDeadline = -1f;
             _pendingDialogText = null;
+            DuelState.Reset();
         }
 
         #endregion
@@ -329,17 +414,59 @@ namespace DuelLinksAccess
             OnAnnouncement?.Invoke(message);
         }
 
+        /// <summary>
+        /// True when the engine is mid-selection — waiting for the user to
+        /// pick a target / material / tribute. The "Your move" cue is wrong
+        /// in these states because the user is not choosing what to do next,
+        /// they're answering an in-flight prompt that will fire its own cue
+        /// (EmotionalList opening or selection-mode field tap).
+        /// </summary>
+        private static bool IsMidSelectionInput()
+        {
+            try
+            {
+                var client = Il2CppYgomGame.Duel.DuelClient.instance;
+                var worker = client?.worker2d;
+                if (worker == null) return false;
+                var t = worker.curInputType;
+                return t == Il2CppYgomGame.Duel.Engine.MenuActType.Selection
+                    || t == Il2CppYgomGame.Duel.Engine.MenuActType.LockOn;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// True when the game's card-selection picker (EmotionalList) is
+        /// currently active and waiting for input. Used to drop deferred
+        /// dialog announcements that would precede a picker prompt and
+        /// confuse the user (e.g. "You succeeded in Special Summoning a
+        /// monster. Check the field?" right before the material picker).
+        /// </summary>
+        private static bool IsEmotionalListActive()
+        {
+            try
+            {
+                var emo = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emo == null) return false;
+                var go = emo.gameObject;
+                if (go == null || !go.activeInHierarchy) return false;
+                if (emo.isClosing) return false;
+                return emo.selectMaxNum > 0;
+            }
+            catch { return false; }
+        }
+
         private static void AnnounceTurnChange()
         {
             try
             {
-                int turnPlayer = Il2CppYgomGame.Duel.Engine.DLL_DuelWhichTurnNow();
-                uint turnNum = Il2CppYgomGame.Duel.Engine.DLL_DuelGetTurnNum();
+                int turnPlayer = DuelState.CurrentTurnPlayer;
+                int turnNum = DuelState.TurnNumber;
 
-                if (turnPlayer == _lastTurnPlayer) return;
-                _lastTurnPlayer = turnPlayer;
+                if (turnPlayer == _lastAnnouncedTurnPlayer) return;
+                _lastAnnouncedTurnPlayer = turnPlayer;
 
-                string whose = turnPlayer == 0
+                string whose = turnPlayer == DuelState.MyPlayerNum()
                     ? Loc.Get("duel_your_turn")
                     : Loc.Get("duel_opponent_turn");
 
@@ -355,18 +482,16 @@ namespace DuelLinksAccess
         {
             try
             {
-                uint phaseVal = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCurrentPhase();
-
-                if ((int)phaseVal == _lastPhase) return;
-                _lastPhase = (int)phaseVal;
+                int phaseVal = (int)DuelState.CurrentPhase;
+                if (phaseVal == _lastAnnouncedPhase) return;
+                _lastAnnouncedPhase = phaseVal;
 
                 var phase = (Il2CppYgomGame.Duel.Engine.Phase)phaseVal;
 
                 // Skip announcing Null/unknown phases (cutscenes, automated sequences)
                 if (phase == Il2CppYgomGame.Duel.Engine.Phase.Null) return;
 
-                string phaseName = GetPhaseName(phase);
-                Announce(phaseName);
+                Announce(GetPhaseName(phase));
             }
             catch (Exception ex)
             {
@@ -375,39 +500,25 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Announces LP change using the damage amount from LifeDamage p2.
-        /// Computes new LP from tracked value instead of polling DLL_DuelGetLP
-        /// (which lags behind during damage animations).
+        /// Announces LP change. DuelState has already applied the delta to
+        /// its tracked LP by the time we get here, so we just read the new
+        /// value and announce it with the damage/recovery amount.
         /// </summary>
         private static void AnnounceLPDamage(int player, int damageAmount)
         {
             try
             {
-                string who = player == 0 ? Loc.Get("duel_you") : Loc.Get("duel_opponent");
-                int lastLP = player == 0 ? _lastMyLP : _lastOppLP;
-
-                // damageAmount is negative for damage, positive for recovery
+                bool isMe = DuelState.IsMine(player);
+                string who = isMe ? Loc.Get("duel_you") : Loc.Get("duel_opponent");
                 int absDamage = Math.Abs(damageAmount);
+                int newLP = DuelState.GetLP(player);
 
-                if (lastLP >= 0)
-                {
-                    int newLP = Math.Max(0, lastLP + damageAmount);
-                    if (damageAmount < 0)
-                        Announce(Loc.Get("duel_lp_damage", who, absDamage, newLP));
-                    else
-                        Announce(Loc.Get("duel_lp_recover", who, absDamage, newLP));
-
-                    if (player == 0) _lastMyLP = newLP;
-                    else _lastOppLP = newLP;
-                }
+                if (damageAmount < 0)
+                    Announce(Loc.Get("duel_lp_damage", who, absDamage, newLP));
+                else if (damageAmount > 0)
+                    Announce(Loc.Get("duel_lp_recover", who, absDamage, newLP));
                 else
-                {
-                    // No tracked LP yet — read from engine as fallback
-                    int lp = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(player);
-                    Announce(Loc.Get("duel_lp_update", who, lp));
-                    if (player == 0) _lastMyLP = lp;
-                    else _lastOppLP = lp;
-                }
+                    Announce(Loc.Get("duel_lp_update", who, newLP));
             }
             catch (Exception ex)
             {
@@ -415,16 +526,9 @@ namespace DuelLinksAccess
             }
         }
 
-        /// <summary>Silently tracks LP on LifeSet using the value from the event directly.</summary>
-        private static void TrackLP(int player, int lpValue)
-        {
-            if (player == 0) _lastMyLP = lpValue;
-            else _lastOppLP = lpValue;
-        }
-
         private static void AnnounceDraw(int player)
         {
-            if (player == 0)
+            if (DuelState.IsMine(player))
                 Announce(Loc.Get("duel_drew_card"));
             else
                 Announce(Loc.Get("duel_opponent_drew"));
@@ -436,9 +540,72 @@ namespace DuelLinksAccess
         /// </summary>
         private static void AnnounceCardEvent(string locKey, int param1, int param2, int param3)
         {
+            // Path 1 — single-player convention: p2 (or sometimes p3) is the
+            // raw uniqueId. Resolve via DLL_DuelGetCardIDByUniqueID2.
             string cardName = TryGetCardName(param2) ?? TryGetCardName(param3);
+
+            // Path 2 — PvP fallback: opponent's uniqueIds aren't in the local
+            // engine's uid->cardId table, so p2/p3 lookups return 0. Decode
+            // p1 as a packed field position ((uniqueId << 8) | (slot << 6) |
+            // (locate << 1) | player), look up the LIVE uid at that field
+            // slot, then resolve that.
+            if (cardName == null && param1 != 0)
+            {
+                cardName = TryGetCardNameFromPackedPosition(param1);
+            }
+
+            // Diagnostic: when we still fall back to "a card", log everything
+            // we probed so we can see which path needs additional fallbacks.
+            if (cardName == null)
+            {
+                int id2 = -1, id3 = -1;
+                try { id2 = (int)Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(param2); } catch { }
+                try { id3 = (int)Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(param3); } catch { }
+
+                int p1Player = param1 & 1;
+                int p1Locate = (param1 >> 1) & 0x1F;
+                int p1Slot = (param1 >> 6) & 0x3;
+                int p1Uid = param1 >> 8;
+                int fieldUid = 0, fieldCardId = 0;
+                try
+                {
+                    fieldUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(p1Player, p1Locate, p1Slot);
+                    if (fieldUid > 0)
+                        fieldCardId = (int)Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(fieldUid);
+                }
+                catch { }
+
+                DebugLogger.Log(LogCategory.Game, "DuelEvent",
+                    $"Card resolve FAIL for {locKey}: " +
+                    $"p1={param1} (player={p1Player} locate={p1Locate} slot={p1Slot} uidHi={p1Uid}), " +
+                    $"p2={param2}, p3={param3}, " +
+                    $"DLL_GetCardIDByUniqueID2(p2)={id2}, (p3)={id3}, " +
+                    $"fieldUid@({p1Player},{p1Locate},{p1Slot})={fieldUid}, fieldCardId={fieldCardId}");
+            }
+
             string name = cardName ?? Loc.Get("duel_a_card");
             Announce(Loc.Get(locKey, name));
+        }
+
+        /// <summary>
+        /// PvP-aware fallback for opponent card names: decodes p1 as a packed
+        /// field position ((uidHi &lt;&lt; 8) | (slot &lt;&lt; 6) | (locate &lt;&lt; 1) | player),
+        /// queries the LIVE uniqueId at that field slot, then resolves it.
+        /// Works for RunSummon, RunSpSummon, etc. where p1 encodes destination.
+        /// </summary>
+        private static string TryGetCardNameFromPackedPosition(int packed)
+        {
+            try
+            {
+                int player = packed & 1;
+                int locate = (packed >> 1) & 0x1F;
+                int slot = (packed >> 6) & 0x3;
+
+                int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot);
+                if (uid <= 0) return null;
+                return TryGetCardName(uid);
+            }
+            catch { return null; }
         }
 
         /// <summary>
@@ -449,14 +616,16 @@ namespace DuelLinksAccess
         /// </summary>
         private static int TryResolveUniqueId(int candidateA, int candidateB)
         {
+            // Same guard as TryGetCardName: validate against FindCardInstance
+            // so we don't accept locate values (1/2/3) that happen to be in
+            // the engine's uid->card table as deck cards.
+            var goMgr = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.goManager;
             foreach (int candidate in new[] { candidateA, candidateB })
             {
                 if (candidate <= 0) continue;
                 try
                 {
-                    uint cardId = Il2CppYgomGame.Duel.Engine
-                        .DLL_DuelGetCardIDByUniqueID2(candidate);
-                    if (cardId > 0 && cardId < 100000) return candidate;
+                    if (goMgr?.FindCardInstance(candidate) != null) return candidate;
                 }
                 catch { }
             }
@@ -504,9 +673,9 @@ namespace DuelLinksAccess
                 ? Loc.Get("duel_defense_position")
                 : Loc.Get("duel_attack_position");
 
-            string locKey = player == 1
-                ? "duel_position_changed_opponent"
-                : "duel_position_changed";
+            string locKey = player == MyPlayerNum()
+                ? "duel_position_changed"
+                : "duel_position_changed_opponent";
             Announce(Loc.Get(locKey, position, cardName));
         }
 
@@ -537,23 +706,44 @@ namespace DuelLinksAccess
         /// </summary>
         private static string TryGetCardName(int possibleUniqueId)
         {
+            // Validate the uniqueId against the visual layer first. Locate
+            // values (low integers like 1, 2, 3) collide with deck-card
+            // uniqueIds in DLL_DuelGetCardIDByUniqueID2 and would resolve to
+            // whatever card the engine happens to have at that uid (commonly
+            // a deck card like Blue-Eyes White Dragon that was never played).
+            // FindCardInstance returns the active CardRoot for that uid or
+            // null — locate values won't have one.
             if (possibleUniqueId <= 0) return null;
             try
             {
-                uint cardId = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(possibleUniqueId);
-                if (cardId == 0 || cardId > 100000) return null;
+                var root = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.goManager
+                    ?.FindCardInstance(possibleUniqueId);
+                int cardId = 0;
+                if (root != null)
+                {
+                    try { cardId = root.cardId; } catch { }
+                }
+                if (cardId <= 0)
+                {
+                    // Fall back to engine lookup, but only when we've already
+                    // confirmed a CardRoot exists for this uid — that filters
+                    // out spurious locate-as-uid hits.
+                    if (root == null) return null;
+                    try
+                    {
+                        cardId = (int)Il2CppYgomGame.Duel.Engine
+                            .DLL_DuelGetCardIDByUniqueID2(possibleUniqueId);
+                    }
+                    catch { return null; }
+                }
+                if (cardId <= 0 || cardId > 100000) return null;
 
                 var content = Il2CppYgomGame.Card.Content.Instance;
                 if (content == null) return null;
-
-                string name = content.GetName((int)cardId);
-                if (string.IsNullOrEmpty(name)) return null;
-                return name;
+                string name = content.GetName(cardId);
+                return string.IsNullOrEmpty(name) ? null : name;
             }
-            catch
-            {
-                return null;
-            }
+            catch { return null; }
         }
 
         /// <summary>

@@ -86,7 +86,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. C read card details. I deck stats. S current skill. K change skill. U set as active deck. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
             _english["debug_mode"] = "Debug mode {0}";
             _english["tutorial_arrow_activated"] = "Tutorial arrow activated";
             _english["tutorial_arrow_no_arrow"] = "No tutorial arrow active";
@@ -156,13 +156,82 @@ namespace DuelLinksAccess
             _english["trader_items"] = "Card Trader: {0} items";
             _english["trader_no_items"] = "No trade items available";
             _english["trader_selected"] = "Selected: {0}";
+            _english["trader_can_trade"] = "can trade";
+            _english["trader_cannot_trade"] = "cannot trade";
             _english["trader_cost_gold"] = "{0} gold";
+            _english["trader_cost_gold_poss"] = "{0} gold (have {1})";
             _english["trader_cost_card"] = "{1} ×{0}";
+            _english["trader_cost_card_poss"] = "{1} ×{0} (have {2})";
+            _english["trader_cost_item"] = "{0} ×{1}";
+            _english["trader_cost_item_poss"] = "{0} ×{1} (have {2})";
             _english["trader_stock"] = "Stock: {0}";
             _english["trader_gold"] = "Gold: {0}";
             _english["trader_gold_unknown"] = "Gold balance unavailable";
+            _english["trader_goto_catalog"] = "Opening conversion catalog";
+            _english["trader_rarity_list"] = "{0} card list";
+            _english["trader_chroniclizer"] = "Chroniclizer";
+            _english["trader_process"] = "Card Process";
+            _english["trader_change_skill"] = "Change Skill";
+            _english["trader_sold_out"] = "Sold Out";
+            _english["trader_skill_ticket"] = "Skill Ticket";
+            _english["trader_ex_item"] = "Special item";
+            _english["trader_pack"] = "Card Pack";
+            _english["trader_box_chip"] = "Box Chip";
+            _english["trader_respect_orb"] = "Respect Orb";
+            _english["trader_exchange_for"] = "Exchange {0} cards for this";
+            _english["trader_press_space_to_trade"] = "Press space to trade";
+            _english["trader_confirm_prompt"] = "Trade for {0}? Press Enter again to confirm, or arrow keys to cancel.";
+            _english["trader_trading"] = "Trading for {0}";
+            _english["trader_actual_selected"] = "Trader selected: {0}";
+            _english["trader_drift_abort"] = "Trade aborted: trader switched from {0} to {1}. Try again.";
+            _english["trader_drift_warn"] = "Warning: trader switched from {0} to {1}. Read the dialog before confirming.";
             _english["map_npc_bonus"] = "Bonus Duelist";
             _english["map_school"] = "Duel Trials";
+
+            // ===== HOME / DUEL WORLD HANDLER =====
+            _english["home_items"] = "Home screen: {0} items";
+            _english["home_item"] = "{0} of {1}: {2}";
+            _english["home_area_selector"] = "Area: {0}";
+            _english["home_area_changed"] = "Now in {0}";
+            _english["home_area_left"] = "Previous area";
+            _english["home_area_right"] = "Next area";
+            _english["home_area_unknown"] = "Area {0}";
+            _english["home_gate"] = "Gate";
+            _english["home_shop"] = "Shop";
+            _english["home_colosseum"] = "PvP Arena";
+            _english["home_labo"] = "Labo";
+            _english["home_events"] = "Events";
+            _english["home_gifts"] = "Gifts";
+            _english["home_info"] = "Info";
+            _english["home_user_info"] = "Player Info";
+            _english["home_option"] = "Options";
+            _english["home_neuron_code"] = "Neuron Code";
+            _english["home_character"] = "Character: {0}";
+            _english["home_character_unknown"] = "Unknown character";
+            _english["home_deck_select"] = "Select Deck";
+            _english["home_deck_edit"] = "Edit Deck";
+            _english["home_missions"] = "Missions";
+            _english["home_missions_stage"] = "Missions: {0}";
+            _english["home_duel_center"] = "Duel Center";
+            _english["home_chara_selector"] = "Character: {0}";
+            _english["home_chara_exp_up"] = "Level up {0}";
+            _english["home_chara_deck"] = "{0}'s deck";
+            _english["home_chara_change_series"] = "Change series";
+            _english["home_chara_change_style"] = "Change style";
+            _english["home_chara_style"] = "Style {0}";
+            _english["home_chara_list"] = "Open character list";
+            _english["home_chara_mission"] = "Character missions";
+            _english["home_browse_all"] = "Browse all mode. Showing every UI element.";
+            _english["home_curated"] = "Curated mode. Showing main destinations.";
+            _english["home_shortcut"] = "Shortcut panel";
+            _english["home_menu_settings"] = "Menu and settings";
+            _english["home_character_button"] = "Open character panel";
+            _english["home_duel_shortcut"] = "Quick duel";
+            _english["home_series"] = "Change duel world";
+            _english["map_card_portal"] = "Card Portal";
+            _english["map_alley_gomibako"] = "Trash";
+            _english["map_event_panel"] = "Event";
+            _english["map_treasure_chest"] = "Treasure Chest";
 
             // ===== SHORTCUT PANEL =====
             _english["shortcut_trader"] = "Card Trader";
@@ -251,6 +320,8 @@ namespace DuelLinksAccess
             _english["duel_zone_opp_field_spell"] = "Opponent field spell";
             _english["duel_zone_my_banished"] = "Your banished";
             _english["duel_zone_opp_banished"] = "Opponent banished";
+            _english["duel_zone_emz"] = "Extra monster zones";
+            _english["duel_card_opponent_owned"] = "{0}, opponent's";
             _english["duel_position_changed"] = "Switched to {0}: {1}";
             _english["duel_position_changed_opponent"] = "Opponent switched to {0}: {1}";
             _english["duel_lp_read"] = "Your LP: {0}. Opponent LP: {1}";
@@ -290,6 +361,7 @@ namespace DuelLinksAccess
             _english["duel_cmd_to_defense"] = "Change to defense";
             _english["duel_cmd_pendulum"] = "Pendulum summon";
             _english["duel_cmd_select"] = "Select";
+            _english["duel_cmd_unknown"] = "Action";
 
             // ===== DUEL: TARGET SELECTION =====
             _english["duel_select_target"] = "Select attack target";
@@ -396,6 +468,23 @@ namespace DuelLinksAccess
             _english["shop_category_dpass"] = "Duel Pass";
             _english["shop_category_accessories"] = "Accessories";
             _english["shop_category_homebg"] = "Home Backgrounds";
+
+            // ===== CARD CATALOG (CONVERSION) =====
+            _english["catalog_entered"] = "Card catalog. Left right to browse, C for description, B to open batch conversion.";
+            _english["catalog_card_count"] = "{0} cards in catalog";
+            _english["catalog_no_cards"] = "No cards in catalog";
+            _english["catalog_own_count"] = "you have {0}";
+            _english["catalog_convertible"] = "can be converted";
+            _english["catalog_not_convertible"] = "not convertible";
+            _english["catalog_detail_mode"] = "{0}: waiting for conversion info. Tab to re-read, Escape to cancel.";
+            _english["catalog_detail_ready"] = "Ready to convert. Press Enter to confirm.";
+            _english["catalog_detail_not_available"] = "Individual conversion not available for this card. Use B for batch conversion.";
+            _english["catalog_detail_not_convertible"] = "{0}: not convertible. Escape to go back.";
+            _english["catalog_converting"] = "Converting card";
+            _english["catalog_converting_not_ready"] = "Conversion not ready yet, try again in a moment.";
+            _english["catalog_not_convertible_card"] = "This card cannot be converted.";
+            _english["catalog_batch_convert"] = "Opening batch conversion";
+            _english["catalog_batch_not_available"] = "Batch convert not available";
 
             // ===== TICKET EXCHANGE =====
             _english["screen_ticket_exchange"] = "Ticket Exchange";

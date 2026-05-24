@@ -47,6 +47,8 @@ namespace DuelLinksAccess
         private ShopHandler _shopHandler;
         private TicketExchangeHandler _ticketExchangeHandler;
         private CardTraderHandler _cardTraderHandler;
+        private CardCatalogHandler _cardCatalogHandler;
+        private HomeHandler _homeHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
         // when neither DuelHandler nor DialogHandler is handling them.
@@ -96,6 +98,8 @@ namespace DuelLinksAccess
             _shopHandler = new ShopHandler();
             _ticketExchangeHandler = new TicketExchangeHandler();
             _cardTraderHandler = new CardTraderHandler();
+            _cardCatalogHandler = new CardCatalogHandler();
+            _homeHandler = new HomeHandler();
         }
 
         private void OnScreenChanged(GameStateTracker.GameScreen oldScreen,
@@ -329,6 +333,19 @@ namespace DuelLinksAccess
             // Card Trader handler — intercepts CardTraderViewController2 screens
             _cardTraderHandler?.Update();
             if (_cardTraderHandler?.IsActive == true) return;
+
+            // Card Catalog handler — intercepts CardListViewController in SelProcess mode
+            // (conversion catalog opened from Card Trader when eligible cards exist)
+            _cardCatalogHandler?.Update();
+            if (_cardCatalogHandler?.IsActive == true) return;
+
+            // Curated Home/Duel-World handler — replaces SBH's noisy 40+ item
+            // scan on the world map with a named-destination list. Always
+            // Update() so it can detect screen entry, area changes, and the B
+            // toggle to browse-all mode. When IsActive is false (browse-all
+            // fallback or off-screen), SBH takes over below.
+            _homeHandler?.Update();
+            if (_homeHandler?.IsActive == true) return;
 
             // Generic screen button handler — fallback for non-dialog, non-duel screens
             _screenButtonHandler?.Update();

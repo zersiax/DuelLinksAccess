@@ -80,7 +80,14 @@ namespace DuelLinksAccess
         private const int LocateExtra = 14;
         private const int LocateGrave = 16;
         private const int LocateDeck = 15;
-        private const int LocateExtraMonster = 6; // Confirmed via Synchro summon
+        // Extra Monster Zones — shared between players, positional left/right.
+        // BlindDuel (Master Duel) treats EMZ as PosExLMonster / PosExRMonster
+        // (positional), not summon-type-segregated. Loc=5 confirmed via player-0
+        // Link/Fusion (2026-05-14 PvP), loc=6 via earlier Synchro. Mapping left=5,
+        // right=6 is a positional guess; if testing reveals it reversed, flip
+        // these two constants.
+        private const int LocateEMZLeft = 5;
+        private const int LocateEMZRight = 6;
         private const int LocateFieldSpell = 12;  // Confirmed via field scan (cardId=4341 at loc=12)
         private const int LocateBanished = 17;    // Placeholder
 
@@ -102,6 +109,10 @@ namespace DuelLinksAccess
         // with set order: a single set spell reads "1 of 3" rather than
         // "2 of 3" with an empty leftmost slot.
         private static readonly int[] SpellLocates = { 9, 10, 8 };
+        // Extra Monster Zone locates ordered left-to-right (loc=5 left, loc=6
+        // right — positional guess matching BlindDuel's PosExLMonster /
+        // PosExRMonster convention; flip if testing reveals reversed).
+        private static readonly int[] EMZLocates = { LocateEMZLeft, LocateEMZRight };
 
         // Field slot locate range to scan (each holds 0 or 1 card).
         private const int FieldLocateMin = 1;
@@ -112,9 +123,16 @@ namespace DuelLinksAccess
         private const uint CmdTurnAtk = 0x200;  // Can switch TO ATK → currently in DEF
         private const uint CmdTurnDef = 0x400;  // Can switch TO DEF → currently in ATK
 
-        // Player identifiers (matches existing DuelEventAnnouncer convention)
-        private const int PlayerMe = 0;
-        private const int PlayerOpp = 1;
+        // Player identifiers — the engine's seat number for "me" (0 or 1).
+        // Single-player is always 0; PvP/Ranked matchmaking assigns either
+        // seat, so we delegate to DuelEventAnnouncer.MyPlayerNum() (cached
+        // per-frame). All engine queries below go through GetZonePlayer(zone)
+        // which routes "MyXxx" zones to PlayerMe and "OppXxx" to PlayerOpp,
+        // so updating these two accessors is enough to PvP-correct the entire
+        // navigator. GridRow.Player captures the value at static-init time
+        // but is never read, so the init-time fallback to 0 is harmless.
+        private static int PlayerMe => DuelEventAnnouncer.MyPlayerNum();
+        private static int PlayerOpp => 1 - DuelEventAnnouncer.MyPlayerNum();
 
         #endregion
 
@@ -127,6 +145,12 @@ namespace DuelLinksAccess
             Hand,
             MySpell,
             MyMonster,
+            // Extra Monster Zones — shared row between the two players
+            // (2 slots, loc=5 left / loc=6 right). Owner is resolved per slot
+            // via GetEMZOwner. Sits between MyMonster and OppMonster so Up
+            // from MyMonster lands on EMZ before reaching OppMonster, matching
+            // the physical TCG layout where EMZ slots sit between the players.
+            ExtraMonster,
             OppMonster,
             OppSpell,
             // Side zones (hotkey-only, not in arrow grid)
@@ -154,29 +178,36 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Spatial grid rows, bottom to top. Row 0 = Hand, Row 4 = Opp Spells.
-        /// Monster and spell rows each have 3 columns (Speed Duel format). The
-        /// Extra Monster Zone is a separate single-slot side zone, not a column.
+        /// Spatial grid rows, bottom to top. Hand at the bottom, Opp Spells at
+        /// the top. The Extra Monster Zone row sits between MyMonster and
+        /// OppMonster (positionally between the two players, matching the
+        /// TCG layout where EMZ is shared). Monster and spell rows are 3 cols;
+        /// EMZ row is 2 cols. The Player field on the EMZ row is a placeholder
+        /// (PlayerMe default) — actual ownership is resolved per locate via
+        /// GetEMZOwner in ReadCurrentCard / RefreshZoneSlots.
         /// </summary>
         private static readonly GridRow[] GridRows =
         {
-            new GridRow { Zone = Zone.Hand,       Player = PlayerMe,  Locates = null },
-            new GridRow { Zone = Zone.MySpell,    Player = PlayerMe,  Locates = SpellLocates },
-            new GridRow { Zone = Zone.MyMonster,  Player = PlayerMe,  Locates = MonsterLocates },
-            new GridRow { Zone = Zone.OppMonster, Player = PlayerOpp, Locates = MonsterLocates },
-            new GridRow { Zone = Zone.OppSpell,   Player = PlayerOpp, Locates = SpellLocates },
+            new GridRow { Zone = Zone.Hand,         Player = PlayerMe,  Locates = null },
+            new GridRow { Zone = Zone.MySpell,      Player = PlayerMe,  Locates = SpellLocates },
+            new GridRow { Zone = Zone.MyMonster,    Player = PlayerMe,  Locates = MonsterLocates },
+            new GridRow { Zone = Zone.ExtraMonster, Player = PlayerMe,  Locates = EMZLocates },
+            new GridRow { Zone = Zone.OppMonster,   Player = PlayerOpp, Locates = MonsterLocates },
+            new GridRow { Zone = Zone.OppSpell,     Player = PlayerOpp, Locates = SpellLocates },
         };
 
         private const int RowHand = 0;
         private const int RowMySpell = 1;
         private const int RowMyMonster = 2;
-        private const int RowOppMonster = 3;
-        private const int RowOppSpell = 4;
+        private const int RowExtraMonster = 3;
+        private const int RowOppMonster = 4;
+        private const int RowOppSpell = 5;
 
         /// <summary>Set of grid zones for quick membership checks.</summary>
         private static readonly HashSet<Zone> GridZones = new()
         {
-            Zone.Hand, Zone.MySpell, Zone.MyMonster, Zone.OppMonster, Zone.OppSpell
+            Zone.Hand, Zone.MySpell, Zone.MyMonster, Zone.ExtraMonster,
+            Zone.OppMonster, Zone.OppSpell
         };
 
         // Navigation state
@@ -195,6 +226,14 @@ namespace DuelLinksAccess
         private readonly List<CommandInfo> _commands = new();
         private int _cmdIndex;
 
+        // PvP hand-play: when the engine doesn't expose hand commands
+        // (DLL_DuelComGetCommandMask returns 0 for hand slots in PvP/Ranked),
+        // we tap the card to open the game's native CardCommand popup, scan
+        // its buttons, and present an accessible action menu. This field
+        // holds the popup reference so ExecuteSelectedCommand can fire
+        // OnCommand directly instead of re-tapping (which would close it).
+        private Il2CppYgomGame.Duel.CardCommand _pendingCardCom;
+
         // Target selection state (attack targeting)
         private bool _awaitingTarget;
         private bool _useDirectCommand; // true = skip drag, use OnDoCardCommand(Attack)
@@ -212,6 +251,13 @@ namespace DuelLinksAccess
         private int _emoListIndex;
         private int _emoListCount;
         private bool _emoListHandled;
+        // Wall-clock deadline (Time.unscaledTime) after which _emoListHandled
+        // is force-cleared on the next CheckForEmotionalList. Without this,
+        // sequential pickers (XYZ second material; pick-N tributes) get
+        // missed because the goActive=false → reset transition never fires
+        // when the game opens prompt 2 in the same frame it closes prompt 1.
+        private float _emoListHandledUntil;
+        private const float EmoListHandledTimeout = 0.4f;
 
         /// <summary>Stores a command entry for the accessible action menu.</summary>
         private struct CommandInfo
@@ -302,6 +348,15 @@ namespace DuelLinksAccess
             _inActionMenu = false;
             _commands.Clear();
             _cmdIndex = 0;
+
+            // PvP hand-play: if the popup was opened by TapHandAndReadCommands
+            // but the user backed out, close the game's CardCommand popup too —
+            // otherwise it stays visually open and blocks further input.
+            if (_pendingCardCom != null)
+            {
+                try { _pendingCardCom.Close(); } catch { }
+                _pendingCardCom = null;
+            }
         }
 
         /// <summary>
@@ -371,11 +426,11 @@ namespace DuelLinksAccess
 
             try
             {
-                int hand = GetCardCount(PlayerMe, LocateHand);
-                CountFieldCards(PlayerMe, out int myMon, out int mySp);
-                int myGr = GetCardCount(PlayerMe, LocateGrave);
-                CountFieldCards(PlayerOpp, out int oppMon, out int oppSp);
-                int oppGr = GetCardCount(PlayerOpp, LocateGrave);
+                int hand = DuelState.GetCardCount(PlayerMe, LocateHand);
+                DuelState.CountFieldCards(PlayerMe, out int myMon, out int mySp);
+                int myGr = DuelState.GetCardCount(PlayerMe, LocateGrave);
+                DuelState.CountFieldCards(PlayerOpp, out int oppMon, out int oppSp);
+                int oppGr = DuelState.GetCardCount(PlayerOpp, LocateGrave);
 
                 return Loc.Get("duel_field_summary",
                     hand, myMon, mySp, myGr, oppMon, oppSp, oppGr);
@@ -791,16 +846,29 @@ namespace DuelLinksAccess
             int cardCount;
             if (IsFieldSlotZone(_currentZone))
             {
-                // Count only occupied slots for the announcement
+                // Count only occupied slots for the announcement. Route through
+                // DuelState.GetFieldCard which is hollow-engine-safe in PvP;
+                // the old DLL_DuelGetCardUniqueID(player, loc, 0) probe returns
+                // 0 for everything in PvP, so we'd always misannounce "0 cards".
+                // EMZ is shared between players — check both sides per slot so
+                // an opponent-owned fusion/synchro/xyz/link in the shared zone
+                // still counts.
+                bool isShared = _currentZone == Zone.ExtraMonster;
                 int player = GetZonePlayer(_currentZone);
                 cardCount = 0;
                 foreach (int loc in _zoneLocates)
                 {
                     try
                     {
-                        int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                            player, loc, 0);
-                        if (uid > 0) cardCount++;
+                        if (DuelState.GetFieldCard(player, loc, 0) != null)
+                        {
+                            cardCount++;
+                        }
+                        else if (isShared
+                            && DuelState.GetFieldCard(1 - player, loc, 0) != null)
+                        {
+                            cardCount++;
+                        }
                     }
                     catch { /* skip */ }
                 }
@@ -875,6 +943,19 @@ namespace DuelLinksAccess
                 JumpToMonsterSlot(2);
                 return true;
             }
+            // Alpha4 / Alpha5: Extra Monster Zones (shared row, no shift).
+            // Direct slot access into the EMZ grid row, complementing Up/Down
+            // arrow navigation through MyMonster → EMZ → OppMonster.
+            if (InputManager.TryConsumeKeyDown(KeyCode.Alpha4))
+            {
+                JumpToEMZSlot(0);
+                return true;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Alpha5))
+            {
+                JumpToEMZSlot(1);
+                return true;
+            }
 
             return false;
         }
@@ -910,13 +991,21 @@ namespace DuelLinksAccess
             EnterGridRow(RowMyMonster, col);
         }
 
+        /// <summary>Jumps to a specific column in the Extra Monster Zone row.</summary>
+        private void JumpToEMZSlot(int col)
+        {
+            col = Math.Min(col, EMZLocates.Length - 1);
+            _rememberedCol = col;
+            EnterGridRow(RowExtraMonster, col);
+        }
+
         /// <summary>Reads LP for both players without moving the cursor.</summary>
         private void ReadLP()
         {
             try
             {
-                int myLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(PlayerMe);
-                int oppLP = Il2CppYgomGame.Duel.Engine.DLL_DuelGetLP(PlayerOpp);
+                int myLP = DuelState.GetLP(PlayerMe);
+                int oppLP = DuelState.GetLP(PlayerOpp);
                 ScreenReader.Say(Loc.Get("duel_lp_read", myLP, oppLP));
             }
             catch (Exception ex)
@@ -944,17 +1033,28 @@ namespace DuelLinksAccess
                 _navIndex = _zoneSlots.Count - 1;
 
             int slotIndex = _zoneSlots[_navIndex];
-            int player = GetZonePlayer(_currentZone);
             int locate = _zoneLocates[_navIndex];
+            // EMZ ownership is per-slot, not per-zone. Probe the actual owner
+            // for EMZ locates; otherwise use the row-level player.
+            int player = _currentZone == Zone.ExtraMonster
+                ? GetEMZOwner(locate)
+                : GetZonePlayer(_currentZone);
 
             try
             {
-                int uniqueId = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                    player, locate, slotIndex);
+                // Single read path: DuelState backs everything by the visual
+                // layer (CardRoot for field, HandCardManager for hand) plus
+                // event-tracked counters. Works uniformly in single-player
+                // and PvP — the engine's DLL_Duel* card queries are hollow
+                // in PvP but the visual layer is fully populated in both.
+                CardSnapshot? snap;
+                if (_currentZone == Zone.Hand)
+                    snap = DuelState.GetHandCard(player, slotIndex);
+                else
+                    snap = DuelState.GetFieldCard(player, locate, slotIndex);
 
-                if (uniqueId <= 0)
+                if (snap == null)
                 {
-                    // Grid zone: announce "Slot N: Empty"
                     string emptyText = IsFieldSlotZone(_currentZone)
                         ? Loc.Get("duel_empty_slot_named", _navIndex + 1)
                         : Loc.Get("duel_card_position",
@@ -964,28 +1064,39 @@ namespace DuelLinksAccess
                     return;
                 }
 
-                uint cardDbId = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uniqueId);
-                string cardName = ResolveCardName(cardDbId);
+                var card = snap.Value;
+                uint cardDbId = (uint)card.CardDbId;
+                string cardName = card.Name ?? Loc.Get("duel_unknown_card");
 
                 bool isHand = _currentZone == Zone.Hand;
                 bool isExtra = _currentZone == Zone.MyExtra || _currentZone == Zone.OppExtra;
+                bool isEMZ = _currentZone == Zone.ExtraMonster;
                 // Hand and Extra Deck share read semantics: no face, Content-DB stats.
                 bool isContentView = isHand || isExtra;
                 bool isMyCard = player == PlayerMe;
                 bool isFieldCard = IsFieldSlotZone(_currentZone);
 
-                // Determine actual card type from BasicVal (not zone label)
-                bool isMonster = false;
-                if (isFieldCard)
+                // EMZ is shared — annotate the name with "opponent's" when the
+                // slot's resolved owner is the opponent, so the user knows whose
+                // card they're on (the zone name itself is neutral).
+                if (isEMZ && !isMyCard)
+                    cardName = Loc.Get("duel_card_opponent_owned", cardName);
+
+                // Determine card kind from Content database — uniform across modes.
+                bool isMonster = true;
+                if (isFieldCard && cardDbId > 0)
                 {
                     try
                     {
-                        var bv = new Il2CppYgomGame.Duel.Engine.BasicVal();
-                        Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
-                            player, locate, slotIndex, ref bv);
-                        isMonster = bv.Type != 0;
+                        var content = Il2CppYgomGame.Card.Content.Instance;
+                        if (content != null)
+                        {
+                            var kind = content.GetKind((int)cardDbId);
+                            isMonster = kind != Il2CppYgomGame.Card.Content.Kind.Magic
+                                     && kind != Il2CppYgomGame.Card.Content.Kind.Trap;
+                        }
                     }
-                    catch { isMonster = true; }
+                    catch { }
                 }
 
                 // --- Build announcement parts ---
@@ -994,10 +1105,7 @@ namespace DuelLinksAccess
                 // Face/position info (field + grave; not hand/extra)
                 if (!isContentView)
                 {
-                    // DLL_DuelGetCardFace: 0=face-down, 1=face-up (boolean)
-                    int face = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardFace(
-                        player, locate, slotIndex);
-                    bool isFaceUp = face != 0;
+                    bool isFaceUp = card.IsFaceUp;
 
                     // Don't reveal opponent's face-down card names
                     if (!isFaceUp && !isMyCard)
@@ -1009,69 +1117,39 @@ namespace DuelLinksAccess
 
                     if (isMonster)
                     {
-                        // Determine ATK/DEF position. Cached value (from CutinTurn
-                        // events in DuelEventAnnouncer) is authoritative once a
-                        // position change has happened — the command-mask heuristic
-                        // breaks for the rest of the turn after a change because
-                        // both TurnAtk and TurnDef bits drop until next turn.
-                        bool isDefense = !isFaceUp; // face-down = always DEF
-                        if (isFaceUp)
-                        {
-                            int uid = 0;
-                            try
-                            {
-                                uid = Il2CppYgomGame.Duel.Engine
-                                    .DLL_DuelGetCardUniqueID(player, locate, slotIndex);
-                            }
-                            catch { }
-
-                            bool? cachedDef = DuelPositionTracker.IsDefense(uid);
-                            if (cachedDef.HasValue)
-                            {
-                                isDefense = cachedDef.Value;
-                            }
-                            else
-                            {
-                                // Fall back to command-mask heuristic when the
-                                // tracker has nothing (e.g., monster summoned
-                                // before a CutinTurn event ever fired for it).
-                                // TurnAtk available → currently DEF.
-                                // TurnDef available → currently ATK.
-                                try
-                                {
-                                    uint cmdMask = SafeGetCommandMask(
-                                        player, locate, slotIndex);
-                                    if ((cmdMask & CmdTurnAtk) != 0)
-                                        isDefense = true;
-                                }
-                                catch { }
-                            }
-                        }
+                        // Face-down is always DEF; face-up uses CardRoot.isAttack
+                        // (live visual state — already in card.IsAttack).
+                        bool isDefense = isFaceUp ? !card.IsAttack : true;
 
                         parts.Add(isDefense
                             ? Loc.Get("duel_defense_position")
                             : Loc.Get("duel_attack_position"));
 
-                        // Stats for face-up or own monsters
+                        // Stats for face-up or own monsters — DuelState reads
+                        // atk/def off CardRoot (live, including effect modifiers).
                         if (isFaceUp || isMyCard)
                         {
-                            string stats = GetCardStatsText(player, locate, slotIndex, verbose);
-                            if (stats != null)
-                                parts.Add(stats);
+                            string stats = Loc.Get("duel_card_stats", card.Atk, card.Def);
+                            parts.Add(stats);
                         }
                     }
                 }
                 else
                 {
-                    // Hand / Extra Deck cards: read level, ATK, DEF from Content database
+                    // Hand / Extra Deck cards: level + ATK/DEF for monsters
                     string stats = GetHandCardStats(cardDbId);
                     if (stats != null)
                         parts.Add(stats);
                 }
 
-                // Position header: "1 of 3: Blue-Eyes White Dragon"
-                string header = Loc.Get("duel_card_position",
-                    _navIndex + 1, _zoneSlots.Count, cardName);
+                // Position header: "1 of 3: Blue-Eyes White Dragon" for
+                // navigation reads. For verbose (V key) the user is
+                // re-reading the same card they already navigated to, so
+                // the "X of Y" prefix is redundant noise — drop it.
+                string header = verbose
+                    ? cardName
+                    : Loc.Get("duel_card_position",
+                        _navIndex + 1, _zoneSlots.Count, cardName);
 
                 // Combine header with detail parts
                 string details = parts.Count > 0 ? string.Join(", ", parts) : "";
@@ -1221,12 +1299,16 @@ namespace DuelLinksAccess
             int player = GetZonePlayer(_currentZone);
             int locate = _zoneLocates[_navIndex];
 
-            // Guard: check if slot is actually occupied (grid rows include empty slots)
+            // Guard: skip empty grid slots. DuelState's GetFieldCard /
+            // GetHandCard return null when the slot is empty, sourced from
+            // the visual layer (works uniformly in single-player and PvP).
             try
             {
-                int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                    player, locate, slotIndex);
-                if (uid <= 0)
+                CardSnapshot? snap = _currentZone == Zone.Hand
+                    ? DuelState.GetHandCard(player, slotIndex)
+                    : DuelState.GetFieldCard(player, locate, slotIndex);
+
+                if (snap == null)
                 {
                     ScreenReader.Say(Loc.Get("duel_empty_slot_named", _navIndex + 1));
                     return;
@@ -1260,25 +1342,63 @@ namespace DuelLinksAccess
                     // cmdMask=0 is normal for Defense Position monsters (can't attack)
                     // and for monsters that already attacked this turn.
 
-                    // Fallback: if no commands but we're on our own field/extra card,
-                    // try tapping it via OnTapLocator. This handles tribute/material
-                    // selection where the game waits for taps, not commands, and also
-                    // extra deck summon initiation (materials picked after tap).
+                    // PvP hand cards: the engine doesn't expose hand commands
+                    // (cmdMask is always 0), so tap to open the game's CardCommand
+                    // popup and read its buttons directly. The coroutine fills
+                    // _commands and either auto-executes or enters the action menu.
+                    if (_currentZone == Zone.Hand)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            "Hand cmdMask=0 — opening popup via TapHandCard to read commands");
+                        MelonCoroutines.Start(TapHandAndReadCommands());
+                        return;
+                    }
+
+                    // PvP attack short-circuit: in PvP the engine's cmdMask
+                    // is always 0 even for valid attackers, but
+                    // DLL_DuelGetAttackTargetMask still returns the real
+                    // bitmask. Skip the popup-tap dance and go straight to
+                    // target selection. Only fires when the engine is hollow
+                    // — in single-player a cmdMask=0 on a monster genuinely
+                    // means "can't attack" (DEF position / already attacked)
+                    // and we must NOT inject Attack there.
+                    if (_currentZone == Zone.MyMonster && DuelState.IsEngineHollow)
+                    {
+                        int atkMask = 0;
+                        try
+                        {
+                            atkMask = Il2CppYgomGame.Duel.Engine
+                                .DLL_DuelGetAttackTargetMask(player, locate);
+                        }
+                        catch { }
+                        if (atkMask != 0)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                $"PvP attack: cmdMask=0 but attackTargetMask=0x{atkMask:X} — " +
+                                $"injecting Attack and entering target selection");
+                            ScreenReader.Say(Loc.Get("duel_cmd_attack"));
+                            BeginTargetSelection(player, locate, slotIndex,
+                                Il2CppYgomGame.Duel.Engine.CommandType.Attack);
+                            return;
+                        }
+                    }
+
+                    // Own field zones: same popup-reading flow as hand. In PvP
+                    // this is the only way to get the action menu (Activate /
+                    // Change to defense / etc.); in single-player it also
+                    // handles the case where cmdMask is 0 but the popup still
+                    // has actions (DEF monsters with Activate).
                     if (_currentZone == Zone.MyMonster || _currentZone == Zone.MySpell
                         || _currentZone == Zone.MyExtra)
                     {
-                        var duelClient = Il2CppYgomGame.Duel.DuelClient.instance;
-                        if (duelClient != null)
-                        {
-                            DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                $"No commands — fallback tap: OnTapLocator({player}, {locate}, {slotIndex})");
-                            TapFieldCard(duelClient, player, locate, slotIndex);
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            $"Field cmdMask=0 — opening popup via TapFieldCard at ({player}, {locate}, {slotIndex})");
+                        MelonCoroutines.Start(TapFieldAndReadCommands());
 
-                            // Debug: dump SelectCardLocation state and scan for tribute UI
-                            if (Main.DebugMode)
-                                DumpCardSelectionState();
-                            return;
-                        }
+                        // Debug: dump SelectCardLocation state and scan for tribute UI
+                        if (Main.DebugMode)
+                            DumpCardSelectionState();
+                        return;
                     }
 
                     ScreenReader.Say(Loc.Get("duel_no_actions"));
@@ -1317,15 +1437,18 @@ namespace DuelLinksAccess
                             DumpCardSelectionState();
                         TapFieldCard(client, player, locate, slotIndex);
                     }
-                    else if (IsDirectCommand(cmdType) || isFieldAction)
+                    else if (IsDirectCommand(cmdType, locate) || isFieldAction)
                     {
-                        // Position changes / flip / field activation: OnDoCardCommand
-                        // directly. The CardCommand popup path fails for these.
+                        // Position changes / flip / field activation / extra-deck
+                        // SummonSp: OnDoCardCommand directly. The CardCommand popup
+                        // path fails for these (popup never appears).
                         var worker = client.worker2d;
                         if (worker != null)
                         {
                             DebugLogger.Log(LogCategory.Game, "FieldNav",
                                 $"Direct command (auto): OnDoCardCommand({cmdType}) for ({player}, {locate}, {slotIndex})");
+                            if (cmdType == Il2CppYgomGame.Duel.Engine.CommandType.SummonSp)
+                                DuelEventAnnouncer.ArmLocalSeatCapture();
                             worker.OnDoCardCommand(player, locate, slotIndex, cmdType);
                         }
                     }
@@ -1410,6 +1533,11 @@ namespace DuelLinksAccess
             int player = GetZonePlayer(_currentZone);
             int locate = _zoneLocates[_navIndex];
 
+            // Capture the PvP-popup ref before CancelActionMenu clears it.
+            // We'll need it below to fire OnCommand directly.
+            var pendingCardCom = _pendingCardCom;
+            _pendingCardCom = null;
+
             CancelActionMenu();
 
             if (NeedsTarget(cmdType))
@@ -1423,6 +1551,29 @@ namespace DuelLinksAccess
             if (client == null)
             {
                 ScreenReader.Say(Loc.Get("duel_action_error"));
+                return;
+            }
+
+            // PvP hand-play path: the CardCommand popup is already open (from
+            // TapHandAndReadCommands). Fire OnCommand on the matching button
+            // directly — re-tapping would close the popup instead of executing.
+            if (pendingCardCom != null)
+            {
+                var btn = FindCardComButton(pendingCardCom, cmdType);
+                if (btn != null)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"PvP hand: CardCommand.OnCommand({cmdType})");
+                    // The resulting CutinSummon/CutinSet's p1 IS our server seat.
+                    DuelEventAnnouncer.ArmLocalSeatCapture();
+                    pendingCardCom.OnCommand(btn);
+                }
+                else
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"PvP hand: no active button matching {cmdType}");
+                    ScreenReader.Say(Loc.Get("duel_action_error"));
+                }
                 return;
             }
 
@@ -1440,15 +1591,17 @@ namespace DuelLinksAccess
                     DumpCardSelectionState();
                 TapFieldCard(client, player, locate, slotIndex);
             }
-            else if (IsDirectCommand(cmdType) || isFieldAction)
+            else if (IsDirectCommand(cmdType, locate) || isFieldAction)
             {
-                // Position changes / flip / field activation: execute via
-                // OnDoCardCommand directly.
+                // Position changes / flip / field activation / extra-deck SummonSp:
+                // OnDoCardCommand directly. The CardCommand popup path fails for these.
                 var worker = client.worker2d;
                 if (worker != null)
                 {
                     DebugLogger.Log(LogCategory.Game, "FieldNav",
                         $"Direct command: OnDoCardCommand({cmdType}) for ({player}, {locate}, {slotIndex})");
+                    if (cmdType == Il2CppYgomGame.Duel.Engine.CommandType.SummonSp)
+                        DuelEventAnnouncer.ArmLocalSeatCapture();
                     worker.OnDoCardCommand(player, locate, slotIndex, cmdType);
                 }
             }
@@ -1497,12 +1650,17 @@ namespace DuelLinksAccess
         /// needing the CardCommand popup UI (position changes, flip summon, etc.).
         /// OnTapLocator + CardCommand popup doesn't register for these on face-down
         /// monsters — the popup never appears, so we bypass it entirely.
+        /// SummonSp on Extra Deck (locate=14) is in the same family: OnTapLocator
+        /// won't open the popup for Extra Deck SummonSp either. Hand-card SummonSp
+        /// (rare; e.g. Cyber Dragon SS from hand) still uses the popup flow.
         /// </summary>
-        private static bool IsDirectCommand(Il2CppYgomGame.Duel.Engine.CommandType cmd)
+        private static bool IsDirectCommand(Il2CppYgomGame.Duel.Engine.CommandType cmd, int locate)
         {
             return cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnAtk
                 || cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnDef
-                || cmd == Il2CppYgomGame.Duel.Engine.CommandType.Reverse;
+                || cmd == Il2CppYgomGame.Duel.Engine.CommandType.Reverse
+                || (cmd == Il2CppYgomGame.Duel.Engine.CommandType.SummonSp
+                    && locate == LocateExtra);
         }
 
         /// <summary>
@@ -1543,13 +1701,12 @@ namespace DuelLinksAccess
             for (int i = _zoneSlots.Count - 1; i >= 0; i--)
             {
                 int loc = _zoneLocates[i];
+                // Route through DuelState (hollow-engine-safe in PvP). The old
+                // DLL_DuelGetCardUniqueID probe returned 0 for EVERY locate in
+                // PvP, leaving oppMonsterCount=0 even when opp had monsters —
+                // we'd then misannounce a targeted attack as a direct attack.
                 bool occupied = false;
-                try
-                {
-                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                        player2, loc, 0);
-                    occupied = uid > 0;
-                }
+                try { occupied = DuelState.GetFieldCard(player2, loc, 0) != null; }
                 catch { occupied = false; }
 
                 if (occupied)
@@ -1559,6 +1716,25 @@ namespace DuelLinksAccess
                     _zoneSlots.RemoveAt(i);
                     _zoneLocates.RemoveAt(i);
                 }
+            }
+
+            // Also include opponent-owned EMZ slots as attack targets. EMZ is
+            // shared, so loc=5/6 may host an opp Synchro/Xyz/Fusion/Link that
+            // sits outside the main monster row but is a legal attack target.
+            // Probe via DuelState (hollow-engine-safe in PvP). DLL_DuelGetCardUniqueID
+            // returns 0 in PvP everywhere, so we can't use the uid probe here.
+            foreach (int emzLoc in new[] { LocateEMZLeft, LocateEMZRight })
+            {
+                try
+                {
+                    if (DuelState.GetFieldCard(player2, emzLoc, 0) != null)
+                    {
+                        _zoneSlots.Add(0);
+                        _zoneLocates.Add(emzLoc);
+                        oppMonsterCount++;
+                    }
+                }
+                catch { /* skip */ }
             }
 
             if (oppMonsterCount > 0)
@@ -1942,6 +2118,18 @@ namespace DuelLinksAccess
                     return false;
                 }
 
+                // Force-clear the handled flag once the post-confirm timeout
+                // elapses, so back-to-back pickers (XYZ second material; multi-
+                // tribute) are detected when the game opens prompt 2 fast enough
+                // that we never see goActive=false in between.
+                if (_emoListHandled
+                    && UnityEngine.Time.unscaledTime > _emoListHandledUntil)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        "EmotionalList: post-confirm timeout — clearing handled flag");
+                    _emoListHandled = false;
+                }
+
                 // Don't re-enter if we already handled this active list instance
                 if (_emoListHandled) return false;
 
@@ -1968,10 +2156,45 @@ namespace DuelLinksAccess
             _emoListCount = items?.Count ?? 0;
 
             int selectMax = 0;
+            int selectMin = 0;
             try { selectMax = emoList.selectMaxNum; } catch { }
+            try { selectMin = emoList.selectMinNum; } catch { }
 
             DebugLogger.Log(LogCategory.Game, "FieldNav",
-                $"EmotionalList: entered with {_emoListCount} items, selectMax={selectMax}");
+                $"EmotionalList: entered with {_emoListCount} items, " +
+                $"selectMax={selectMax} selectMin={selectMin}");
+
+            // Diagnostic dump for material-picker debugging: log each visual
+            // card's resolved itemList uniqueId so re-prompt loops (see
+            // project_followups.md "Tribute summon EmotionalList re-prompts")
+            // are easy to classify. Debug logger only — no Tolk output.
+            try
+            {
+                var cards = emoList.cardList;
+                int n = cards?.Count ?? 0;
+                for (int i = 0; i < n; i++)
+                {
+                    int itemIdx = ResolveItemIndex(emoList, i);
+                    int uid = 0;
+                    int mixedId = 0;
+                    try
+                    {
+                        if (items != null && itemIdx >= 0 && itemIdx < items.Count)
+                        {
+                            var it = items[itemIdx];
+                            if (it != null)
+                            {
+                                try { uid = it.uniqueId; } catch { }
+                                try { mixedId = it.mixedId; } catch { }
+                            }
+                        }
+                    }
+                    catch { }
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"EmoList[visual={i}]: itemIdx={itemIdx} uid={uid} mixedId={mixedId}");
+                }
+            }
+            catch { }
 
             string prompt = selectMax > 1
                 ? Loc.Get("duel_emo_list_multi", _emoListCount, selectMax)
@@ -2142,21 +2365,31 @@ namespace DuelLinksAccess
                     }
                     catch { }
                 }
-                // Try mixedId as a uniqueId (field cards in tribute/material selection)
+                // For field tribute/material selection, mixedId is the
+                // CardRoot's uniqueId. Don't go through
+                // DLL_DuelGetCardIDByUniqueID2 — that API is hollow in PvP
+                // (returns 0 even for live uids) and historically poisons
+                // unrelated low integers ("Pierce!" leak). Instead walk
+                // cardRoots directly: any matching CardRoot has the cardId on
+                // its CardPlane.CardModel even if root.cardId is 0 (face-down
+                // rendering), and MakeSnapshot already handles that fallback
+                // behind the privacy gate.
                 if (cardDbId == 0 && mixedId > 0)
                 {
-                    try
+                    var byUid = FindCardRootByUniqueId(mixedId);
+                    if (byUid != null)
                     {
-                        uint resolved = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(mixedId);
-                        if (resolved > 0 && resolved < 100000)
-                            cardDbId = (int)resolved;
+                        int recovered = ExtractCardId(byUid);
+                        if (recovered > 0 && recovered < 100000) cardDbId = recovered;
                     }
-                    catch { }
                 }
                 if (cardDbId == 0 && cid > 0 && cid < 100000)
                     cardDbId = cid;
-                // Last resort: mixedId as a direct card DB ID (hand/grave discard lists)
-                if (cardDbId == 0 && mixedId > 0 && mixedId < 100000)
+                // Last resort: mixedId as a direct card DB ID. Real cardDbIds
+                // are typically in the thousands; values < 1000 are almost
+                // certainly slot indices or uids the previous walk already
+                // rejected, so don't fall through to them.
+                if (cardDbId == 0 && mixedId >= 1000 && mixedId < 100000)
                     cardDbId = mixedId;
 
                 MelonLoader.MelonLogger.Msg(
@@ -2177,6 +2410,52 @@ namespace DuelLinksAccess
                 ScreenReader.Say(Loc.Get("duel_card_select_item",
                     index + 1, _emoListCount, Loc.Get("duel_unknown_card")));
             }
+        }
+
+        /// <summary>
+        /// Walks goManager.cardRoots looking for a CardRoot whose uniqueId
+        /// matches. Used to resolve tribute/material selection items whose
+        /// `mixedId` is the CardRoot's uid — bypasses the unreliable
+        /// DLL_DuelGetCardIDByUniqueID2 (hollow in PvP, name-poisoning in
+        /// general).
+        /// </summary>
+        private static Il2CppYgomGame.Duel.CardRoot FindCardRootByUniqueId(int uid)
+        {
+            if (uid <= 0) return null;
+            try
+            {
+                var roots = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.goManager?.cardRoots;
+                if (roots == null) return null;
+                for (int i = 0; i < roots.Count; i++)
+                {
+                    var r = roots[i];
+                    if (r != null && r.uniqueId == uid) return r;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Pulls a cardId from a CardRoot, preferring root.cardId and falling
+        /// back to root.cardPlane.cardModel.cardId when the root reports 0
+        /// (face-down stack/set rendering). Mirror of the same fallback in
+        /// DuelState.MakeSnapshot. Used by EmotionalList readers to resolve
+        /// tribute/material names without the engine name-resolution API.
+        /// </summary>
+        private static int ExtractCardId(Il2CppYgomGame.Duel.CardRoot root)
+        {
+            if (root == null) return 0;
+            int id = 0;
+            try { id = root.cardId; } catch { }
+            if (id > 0) return id;
+            try
+            {
+                var model = root.cardPlane?.cardModel;
+                if (model != null) id = model.cardId;
+            }
+            catch { }
+            return id;
         }
 
         /// <summary>
@@ -2297,12 +2576,49 @@ namespace DuelLinksAccess
                 string pickedName = GetEmoCardName(_emoListIndex);
                 ScreenReader.Say(Loc.Get("duel_card_picked", pickedName));
 
-                // For multi-select, OnDecide is still required. For single-select,
-                // OnClickCard may auto-confirm — but OnDecide is idempotent/safe.
-                emoList.OnDecide();
+                // Multi-select: fire the decideButton's onClick handler (the
+                // same path a mouse click takes). Direct OnDecide() alone
+                // doesn't trigger the engine's confirm flow for multi-select —
+                // observed in XYZ material picker (selectMax=2): Space ran
+                // OnDecide but the game waited for a physical Confirm button
+                // click before resolving the summon. Calling onClick.Invoke
+                // covers the Htjson-runtime listener that does the real work.
+                // For single-select, OnClickCard above already advanced state;
+                // OnDecide remains as a defensive call.
+                if (selectMax > 1)
+                {
+                    try
+                    {
+                        var decideBtn = emoList.decideButton;
+                        if (decideBtn != null)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                "Multi-select: firing decideButton.onClick.Invoke");
+                            decideBtn.onClick.Invoke();
+                        }
+                        else
+                        {
+                            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                "Multi-select: decideButton null — falling back to OnDecide");
+                            emoList.OnDecide();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            $"decideButton.onClick.Invoke error: {ex.Message} — falling back");
+                        emoList.OnDecide();
+                    }
+                }
+                else
+                {
+                    emoList.OnDecide();
+                }
 
                 _inEmotionalList = false;
                 _emoListHandled = true;
+                _emoListHandledUntil = UnityEngine.Time.unscaledTime
+                    + EmoListHandledTimeout;
             }
             catch (Exception ex)
             {
@@ -2345,15 +2661,15 @@ namespace DuelLinksAccess
                 }
                 if (cardDbId == 0 && mixedId > 0)
                 {
-                    try
+                    var byUid = FindCardRootByUniqueId(mixedId);
+                    if (byUid != null)
                     {
-                        uint r = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(mixedId);
-                        if (r > 0 && r < 100000) cardDbId = (int)r;
+                        int recovered = ExtractCardId(byUid);
+                        if (recovered > 0 && recovered < 100000) cardDbId = recovered;
                     }
-                    catch { }
                 }
                 if (cardDbId == 0 && cid > 0 && cid < 100000) cardDbId = cid;
-                if (cardDbId == 0 && mixedId > 0 && mixedId < 100000) cardDbId = mixedId;
+                if (cardDbId == 0 && mixedId >= 1000 && mixedId < 100000) cardDbId = mixedId;
 
                 if (cardDbId > 0)
                     return CardFormatter.GetName(cardDbId);
@@ -2916,6 +3232,240 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// PvP hand-play: taps the selected hand card, waits for the
+        /// CardCommand popup to populate, then either auto-executes a
+        /// single command or fills _commands and enters the action menu.
+        /// _pendingCardCom holds the popup ref so ExecuteSelectedCommand
+        /// can fire OnCommand directly without re-tapping.
+        /// </summary>
+        private IEnumerator TapHandAndReadCommands()
+        {
+            var client = Il2CppYgomGame.Duel.DuelClient.instance;
+            if (client == null)
+            {
+                ScreenReader.Say(Loc.Get("duel_action_error"));
+                yield break;
+            }
+
+            int slotIndex = _zoneSlots[_navIndex];
+            TapHandCard(client, slotIndex);
+            yield return ReadPopupAndPresentCommands();
+        }
+
+        /// <summary>
+        /// PvP field-play: same flow as hand, but taps a field card. Used
+        /// when cmdMask is 0 for MyMonster/MySpell/MyExtra zones (i.e., in
+        /// PvP where the engine has no command-mask data — we tap to open
+        /// the game's own CardCommand popup and scan its buttons).
+        /// </summary>
+        private IEnumerator TapFieldAndReadCommands()
+        {
+            var client = Il2CppYgomGame.Duel.DuelClient.instance;
+            if (client == null)
+            {
+                ScreenReader.Say(Loc.Get("duel_action_error"));
+                yield break;
+            }
+
+            int slotIndex = _zoneSlots[_navIndex];
+            int player = GetZonePlayer(_currentZone);
+            int locate = _zoneLocates[_navIndex];
+
+            // Extra Deck: OnTapLocator(player, 14, slot) doesn't produce a
+            // CardCommand popup (same family as TurnAtk/TurnDef/Reverse). Skip
+            // the 30-frame popup wait and fire SummonSp directly. Material
+            // selection happens downstream via EmotionalList.
+            if (locate == LocateExtra)
+            {
+                var worker = client.worker2d;
+                if (worker != null)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"Extra Deck: OnDoCardCommand(SummonSp) for ({player}, {locate}, {slotIndex})");
+                    ScreenReader.Say(Loc.Get("duel_cmd_special_summon"));
+                    DuelEventAnnouncer.ArmLocalSeatCapture();
+                    worker.OnDoCardCommand(player, locate, slotIndex,
+                        Il2CppYgomGame.Duel.Engine.CommandType.SummonSp);
+                }
+                yield break;
+            }
+
+            TapFieldCard(client, player, locate, slotIndex);
+            yield return ReadPopupAndPresentCommands();
+        }
+
+        /// <summary>
+        /// Shared coroutine body for the PvP popup-reading flow. After the
+        /// caller has fired its tap, waits for the CardCommand popup, scans
+        /// active buttons, and either auto-executes a single command or
+        /// enters the accessible action menu. Caller fires
+        /// ArmLocalSeatCapture before the final OnCommand so the seat is
+        /// captured from the resulting Cutin event.
+        /// </summary>
+        private IEnumerator ReadPopupAndPresentCommands()
+        {
+            var client = Il2CppYgomGame.Duel.DuelClient.instance;
+            if (client == null) yield break;
+
+            Il2CppYgomGame.Duel.CardCommand cardCom = null;
+            for (int attempt = 0; attempt < 30; attempt++)
+            {
+                yield return null;
+
+                var worker = client.worker2d;
+                cardCom = worker?.cardCom;
+                if (cardCom == null || cardCom.myGameObject == null
+                    || !cardCom.myGameObject.activeSelf)
+                {
+                    cardCom = null;
+                    continue;
+                }
+
+                var probe = cardCom.commands;
+                if (probe == null) continue;
+
+                bool anyActive = false;
+                for (int i = 0; i < probe.Length; i++)
+                {
+                    var b = probe[i];
+                    if (b != null && b.gameObject != null && b.gameObject.activeSelf)
+                    {
+                        anyActive = true;
+                        break;
+                    }
+                }
+                if (anyActive) break;
+                cardCom = null;
+            }
+
+            if (cardCom == null)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    "PvP popup: CardCommand never appeared with active buttons");
+
+                // Diagnostic for the "Enter on no-action card leaves the duel
+                // wedged" symptom: dump the input/selection state we *exit* in
+                // so we can see whether the failed tap left curInputType or
+                // HandCards.m_EnableSelect in a state that blocks subsequent
+                // P-key phase advance. If a difference shows up between
+                // before-tap and after-bail, the cleanup step is "restore
+                // those flags / fire a deselect tap" before yield break.
+                try
+                {
+                    var worker = client.worker2d;
+                    var hud = client.duelHUD;
+                    var handCards = hud?.nearHandCard;
+                    string inputType = "?";
+                    try { inputType = worker?.curInputType.ToString() ?? "?"; } catch { }
+                    string handState = "n/a";
+                    if (handCards != null)
+                    {
+                        try
+                        {
+                            handState = $"EnableControle={handCards.EnableControle}"
+                                + $" m_EnableSelect={handCards.m_EnableSelect}"
+                                + $" m_IsBusy={handCards.m_IsBusy}"
+                                + $" m_TouchMode={handCards.m_TouchMode}";
+                        }
+                        catch { }
+                    }
+                    bool pendingCardCom = _pendingCardCom != null;
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"PvP popup bail: curInputType={inputType} pendingCardCom={pendingCardCom} hand=[{handState}]");
+                }
+                catch { }
+
+                ScreenReader.Say(Loc.Get("duel_no_actions"));
+                yield break;
+            }
+
+            _commands.Clear();
+            var buttons = cardCom.commands;
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                var btn = buttons[i];
+                if (btn == null || btn.gameObject == null || !btn.gameObject.activeSelf)
+                    continue;
+                _commands.Add(new CommandInfo
+                {
+                    Type = btn.cmd,
+                    Label = Loc.Get(CommandLocKey(btn.cmd)),
+                });
+            }
+
+            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                $"PvP popup: {_commands.Count} active commands in CardCommand popup");
+
+            if (_commands.Count == 0)
+            {
+                try { cardCom.Close(); } catch { }
+                ScreenReader.Say(Loc.Get("duel_no_actions"));
+                yield break;
+            }
+
+            _pendingCardCom = cardCom;
+
+            if (_commands.Count == 1 && !NeedsTarget(_commands[0].Type))
+            {
+                // Single command: auto-execute via OnCommand
+                var btn = FindCardComButton(cardCom, _commands[0].Type);
+                if (btn != null)
+                {
+                    ScreenReader.Say(_commands[0].Label);
+                    // The resulting CutinSummon/CutinSet's p1 IS our server seat.
+                    DuelEventAnnouncer.ArmLocalSeatCapture();
+                    cardCom.OnCommand(btn);
+                }
+                _pendingCardCom = null;
+                _commands.Clear();
+            }
+            else
+            {
+                _inActionMenu = true;
+                _cmdIndex = 0;
+                AnnounceCommand();
+            }
+        }
+
+        /// <summary>Finds the active CardCommand button matching the given command type.</summary>
+        private static Il2CppYgomGame.Duel.DuelCommandButton FindCardComButton(
+            Il2CppYgomGame.Duel.CardCommand cardCom,
+            Il2CppYgomGame.Duel.Engine.CommandType cmd)
+        {
+            if (cardCom == null) return null;
+            var buttons = cardCom.commands;
+            if (buttons == null) return null;
+            for (int i = 0; i < buttons.Length; i++)
+            {
+                var btn = buttons[i];
+                if (btn == null || btn.gameObject == null || !btn.gameObject.activeSelf)
+                    continue;
+                if (btn.cmd == cmd) return btn;
+            }
+            return null;
+        }
+
+        /// <summary>Maps a CommandType to its localization key (shared with BuildCommandList).</summary>
+        private static string CommandLocKey(Il2CppYgomGame.Duel.Engine.CommandType cmd)
+        {
+            return cmd switch
+            {
+                Il2CppYgomGame.Duel.Engine.CommandType.Summon => "duel_cmd_summon",
+                Il2CppYgomGame.Duel.Engine.CommandType.SummonSp => "duel_cmd_special_summon",
+                Il2CppYgomGame.Duel.Engine.CommandType.SetMonst => "duel_cmd_set_monster",
+                Il2CppYgomGame.Duel.Engine.CommandType.Set => "duel_cmd_set",
+                Il2CppYgomGame.Duel.Engine.CommandType.Action => "duel_cmd_activate",
+                Il2CppYgomGame.Duel.Engine.CommandType.Pendulum => "duel_cmd_pendulum",
+                Il2CppYgomGame.Duel.Engine.CommandType.Attack => "duel_cmd_attack",
+                Il2CppYgomGame.Duel.Engine.CommandType.Reverse => "duel_cmd_flip_summon",
+                Il2CppYgomGame.Duel.Engine.CommandType.TurnAtk => "duel_cmd_to_attack",
+                Il2CppYgomGame.Duel.Engine.CommandType.TurnDef => "duel_cmd_to_defense",
+                Il2CppYgomGame.Duel.Engine.CommandType.Decide => "duel_cmd_select",
+                _ => "duel_cmd_unknown",
+            };
+        }
+
+        /// <summary>
         /// Coroutine: waits a few frames for the CardCommand popup to initialize,
         /// then finds the matching command button and clicks it via OnCommand.
         /// </summary>
@@ -3375,50 +3925,286 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Retry-escalation state for AdvancePhaseDirect. Static because the
+        /// caller is also static and the duel is a singleton flow. Used to
+        /// detect the "user pressed P twice from the same Main Phase with no
+        /// phase change in between" pattern and pivot the second attempt to
+        /// End Phase — handles Duel Links Speed Duel's first-player-turn-1
+        /// no-Battle-Phase rule without needing a reliable up-front "is BP
+        /// legal?" probe (which we don't have in PvP).
+        /// </summary>
+        private static float _lastPhaseAttemptTime;
+        private static Il2CppYgomGame.Duel.Engine.Phase _lastPhaseAttemptTarget
+            = Il2CppYgomGame.Duel.Engine.Phase.Null;
+        private static Il2CppYgomGame.Duel.Engine.Phase _lastPhaseAttemptFromPhase
+            = Il2CppYgomGame.Duel.Engine.Phase.Null;
+
+        /// <summary>
         /// Advances phase by calling game methods directly (bypasses UI/tutorial locks).
-        /// Tries EmotionalCommand.OnBattlePhase/OnEndPhase first, then DuelMenu.ChangePhase.
+        /// PvP order: PhaseButtonViewController.OnClickPhase() (knows its own
+        /// nextPhase and routes through the server). Single-player fallback:
+        /// EmotionalCommand.OnBattlePhase/OnEndPhase, then DuelMenu.ChangePhase.
         /// </summary>
         private static void AdvancePhaseDirect()
         {
             try
             {
-                uint currentPhaseVal = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCurrentPhase();
-                var currentPhase = (Il2CppYgomGame.Duel.Engine.Phase)(int)currentPhaseVal;
+                // DLL_DuelGetCurrentPhase isn't authoritative in PvP — the
+                // server runs the phase machine and the local engine's value
+                // stays stuck at Draw=0. DuelState tracks phase from
+                // PhaseChange events, which works in both modes.
+                var currentPhase = DuelState.CurrentPhase
+                    != Il2CppYgomGame.Duel.Engine.Phase.Null
+                    ? DuelState.CurrentPhase
+                    : (Il2CppYgomGame.Duel.Engine.Phase)
+                        (int)Il2CppYgomGame.Duel.Engine.DLL_DuelGetCurrentPhase();
+                uint currentPhaseVal = (uint)currentPhase;
 
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
                     $"AdvancePhaseDirect: currentPhase={currentPhase} ({currentPhaseVal})");
 
-                // Try EmotionalCommand first — has direct OnBattlePhase/OnEndPhase
-                var emCmd = UnityEngine.Object.FindObjectOfType<
-                    Il2CppYgomGame.Duel.EmotionalCommand>();
-                if (emCmd != null)
+                // Diagnostic: capture input/selection state at P-press time.
+                // If the user just bailed out of a "no actions available" tap
+                // and the duel is wedged, we expect to see curInputType != the
+                // expected MainPhase / BattlePhase value here, or HandCards
+                // still in a selected state.
+                try
                 {
-                    if (currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Main1
-                        || currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Main2)
+                    var client = Il2CppYgomGame.Duel.DuelClient.instance;
+                    var worker = client?.worker2d;
+                    var handCards = client?.duelHUD?.nearHandCard;
+                    string inputType = "?";
+                    try { inputType = worker?.curInputType.ToString() ?? "?"; } catch { }
+                    string handState = "n/a";
+                    if (handCards != null)
                     {
-                        DebugLogger.Log(LogCategory.Game, "FieldNav",
-                            "Calling EmotionalCommand.OnBattlePhase()");
-                        emCmd.OnBattlePhase();
-                        ScreenReader.Say(Loc.Get("duel_advancing_phase",
-                            DuelEventAnnouncer.GetPhaseName(
-                                Il2CppYgomGame.Duel.Engine.Phase.Battle)));
-                        return;
+                        try
+                        {
+                            handState = $"EnableControle={handCards.EnableControle}"
+                                + $" m_EnableSelect={handCards.m_EnableSelect}"
+                                + $" m_IsBusy={handCards.m_IsBusy}"
+                                + $" m_TouchMode={handCards.m_TouchMode}";
+                        }
+                        catch { }
                     }
-                    if (currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Battle)
-                    {
-                        DebugLogger.Log(LogCategory.Game, "FieldNav",
-                            "Calling EmotionalCommand.OnEndPhase()");
-                        emCmd.OnEndPhase();
-                        ScreenReader.Say(Loc.Get("duel_advancing_phase",
-                            DuelEventAnnouncer.GetPhaseName(
-                                Il2CppYgomGame.Duel.Engine.Phase.End)));
-                        return;
-                    }
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"AdvancePhaseDirect state: curInputType={inputType} hand=[{handState}]");
                 }
-                else
+                catch { }
+
+                // First try: write a phase-move request to the engine's
+                // command queue. In single-player this works whenever the
+                // phase is movable. In PvP the engine forwards the request
+                // to the server, which then sends back a PhaseChange event.
+                // DLL_DuelComGetMovablePhase returns 0 in PvP but the move
+                // call itself can still succeed — the bitmask check in
+                // AdvancePhase() is too conservative for PvP.
+                Il2CppYgomGame.Duel.Engine.Phase target
+                    = Il2CppYgomGame.Duel.Engine.Phase.Null;
+                if (currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Main1
+                    || currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Main2)
+                {
+                    target = Il2CppYgomGame.Duel.Engine.Phase.Battle;
+                }
+                else if (currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Battle)
+                {
+                    target = Il2CppYgomGame.Duel.Engine.Phase.End;
+                }
+
+                // Retry-escalation for the first-player-turn-1 lockup:
+                // dirBpButton.activeInHierarchy is unreliable as a "BP legal?"
+                // probe because the button lives inside a collapsed phase
+                // menu — it's almost always inactive, including during normal
+                // turns when BP IS legal. So we can't tell up-front whether
+                // the server will accept Battle.
+                //
+                // Instead: if the previous P press also asked for Battle from
+                // the SAME currentPhase and the phase still hasn't moved,
+                // escalate this attempt to End Phase. Effect: turn-1 first-
+                // player presses P once, hears "Moving to Battle Phase" but
+                // nothing happens, presses P again, hears "Moving to End
+                // Phase" and the server accepts. Normal turns transition on
+                // the first press so the escalation never triggers.
+                if (target == Il2CppYgomGame.Duel.Engine.Phase.Battle
+                    && _lastPhaseAttemptTarget == Il2CppYgomGame.Duel.Engine.Phase.Battle
+                    && _lastPhaseAttemptFromPhase == currentPhase
+                    && (UnityEngine.Time.unscaledTime - _lastPhaseAttemptTime) < 10f)
                 {
                     DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        "EmotionalCommand not found");
+                        "  Previous Battle Phase attempt didn't advance — " +
+                        "escalating retry to End Phase");
+                    target = Il2CppYgomGame.Duel.Engine.Phase.End;
+                }
+                _lastPhaseAttemptTime = UnityEngine.Time.unscaledTime;
+                _lastPhaseAttemptTarget = target;
+                _lastPhaseAttemptFromPhase = currentPhase;
+
+                if (target != Il2CppYgomGame.Duel.Engine.Phase.Null)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"  Trying DLL_DuelComMovePhase({target} = {(int)target})");
+                    try
+                    {
+                        Il2CppYgomGame.Duel.Engine.DLL_DuelComMovePhase((int)target);
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            $"  DLL_DuelComMovePhase threw: {ex.Message}");
+                    }
+
+                    // Scene scan: log every ACTIVE UI.Button whose name or
+                    // ancestor name hints at phase control. This is the
+                    // user's "what would a mouse click do?" lookup — once
+                    // we identify the right Button by name, we can target
+                    // it directly via onClick.Invoke().
+                    DumpPhaseRelatedButtons();
+                }
+
+                // PvP-aware path: the game's own PhaseButtonViewController knows
+                // its nextPhase and OnClickPhase() routes through the server.
+                // DLL_DuelGetCurrentPhase isn't authoritative in PvP (server runs
+                // the phase machine), so prefer this over heuristics on the
+                // cached engine phase.
+                var phaseBtn = UnityEngine.Object.FindObjectOfType<
+                    Il2CppYgomGame.Duel.PhaseButtonViewController>();
+                if (phaseBtn != null)
+                {
+                    var next = phaseBtn.nextPhase;
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"Calling PhaseButtonViewController.OnClickPhase() (nextPhase={next})");
+                    phaseBtn.OnClickPhase();
+                    ScreenReader.Say(Loc.Get("duel_advancing_phase",
+                        DuelEventAnnouncer.GetPhaseName(next)));
+                    return;
+                }
+
+                // EmotionalCommand owns the in-game phase buttons. The
+                // direct method calls (OnBattlePhase / OnEndPhase) are no-ops
+                // in PvP — the server doesn't see them as a phase request.
+                // The actual UI button click fires the right server message,
+                // so we invoke onClick on the Button. There can be multiple
+                // EmotionalCommand instances (one per player or per
+                // perspective); iterate and try each, ignoring the
+                // interactable flag (onClick.Invoke bypasses it anyway).
+                //
+                // Derive isBattleAdvance / isEndAdvance from `target` (post-
+                // pivot) rather than currentPhase so that when we've decided
+                // to skip BP and request End, the EmCmd loop targets
+                // dirEpButton accordingly.
+                bool isBattleAdvance =
+                    target == Il2CppYgomGame.Duel.Engine.Phase.Battle;
+                bool isEndAdvance =
+                    target == Il2CppYgomGame.Duel.Engine.Phase.End;
+
+                if (isBattleAdvance || isEndAdvance)
+                {
+                    var targetPhase = isBattleAdvance
+                        ? Il2CppYgomGame.Duel.Engine.Phase.Battle
+                        : Il2CppYgomGame.Duel.Engine.Phase.End;
+                    string btnName = isBattleAdvance ? "dirBpButton" : "dirEpButton";
+
+                    var allEm = UnityEngine.Object.FindObjectsOfType<
+                        Il2CppYgomGame.Duel.EmotionalCommand>(includeInactive: true);
+                    int emCount = allEm?.Length ?? 0;
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"AdvancePhaseDirect: found {emCount} EmotionalCommand instance(s)");
+
+                    bool fired = false;
+                    if (allEm != null)
+                    {
+                        for (int i = 0; i < allEm.Length; i++)
+                        {
+                            var em = allEm[i];
+                            if (em == null) continue;
+
+                            UnityEngine.UI.Button btn = null;
+                            try
+                            {
+                                btn = isBattleAdvance ? em.dirBpButton : em.dirEpButton;
+                            }
+                            catch { }
+                            if (btn == null) continue;
+
+                            bool active = false, interactable = false;
+                            try { active = btn.gameObject != null
+                                && btn.gameObject.activeInHierarchy; } catch { }
+                            try { interactable = btn.interactable; } catch { }
+
+                            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                $"  EmCmd[{i}].{btnName}: active={active} interactable={interactable} " +
+                                $"hasOnClick={btn.onClick != null}");
+
+                            // Prefer active+interactable, but if none such found
+                            // after the loop we fall back to firing on the first
+                            // available below.
+                            if (active && interactable && btn.onClick != null)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                    $"  -> Firing onClick.Invoke() on EmCmd[{i}].{btnName}");
+                                try { btn.onClick.Invoke(); fired = true; break; }
+                                catch (Exception ex)
+                                {
+                                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                        $"  onClick.Invoke threw: {ex.Message}");
+                                }
+                            }
+                        }
+
+                        // No active+interactable button found — try invoking
+                        // any non-null one anyway (onClick.Invoke bypasses
+                        // interactable). The button being inactive usually
+                        // means the wrong EmCmd instance, but the listener
+                        // might still route correctly. Single-player works
+                        // through this path even when the button is inactive.
+                        if (!fired)
+                        {
+                            for (int i = 0; i < allEm.Length && !fired; i++)
+                            {
+                                var em = allEm[i];
+                                if (em == null) continue;
+                                UnityEngine.UI.Button btn = null;
+                                try { btn = isBattleAdvance ? em.dirBpButton : em.dirEpButton; }
+                                catch { }
+                                if (btn == null || btn.onClick == null) continue;
+                                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                    $"  Fallback: firing onClick.Invoke() on inactive EmCmd[{i}].{btnName}");
+                                try { btn.onClick.Invoke(); fired = true; }
+                                catch (Exception ex)
+                                {
+                                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                        $"  onClick.Invoke threw: {ex.Message}");
+                                }
+                            }
+                        }
+
+                        // Last resort: direct method call on the first instance
+                        if (!fired && allEm.Length > 0 && allEm[0] != null)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                "  Last resort: direct EmotionalCommand method call");
+                            try
+                            {
+                                if (isBattleAdvance) allEm[0].OnBattlePhase();
+                                else allEm[0].OnEndPhase();
+                                fired = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                    $"  Direct method threw: {ex.Message}");
+                            }
+                        }
+                    }
+
+                    if (fired)
+                    {
+                        ScreenReader.Say(Loc.Get("duel_advancing_phase",
+                            DuelEventAnnouncer.GetPhaseName(targetPhase)));
+                        return;
+                    }
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        "AdvancePhaseDirect: no EmotionalCommand button worked");
                 }
 
                 // Fallback: DuelMenu.ChangePhase directly
@@ -3448,6 +4234,74 @@ namespace DuelLinksAccess
                     $"AdvancePhaseDirect error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("duel_phase_error"));
             }
+        }
+
+        /// <summary>
+        /// Diagnostic: log every active UI.Button in the scene whose name or
+        /// any ancestor's name hints at phase control. The user's "what
+        /// would a mouse click do?" lookup — once we see what's actually in
+        /// the scene during BP/MainPhase, we can target the right Button
+        /// by name and invoke its onClick directly.
+        /// </summary>
+        private static void DumpPhaseRelatedButtons()
+        {
+            try
+            {
+                var buttons = UnityEngine.Object.FindObjectsOfType<UnityEngine.UI.Button>();
+                int hits = 0;
+                for (int i = 0; i < buttons.Length; i++)
+                {
+                    var btn = buttons[i];
+                    if (btn == null) continue;
+                    var go = btn.gameObject;
+                    if (go == null) continue;
+
+                    // Walk up the parent chain, collect path; check for hints
+                    string path = go.name;
+                    bool hint = NameHintsPhase(go.name);
+                    var t = go.transform?.parent;
+                    int depth = 0;
+                    while (t != null && depth < 6)
+                    {
+                        path = t.name + "/" + path;
+                        if (NameHintsPhase(t.name)) hint = true;
+                        t = t.parent;
+                        depth++;
+                    }
+
+                    if (!hint) continue;
+
+                    bool active = false, interactable = false;
+                    int listenerCount = 0;
+                    try { active = go.activeInHierarchy; } catch { }
+                    try { interactable = btn.interactable; } catch { }
+                    try { listenerCount = btn.onClick?.GetPersistentEventCount() ?? 0; } catch { }
+
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"  PhaseBtn[{hits}]: path='{path}' active={active} " +
+                        $"interactable={interactable} persistentListeners={listenerCount}");
+                    hits++;
+                }
+
+                if (hits == 0)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        "  No phase-hinted UI.Button found in scene.");
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"DumpPhaseRelatedButtons error: {ex.Message}");
+            }
+        }
+
+        private static bool NameHintsPhase(string n)
+        {
+            if (string.IsNullOrEmpty(n)) return false;
+            string l = n.ToLowerInvariant();
+            return l.Contains("phase") || l.Contains("bp") || l.Contains("ep")
+                || l.Contains("battle") || l.Contains("end");
         }
 
         #endregion
@@ -3495,8 +4349,13 @@ namespace DuelLinksAccess
             if (IsFieldSlotZone(zone))
             {
                 // Grid zone: use explicit locate arrays, include ALL columns
-                int[] locates = (zone == Zone.MyMonster || zone == Zone.OppMonster)
-                    ? MonsterLocates : SpellLocates;
+                int[] locates = zone switch
+                {
+                    Zone.MyMonster or Zone.OppMonster => MonsterLocates,
+                    Zone.MySpell or Zone.OppSpell => SpellLocates,
+                    Zone.ExtraMonster => EMZLocates,
+                    _ => MonsterLocates
+                };
                 for (int col = 0; col < locates.Length; col++)
                 {
                     _zoneSlots.Add(0);   // field slots always use index 0
@@ -3507,23 +4366,20 @@ namespace DuelLinksAccess
             {
                 // Field spell: single locate, only add if occupied
                 int locate = GetSideZoneLocate(zone);
-                try
+                if (DuelState.GetFieldCard(player, locate, 0) != null)
                 {
-                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                        player, locate, 0);
-                    if (uid > 0)
-                    {
-                        _zoneSlots.Add(0);
-                        _zoneLocates.Add(locate);
-                    }
+                    _zoneSlots.Add(0);
+                    _zoneLocates.Add(locate);
                 }
-                catch { /* empty */ }
             }
             else
             {
-                // Stack zone (hand, grave, banished, extra deck)
+                // Stack zone (hand, grave, banished, extra deck) — DuelState
+                // routes hand counts through the visual layer (HandCardManager)
+                // and other zones through the engine with a visual-layer
+                // fallback, so this works uniformly in single-player and PvP.
                 int locate = GetSideZoneLocate(zone);
-                int count = GetCardCount(player, locate);
+                int count = DuelState.GetCardCount(player, locate);
                 for (int i = 0; i < count; i++)
                 {
                     _zoneSlots.Add(i);
@@ -3536,50 +4392,15 @@ namespace DuelLinksAccess
                 (_zoneLocates.Count > 0 ? $" at locates=[{string.Join(",", _zoneLocates)}]" : ""));
         }
 
-        /// <summary>
-        /// Counts monsters and spells on field. The Extra Monster Zone (loc=6)
-        /// is folded into the monster count so Synchro/Xyz/Link/Fusion summons
-        /// still appear in the field summary even though it isn't a navigable
-        /// column in the monster row.
-        /// </summary>
-        private static void CountFieldCards(int player, out int monsters, out int spells)
-        {
-            monsters = 0;
-            spells = 0;
-            foreach (int loc in MonsterLocates)
-            {
-                try
-                {
-                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                        player, loc, 0);
-                    if (uid > 0) monsters++;
-                }
-                catch { /* skip */ }
-            }
-            try
-            {
-                int emzUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                    player, LocateExtraMonster, 0);
-                if (emzUid > 0) monsters++;
-            }
-            catch { /* skip */ }
-            foreach (int loc in SpellLocates)
-            {
-                try
-                {
-                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                        player, loc, 0);
-                    if (uid > 0) spells++;
-                }
-                catch { /* skip */ }
-            }
-        }
+        // CountFieldCards moved to DuelState — uses visual layer for
+        // uniform single-player / PvP behavior.
 
         /// <summary>Whether this zone is a grid zone with fixed field slot columns.</summary>
         private static bool IsFieldSlotZone(Zone zone)
         {
             return zone == Zone.MyMonster || zone == Zone.OppMonster
-                || zone == Zone.MySpell || zone == Zone.OppSpell;
+                || zone == Zone.MySpell || zone == Zone.OppSpell
+                || zone == Zone.ExtraMonster;
         }
 
         /// <summary>Whether this zone is a single-card field slot (field spell).</summary>
@@ -3588,12 +4409,33 @@ namespace DuelLinksAccess
             return zone == Zone.MyFieldSpell || zone == Zone.OppFieldSpell;
         }
 
+        /// <summary>
+        /// Resolves the player whose card occupies the given EMZ slot. EMZ is
+        /// shared — the slot belongs to whichever player summoned there. Falls
+        /// back to PlayerMe when the slot is empty (so Enter on empty EMZ tries
+        /// the user's command path and produces a benign "no actions" instead
+        /// of mis-routing to the opponent).
+        /// </summary>
+        private static int GetEMZOwner(int locate)
+        {
+            try
+            {
+                if (DuelState.GetFieldCard(PlayerMe, locate, 0) != null) return PlayerMe;
+                if (DuelState.GetFieldCard(PlayerOpp, locate, 0) != null) return PlayerOpp;
+            }
+            catch { /* fall through */ }
+            return PlayerMe;
+        }
+
         private static int GetZonePlayer(Zone zone)
         {
             return zone switch
             {
                 Zone.OppMonster or Zone.OppSpell or Zone.OppFieldSpell
                     or Zone.OppGrave or Zone.OppBanished or Zone.OppExtra => PlayerOpp,
+                // ExtraMonster is shared; default to PlayerMe at the row level.
+                // Per-slot ownership is resolved via GetEMZOwner(locate) in
+                // ReadCurrentCard and anywhere else slot owner matters.
                 _ => PlayerMe
             };
         }
@@ -3629,6 +4471,7 @@ namespace DuelLinksAccess
                 Zone.OppFieldSpell => Loc.Get("duel_zone_opp_field_spell"),
                 Zone.MyBanished => Loc.Get("duel_zone_my_banished"),
                 Zone.OppBanished => Loc.Get("duel_zone_opp_banished"),
+                Zone.ExtraMonster => Loc.Get("duel_zone_emz"),
                 _ => "Unknown"
             };
         }
@@ -3637,14 +4480,11 @@ namespace DuelLinksAccess
 
         #region Card Helpers
 
-        private static int GetCardCount(int player, int locate)
-        {
-            try
-            {
-                return Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, locate);
-            }
-            catch { return 0; }
-        }
+        // Field-card lookup, hand-card access, generic GetCardCount, and
+        // per-zone resolvers all moved to DuelState — single source of truth
+        // backed by the visual layer (worker3d.goManager.cardRoots,
+        // HandCardManager) plus event-tracked counters. This keeps the
+        // navigator focused on input/UI logic.
 
         private static string ResolveCardName(uint cardDbId)
         {

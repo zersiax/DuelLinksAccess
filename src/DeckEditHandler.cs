@@ -361,8 +361,8 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // C — verbose card reading
-            if (InputManager.TryConsumeKeyDown(KeyCode.C))
+            // V — verbose card reading (matches DuelFieldNavigator)
+            if (InputManager.TryConsumeKeyDown(KeyCode.V))
             {
                 AnnounceCurrentCard(verbose: true);
                 return;
@@ -799,7 +799,12 @@ namespace DuelLinksAccess
             int total = list.Count;
 
             string cardText = verbose ? FormatCardVerbose(mrk) : FormatCardCompact(mrk);
-            string announcement = Loc.Get("deck_card_position", pos, total, cardText);
+            // Verbose (V key) is a re-read of an already-navigated card, so
+            // the "X of Y" position prefix is redundant — drop it. Compact
+            // navigation reads keep it for orientation.
+            string announcement = verbose
+                ? cardText
+                : Loc.Get("deck_card_position", pos, total, cardText);
 
             if (queued)
                 ScreenReader.SayQueued(announcement);
