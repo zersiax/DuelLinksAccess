@@ -570,7 +570,12 @@ namespace DuelLinksAccess
                 // but only populates dlgText when a real yes/no prompt is showing.
                 // Treat empty text as inactive to avoid intercepting other dialogs' keys.
                 string text = "";
-                try { text = dlg.dlgText?.text ?? ""; } catch { }
+                try
+                {
+                    text = SpeechTextFormatter.StripRichText(
+                        dlg.dlgText?.text ?? "");
+                }
+                catch { }
 
                 if (string.IsNullOrEmpty(text))
                 {

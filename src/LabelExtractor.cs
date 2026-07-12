@@ -132,8 +132,7 @@ namespace DuelLinksAccess
         /// </summary>
         public static string StripRichText(string text)
         {
-            if (string.IsNullOrEmpty(text)) return text;
-            return RichTextRegex.Replace(text, "").Trim();
+            return SpeechTextFormatter.StripRichText(text);
         }
 
         /// <summary>
@@ -205,7 +204,6 @@ namespace DuelLinksAccess
 
         #region Private Fields
 
-        private static readonly Regex RichTextRegex = new(@"<[^>]+>", RegexOptions.Compiled);
         private static readonly Regex CamelCaseRegex = new(@"(?<=[a-z])(?=[A-Z])", RegexOptions.Compiled);
         private static readonly Regex AcronymRegex = new(@"(?<=[A-Z])(?=[A-Z][a-z])", RegexOptions.Compiled);
 

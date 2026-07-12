@@ -821,7 +821,7 @@ namespace DuelLinksAccess
                 fragments[i] = ResolveFragment(types[i], data, content);
             }
 
-            // Second pass: compose text, substituting %s placeholders in AddString
+            // Second pass: compose text, substituting placeholders in AddString
             // with the next Ins* fragment (InsCard, InsNum, InsType, InsAttr, InsString)
             var sb = new System.Text.StringBuilder();
             int nextIns = 0; // index of next unconsumed Ins* fragment
@@ -835,11 +835,10 @@ namespace DuelLinksAccess
                         // Strip color/formatting tags like @3, @0
                         text = System.Text.RegularExpressions.Regex.Replace(
                             text, @"@\d", "");
-                        // Substitute %s placeholders with Ins* fragments
-                        while (text.Contains("%s"))
+                        text = SpeechTextFormatter.SubstituteDialogPlaceholders(
+                            text, () =>
                         {
                             string replacement = "";
-                            // Find next Ins* fragment
                             while (nextIns < count)
                             {
                                 if (IsInsertFragment(types[nextIns]))
@@ -850,10 +849,8 @@ namespace DuelLinksAccess
                                 }
                                 nextIns++;
                             }
-                            int pos = text.IndexOf("%s");
-                            text = text.Substring(0, pos) + replacement
-                                + text.Substring(pos + 2);
-                        }
+                            return replacement;
+                        });
                         sb.Append(text);
                         break;
 
@@ -872,7 +869,8 @@ namespace DuelLinksAccess
                 }
             }
 
-            string result = sb.ToString().Trim();
+            string result = SpeechTextFormatter.StripRichText(
+                sb.ToString());
             // Collapse multiple spaces
             result = System.Text.RegularExpressions.Regex.Replace(result, @"  +", " ");
             if (string.IsNullOrEmpty(result)) return null;
