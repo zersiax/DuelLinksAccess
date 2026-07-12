@@ -7,7 +7,7 @@ Update the version in both locations:
 - `DuelLinksAccess.csproj` in the `Version` property
 - `src/Main.cs` in the `MelonInfo` attribute
 
-`Package-Release.ps1` rejects a version that does not match `MelonInfo`.
+`Package-Release.ps1` rejects a version that does not match either source location.
 
 ## Checks
 

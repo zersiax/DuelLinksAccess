@@ -89,15 +89,40 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.md") -Destin
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "release\README.txt") -Destination $StageRoot
 
 $LogPath = Join-Path $GamePath "MelonLoader\Latest.log"
-$LogContent = if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
-    Get-Content -LiteralPath $LogPath -Raw
-} else { "" }
-function Read-BuildValue {
-    param([string]$Pattern)
-    $Match = [regex]::Match(
-        $LogContent, $Pattern, [Text.RegularExpressions.RegexOptions]::Multiline)
-    if ($Match.Success) { return $Match.Groups[1].Value.Trim() }
-    return "unknown"
+if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
+    throw "MelonLoader log not found at '$LogPath'; release provenance is incomplete"
+}
+$LogContent = Get-Content -LiteralPath $LogPath -Raw
+$GameVersionMatch = [regex]::Match(
+    $LogContent,
+    '^.*?Game Version:\s*(.+)$',
+    [Text.RegularExpressions.RegexOptions]::Multiline)
+if (-not $GameVersionMatch.Success) {
+    throw "Could not read Duel Links version from '$LogPath'"
+}
+
+$MelonLoaderDll = Join-Path $GamePath "MelonLoader\net6\MelonLoader.dll"
+$HarmonyDll = Join-Path $GamePath "MelonLoader\net6\0Harmony.dll"
+$InteropDll = Join-Path $GamePath "MelonLoader\net6\Il2CppInterop.Runtime.dll"
+$UnityPlayerDll = Join-Path $GamePath "UnityPlayer.dll"
+$AssemblyDirectory = Join-Path $GamePath "MelonLoader\Il2CppAssemblies"
+$BuildInputs = @(
+    $MelonLoaderDll
+    $HarmonyDll
+    $InteropDll
+    (Join-Path $AssemblyDirectory "Il2Cppmscorlib.dll")
+    (Join-Path $AssemblyDirectory "UnityEngine.dll")
+    (Join-Path $AssemblyDirectory "UnityEngine.CoreModule.dll")
+    (Join-Path $AssemblyDirectory "UnityEngine.InputLegacyModule.dll")
+    (Join-Path $AssemblyDirectory "UnityEngine.UI.dll")
+    (Join-Path $AssemblyDirectory "UnityEngine.IMGUIModule.dll")
+    (Join-Path $AssemblyDirectory "UnityEngine.UIModule.dll")
+    (Join-Path $AssemblyDirectory "Assembly-CSharp.dll")
+)
+foreach ($InputPath in $BuildInputs) {
+    if (-not (Test-Path -LiteralPath $InputPath -PathType Leaf)) {
+        throw "Build input not found at '$InputPath'"
+    }
 }
 
 $Commit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
@@ -106,12 +131,19 @@ $DllHash = (Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash
 $BuildInfo = @(
     "DuelLinksAccess version: $Version"
     "Git commit: $Commit"
-    "Duel Links version: $(Read-BuildValue '^.*?Game Version:\s*(.+)$')"
-    "Unity version: $(Read-BuildValue '^.*?Unity Version:\s*(.+)$')"
-    "MelonLoader version: $(Read-BuildValue 'MelonLoader\s+v([\w.-]+)')"
-    "Il2CppInterop version: $(Read-BuildValue 'Using Il2CppInterop Version\s*=\s*(.+)$')"
+    "Duel Links version: $($GameVersionMatch.Groups[1].Value.Trim())"
+    "Unity runtime: $([Diagnostics.FileVersionInfo]::GetVersionInfo($UnityPlayerDll).ProductVersion)"
+    "MelonLoader: $([Diagnostics.FileVersionInfo]::GetVersionInfo($MelonLoaderDll).ProductVersion)"
+    "HarmonyX: $([Diagnostics.FileVersionInfo]::GetVersionInfo($HarmonyDll).ProductVersion)"
+    "Il2CppInterop: $([Diagnostics.FileVersionInfo]::GetVersionInfo($InteropDll).ProductVersion)"
     "DuelLinksAccess.dll SHA-256: $DllHash"
+    "Build input SHA-256:"
 )
+foreach ($InputPath in $BuildInputs) {
+    $RelativeInput = [IO.Path]::GetRelativePath($GamePath, $InputPath).Replace('\', '/')
+    $InputHash = (Get-FileHash -LiteralPath $InputPath -Algorithm SHA256).Hash
+    $BuildInfo += "  ${RelativeInput}: $InputHash"
+}
 Set-Content -LiteralPath (Join-Path $StageRoot "BUILD-INFO.txt") `
     -Value $BuildInfo -Encoding ascii
 
