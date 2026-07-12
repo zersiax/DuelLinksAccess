@@ -838,59 +838,24 @@ namespace DuelLinksAccess
                 fragments[i] = ResolveFragment(types[i], data, content);
             }
 
-            // Second pass: compose text, substituting placeholders in AddString
-            // with the next Ins* fragment (InsCard, InsNum, InsType, InsAttr, InsString)
-            var sb = new System.Text.StringBuilder();
-            int nextIns = 0; // index of next unconsumed Ins* fragment
-
+            var mix = new DialogMixFragment[count];
             for (int i = 0; i < count; i++)
             {
-                switch (types[i])
+                DialogMixFragmentKind kind = types[i] switch
                 {
-                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddString:
-                        string text = fragments[i] ?? "";
-                        // Strip color/formatting tags like @3, @0
-                        text = System.Text.RegularExpressions.Regex.Replace(
-                            text, @"@\d", "");
-                        text = SpeechTextFormatter.SubstituteDialogPlaceholders(
-                            text, () =>
-                        {
-                            string replacement = "";
-                            while (nextIns < count)
-                            {
-                                if (IsInsertFragment(types[nextIns]))
-                                {
-                                    replacement = fragments[nextIns] ?? "";
-                                    nextIns++;
-                                    break;
-                                }
-                                nextIns++;
-                            }
-                            return replacement;
-                        });
-                        sb.Append(text);
-                        break;
-
-                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddCr:
-                        sb.Append(' ');
-                        break;
-
-                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.Null:
-                        break;
-
-                    default:
-                        // Ins* fragments not consumed by %s — append directly
-                        if (i >= nextIns && !string.IsNullOrEmpty(fragments[i]))
-                            sb.Append(fragments[i]);
-                        break;
-                }
+                    Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddString
+                        => DialogMixFragmentKind.Text,
+                    Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddCr
+                        => DialogMixFragmentKind.Break,
+                    _ when IsInsertFragment(types[i])
+                        => DialogMixFragmentKind.Insert,
+                    _ => DialogMixFragmentKind.Ignore,
+                };
+                mix[i] = new DialogMixFragment(kind, fragments[i]);
             }
 
-            string result = SpeechTextFormatter.StripRichText(
-                sb.ToString());
-            // Collapse multiple spaces
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"  +", " ");
-            if (string.IsNullOrEmpty(result)) return null;
+            string result = DialogMixComposer.Compose(mix);
+            if (result == null) return null;
 
             DebugLogger.Log(LogCategory.Game, "DuelDialog",
                 $"Composed: {result}");
