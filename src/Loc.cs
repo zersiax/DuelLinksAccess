@@ -425,6 +425,8 @@ namespace DuelLinksAccess
             _english["deck_saved"] = "Deck saved";
             _english["deck_operation_error"] = "Operation failed";
             _english["deck_level"] = "Level";
+            _english["deck_rank"] = "Rank";
+            _english["deck_link"] = "Link";
             _english["deck_skill"] = "Skill: {0}. Press K to change.";
             _english["deck_no_skill"] = "No skill set. Press K to select.";
             _english["deck_use_deck_pressed"] = "Setting as your active deck";

@@ -1265,10 +1265,16 @@ namespace DuelLinksAccess
                     return null;
 
                 int level = content.GetLevel(mrk);
+                int rank = content.GetRank(mrk);
+                int link = content.GetLinkNum(mrk);
                 int atk = content.GetAtk(mrk);
                 int def = content.GetDef2(mrk);
 
-                return $"Level {level}, " + Loc.Get("duel_card_stats", atk, def);
+                string progression = CardProgressionFormatter.Format(
+                    level, rank, link);
+                string combatStats = CardProgressionFormatter
+                    .FormatCombatStats(atk, def, link);
+                return $"{progression}, {combatStats}";
             }
             catch (Exception ex)
             {

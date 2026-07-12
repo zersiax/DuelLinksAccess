@@ -30,15 +30,21 @@ namespace DuelLinksAccess
                     var attr = content.GetAttr(mrk);
                     var type = content.GetType(mrk);
                     int level = content.GetLevel(mrk);
+                    int rank = content.GetRank(mrk);
+                    int link = content.GetLinkNum(mrk);
                     int atk = content.GetAtk(mrk);
                     int def = content.GetDef2(mrk);
 
                     string attrText = content.GetAttributeText(attr);
                     string typeText = content.GetTypeText(type);
                     string kindText = content.GetKindText(kind);
-                    string lvLabel = GetLevelLabel(mrk);
+                    string progression = CardProgressionFormatter.Format(
+                        level, rank, link);
+                    string combatStats = CardProgressionFormatter
+                        .FormatCombatStats(atk, def, link);
 
-                    return $"{name}, {attrText} {typeText} {kindText}, {lvLabel} {level}, ATK {atk} DEF {def}";
+                    return $"{name}, {attrText} {typeText} {kindText}, "
+                        + $"{progression}, {combatStats}";
                 }
                 else
                 {
@@ -111,13 +117,5 @@ namespace DuelLinksAccess
                 && kind != Content.Kind.Trap;
         }
 
-        /// <summary>
-        /// Gets the level/rank label for a card.
-        /// </summary>
-        private static string GetLevelLabel(int mrk)
-        {
-            // Default to "Level" which covers most cards in Duel Links
-            return Loc.Get("deck_level");
-        }
     }
 }
