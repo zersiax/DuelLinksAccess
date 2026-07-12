@@ -543,6 +543,11 @@ namespace DuelLinksAccess
                     place?.isLoaded == true,
                     cards != null)) return false;
 
+                // A loaded stack is authoritative for slot existence, but the
+                // opponent's Extra Deck identities remain hidden.
+                if (!ExtraDeckSourcePolicy.CanRevealIdentity(
+                    player, MyPlayerNum())) return true;
+
                 if (slot < cards.Count && cards[slot] != null)
                     card = MakeSnapshot(cards[slot], isFaceUp: true);
                 return true;

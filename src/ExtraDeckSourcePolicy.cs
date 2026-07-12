@@ -9,5 +9,12 @@ namespace DuelLinksAccess
         {
             return placeAvailable && placeLoaded && cardsAvailable;
         }
+
+        public static bool CanRevealIdentity(
+            int requestedPlayer, int localPlayer)
+        {
+            return (localPlayer == 0 || localPlayer == 1)
+                && requestedPlayer == localPlayer;
+        }
     }
 }
