@@ -12,7 +12,7 @@ The project targets `net6.0` because that is the MelonLoader runtime used by the
 
 ## Portable tests
 
-Tests source-link pure C# policies and do not require game files:
+Tests target .NET 8, source-link pure C# policies, and do not require game files:
 
 ```powershell
 dotnet test tests\DuelLinksAccess.Tests\DuelLinksAccess.Tests.csproj
