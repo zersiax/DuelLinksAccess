@@ -23,32 +23,39 @@ namespace DuelLinksAccess
         /// Applies all Harmony patches. Call once when the game is ready.
         /// Safe to call multiple times — only applies once.
         /// </summary>
-        public static void Apply(HarmonyLib.Harmony harmony)
+        public static bool Apply(HarmonyLib.Harmony harmony)
         {
-            if (_applied) return;
+            if (_applied) return true;
 
             try
             {
-                PatchViewControllerManagerPush(harmony);
-                PatchViewControllerManagerPop(harmony);
-                PatchDuelClientRunEffect(harmony);
+                bool push = PatchViewControllerManagerPush(harmony);
+                bool pop = PatchViewControllerManagerPop(harmony);
+                bool runEffect = PatchDuelClientRunEffect(harmony);
                 PatchUserTutorialDialog(harmony);
                 PatchTutorialManagerFetch(harmony);
                 PatchTutorialManagerNotificator(harmony);
 
-                _applied = true;
-                MelonLogger.Msg("Harmony patches applied successfully");
+                _applied = HarmonyPatchPolicy.RequiredPatchesApplied(
+                    push, pop, runEffect);
+                if (_applied)
+                    MelonLogger.Msg("Harmony patches applied successfully");
+                else
+                    MelonLogger.Warning(
+                        "Required Harmony patches unavailable; will retry");
+                return _applied;
             }
             catch (Exception ex)
             {
                 MelonLogger.Error($"Failed to apply Harmony patches: {ex.Message}");
                 MelonLogger.Error(ex.StackTrace);
+                return false;
             }
         }
 
         #region Patch Registration
 
-        private static void PatchViewControllerManagerPush(HarmonyLib.Harmony harmony)
+        private static bool PatchViewControllerManagerPush(HarmonyLib.Harmony harmony)
         {
             var targetType = typeof(Il2CppYgomSystem.UI.ViewControllerManager);
             var targetMethod = AccessTools.Method(targetType, "PushChildViewController",
@@ -57,8 +64,10 @@ namespace DuelLinksAccess
             if (targetMethod == null)
             {
                 MelonLogger.Warning("Could not find ViewControllerManager.PushChildViewController(string)");
-                return;
+                return false;
             }
+
+            if (IsPatchedByOwner(targetMethod, harmony)) return true;
 
             var postfix = typeof(HarmonyPatches).GetMethod(
                 nameof(PushChildViewController_Postfix),
@@ -66,9 +75,10 @@ namespace DuelLinksAccess
 
             harmony.Patch(targetMethod, postfix: new HarmonyMethod(postfix));
             DebugLogger.Log(LogCategory.State, "Harmony", "Patched ViewControllerManager.PushChildViewController");
+            return true;
         }
 
-        private static void PatchViewControllerManagerPop(HarmonyLib.Harmony harmony)
+        private static bool PatchViewControllerManagerPop(HarmonyLib.Harmony harmony)
         {
             var targetType = typeof(Il2CppYgomSystem.UI.ViewControllerManager);
             var targetMethod = AccessTools.Method(targetType, "PopChildViewController",
@@ -77,8 +87,10 @@ namespace DuelLinksAccess
             if (targetMethod == null)
             {
                 MelonLogger.Warning("Could not find ViewControllerManager.PopChildViewController()");
-                return;
+                return false;
             }
+
+            if (IsPatchedByOwner(targetMethod, harmony)) return true;
 
             var postfix = typeof(HarmonyPatches).GetMethod(
                 nameof(PopChildViewController_Postfix),
@@ -86,9 +98,10 @@ namespace DuelLinksAccess
 
             harmony.Patch(targetMethod, postfix: new HarmonyMethod(postfix));
             DebugLogger.Log(LogCategory.State, "Harmony", "Patched ViewControllerManager.PopChildViewController");
+            return true;
         }
 
-        private static void PatchDuelClientRunEffect(HarmonyLib.Harmony harmony)
+        private static bool PatchDuelClientRunEffect(HarmonyLib.Harmony harmony)
         {
             var targetType = typeof(Il2CppYgomGame.Duel.DuelClient);
             var targetMethod = AccessTools.Method(targetType, "RunEffect",
@@ -97,8 +110,10 @@ namespace DuelLinksAccess
             if (targetMethod == null)
             {
                 MelonLogger.Warning("Could not find DuelClient.RunEffect(int,int,int,int)");
-                return;
+                return false;
             }
+
+            if (IsPatchedByOwner(targetMethod, harmony)) return true;
 
             var postfix = typeof(HarmonyPatches).GetMethod(
                 nameof(RunEffect_Postfix),
@@ -106,6 +121,7 @@ namespace DuelLinksAccess
 
             harmony.Patch(targetMethod, postfix: new HarmonyMethod(postfix));
             DebugLogger.Log(LogCategory.State, "Harmony", "Patched DuelClient.RunEffect");
+            return true;
         }
 
         // Diagnostic patches for the tutorial gate. We don't yet know what
@@ -129,6 +145,8 @@ namespace DuelLinksAccess
                     MelonLogger.Warning("Could not find API.User_tutorial_dialog(int)");
                     return;
                 }
+
+                if (IsPatchedByOwner(targetMethod, harmony)) return;
 
                 var prefix = typeof(HarmonyPatches).GetMethod(
                     nameof(UserTutorialDialog_Prefix),
@@ -155,6 +173,8 @@ namespace DuelLinksAccess
                     MelonLogger.Warning("Could not find TutorialManager.fetch()");
                     return;
                 }
+
+                if (IsPatchedByOwner(targetMethod, harmony)) return;
 
                 var prefix = typeof(HarmonyPatches).GetMethod(
                     nameof(TutorialManagerFetch_Prefix),
@@ -185,6 +205,8 @@ namespace DuelLinksAccess
                     return;
                 }
 
+                if (IsPatchedByOwner(targetMethod, harmony)) return;
+
                 var prefix = typeof(HarmonyPatches).GetMethod(
                     nameof(TutorialManagerNotificator_Prefix),
                     BindingFlags.Static | BindingFlags.NonPublic);
@@ -201,6 +223,13 @@ namespace DuelLinksAccess
         }
 
         #endregion
+
+        private static bool IsPatchedByOwner(
+            MethodBase targetMethod, HarmonyLib.Harmony harmony)
+        {
+            return HarmonyPatchPolicy.IsOwned(
+                HarmonyLib.Harmony.GetPatchInfo(targetMethod)?.Owners, harmony.Id);
+        }
 
         #region Postfix Methods
 

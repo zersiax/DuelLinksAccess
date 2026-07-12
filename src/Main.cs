@@ -31,6 +31,11 @@ namespace DuelLinksAccess
         #region Fields
 
         private bool _gameReady = false;
+        private bool _harmonyPatchesApplied = false;
+        private int _harmonyPatchAttempts = 0;
+        private float _nextHarmonyPatchAttempt = 0f;
+        private const int MaxHarmonyPatchAttempts = 3;
+        private const float HarmonyPatchRetryDelay = 2f;
         private HarmonyLib.Harmony _harmony;
 
         /// <summary>
@@ -143,12 +148,20 @@ namespace DuelLinksAccess
 
         private bool CheckGameReady()
         {
-            if (_gameReady) return true;
+            if (!_gameReady)
+                _gameReady = GameStateTracker.CheckGameReady();
 
-            if (GameStateTracker.CheckGameReady())
+            if (_gameReady && HarmonyPatchPolicy.ShouldAttempt(
+                _harmonyPatchesApplied,
+                _harmonyPatchAttempts,
+                Time.unscaledTime,
+                _nextHarmonyPatchAttempt,
+                MaxHarmonyPatchAttempts))
             {
-                _gameReady = true;
-                HarmonyPatches.Apply(_harmony);
+                _harmonyPatchAttempts++;
+                _harmonyPatchesApplied = HarmonyPatches.Apply(_harmony);
+                _nextHarmonyPatchAttempt =
+                    Time.unscaledTime + HarmonyPatchRetryDelay;
             }
 
             return _gameReady;
@@ -159,6 +172,8 @@ namespace DuelLinksAccess
             MelonLogger.Msg($"Scene loaded: {sceneName}");
             DebugLogger.LogState($"Scene changed to: {sceneName}");
             _gameReady = false;
+            _harmonyPatchAttempts = 0;
+            _nextHarmonyPatchAttempt = 0f;
             GameStateTracker.Reset();
             AccessStateManager.ForceReset();
         }
