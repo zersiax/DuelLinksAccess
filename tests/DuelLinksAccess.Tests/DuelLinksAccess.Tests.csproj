@@ -24,6 +24,7 @@
     <Compile Include="..\..\src\DialogControlPolicy.cs" Link="Source\DialogControlPolicy.cs" />
     <Compile Include="..\..\src\DeckEditPolicy.cs" Link="Source\DeckEditPolicy.cs" />
     <Compile Include="..\..\src\DuelTurnTracker.cs" Link="Source\DuelTurnTracker.cs" />
+    <Compile Include="..\..\src\DuelZoneActionPolicy.cs" Link="Source\DuelZoneActionPolicy.cs" />
     <Compile Include="..\..\src\DuelPositionTracker.cs" Link="Source\DuelPositionTracker.cs" />
     <Compile Include="..\..\src\EventLogOverflowPolicy.cs" Link="Source\EventLogOverflowPolicy.cs" />
     <Compile Include="..\..\src\LateContentRetryPolicy.cs" Link="Source\LateContentRetryPolicy.cs" />

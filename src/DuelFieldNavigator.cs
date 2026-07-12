@@ -1302,8 +1302,15 @@ namespace DuelLinksAccess
             }
 
             int slotIndex = _zoneSlots[_navIndex];
-            int player = GetZonePlayer(_currentZone);
             int locate = _zoneLocates[_navIndex];
+            int player = _currentZone == Zone.ExtraMonster
+                ? GetEMZOwner(locate)
+                : GetZonePlayer(_currentZone);
+            bool isLocalMonster = DuelZoneActionPolicy.IsLocalMonster(
+                _currentZone == Zone.MyMonster,
+                _currentZone == Zone.ExtraMonster,
+                player,
+                PlayerMe);
 
             // Guard: skip empty grid slots. DuelState's GetFieldCard /
             // GetHandCard return null when the slot is empty, sourced from
@@ -1327,7 +1334,7 @@ namespace DuelLinksAccess
                 uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
 
                 // Always log attack diagnostics for field monsters
-                if (_currentZone == Zone.MyMonster)
+                if (isLocalMonster)
                 {
                     string inputType = "?";
                     int attackMask = 0;
@@ -1368,7 +1375,7 @@ namespace DuelLinksAccess
                     // — in single-player a cmdMask=0 on a monster genuinely
                     // means "can't attack" (DEF position / already attacked)
                     // and we must NOT inject Attack there.
-                    if (_currentZone == Zone.MyMonster && DuelState.IsEngineHollow)
+                    if (isLocalMonster && DuelState.IsEngineHollow)
                     {
                         int atkMask = 0;
                         try
@@ -1394,7 +1401,7 @@ namespace DuelLinksAccess
                     // Change to defense / etc.); in single-player it also
                     // handles the case where cmdMask is 0 but the popup still
                     // has actions (DEF monsters with Activate).
-                    if (_currentZone == Zone.MyMonster || _currentZone == Zone.MySpell
+                    if (isLocalMonster || _currentZone == Zone.MySpell
                         || _currentZone == Zone.MyExtra)
                     {
                         DebugLogger.Log(LogCategory.Game, "FieldNav",
