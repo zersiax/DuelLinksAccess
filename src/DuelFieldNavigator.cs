@@ -247,16 +247,12 @@ namespace DuelLinksAccess
         private int _selectIndex;
 
         // EmotionalList state (chain, graveyard pick, discard, deck search, etc.)
-        private bool _inEmotionalList;
-        private int _emoListIndex;
-        private int _emoListCount;
-        private bool _emoListHandled;
-        // Wall-clock deadline (Time.unscaledTime) after which _emoListHandled
+        private readonly EmotionalListState _emotionalList = new();
+        // Wall-clock deadline (Time.unscaledTime) after which _emotionalList.IsHandled
         // is force-cleared on the next CheckForEmotionalList. Without this,
         // sequential pickers (XYZ second material; pick-N tributes) get
         // missed because the goActive=false → reset transition never fires
         // when the game opens prompt 2 in the same frame it closes prompt 1.
-        private float _emoListHandledUntil;
         private const float EmoListHandledTimeout = 0.4f;
 
         /// <summary>Stores a command entry for the accessible action menu.</summary>
@@ -280,7 +276,7 @@ namespace DuelLinksAccess
         public bool InCardSelect => _inCardSelect;
 
         /// <summary>Whether EmotionalList selection is active (chain, grave pick, etc.).</summary>
-        public bool InEmotionalList => _inEmotionalList;
+        public bool InEmotionalList => _emotionalList.IsActive;
 
         /// <summary>Whether the user has started field navigation.</summary>
         public bool IsNavigating => _isNavigating;
@@ -339,6 +335,7 @@ namespace DuelLinksAccess
             _useDirectCommand = false;
             _inCardSelect = false;
             _selectLocations.Clear();
+            _emotionalList.Reset();
             CancelActionMenu();
         }
 
@@ -400,7 +397,7 @@ namespace DuelLinksAccess
         public bool ProcessInput()
         {
             // EmotionalList already active — handle first
-            if (_inEmotionalList)
+            if (_emotionalList.IsActive)
                 return ProcessEmotionalListInput();
             // Card selection (tribute/material) takes highest priority for detection
             if (_inCardSelect)
@@ -2127,7 +2124,7 @@ namespace DuelLinksAccess
         /// </summary>
         public bool CheckForEmotionalList()
         {
-            if (_inEmotionalList) return true;
+            if (_emotionalList.IsActive) return true;
 
             try
             {
@@ -2145,7 +2142,7 @@ namespace DuelLinksAccess
                 // List inactive — reset handled flag so next activation is detected
                 if (!goActive || isClosing || selectMax <= 0)
                 {
-                    _emoListHandled = false;
+                    _emotionalList.IsHandled = false;
                     return false;
                 }
 
@@ -2153,16 +2150,16 @@ namespace DuelLinksAccess
                 // elapses, so back-to-back pickers (XYZ second material; multi-
                 // tribute) are detected when the game opens prompt 2 fast enough
                 // that we never see goActive=false in between.
-                if (_emoListHandled
-                    && UnityEngine.Time.unscaledTime > _emoListHandledUntil)
+                if (_emotionalList.IsHandled
+                    && UnityEngine.Time.unscaledTime > _emotionalList.HandledUntil)
                 {
                     DebugLogger.Log(LogCategory.Game, "FieldNav",
                         "EmotionalList: post-confirm timeout — clearing handled flag");
-                    _emoListHandled = false;
+                    _emotionalList.IsHandled = false;
                 }
 
                 // Don't re-enter if we already handled this active list instance
-                if (_emoListHandled) return false;
+                if (_emotionalList.IsHandled) return false;
 
                 var items = emoList.itemList;
                 if (items == null || items.Count == 0) return false;
@@ -2180,11 +2177,11 @@ namespace DuelLinksAccess
 
         private void EnterEmotionalList(Il2CppYgomGame.Duel.EmotionalList emoList)
         {
-            _inEmotionalList = true;
-            _emoListIndex = 0;
+            _emotionalList.IsActive = true;
+            _emotionalList.Index = 0;
 
             var items = emoList.itemList;
-            _emoListCount = items?.Count ?? 0;
+            _emotionalList.Count = items?.Count ?? 0;
 
             int selectMax = 0;
             int selectMin = 0;
@@ -2192,7 +2189,7 @@ namespace DuelLinksAccess
             try { selectMin = emoList.selectMinNum; } catch { }
 
             DebugLogger.Log(LogCategory.Game, "FieldNav",
-                $"EmotionalList: entered with {_emoListCount} items, " +
+                $"EmotionalList: entered with {_emotionalList.Count} items, " +
                 $"selectMax={selectMax} selectMin={selectMin}");
 
             // Diagnostic dump for material-picker debugging: log each visual
@@ -2228,12 +2225,12 @@ namespace DuelLinksAccess
             catch { }
 
             string prompt = selectMax > 1
-                ? Loc.Get("duel_emo_list_multi", _emoListCount, selectMax)
-                : Loc.Get("duel_emo_list_single", _emoListCount);
+                ? Loc.Get("duel_emo_list_multi", _emotionalList.Count, selectMax)
+                : Loc.Get("duel_emo_list_single", _emotionalList.Count);
 
             ScreenReader.Say(prompt);
 
-            if (_emoListCount > 0)
+            if (_emotionalList.Count > 0)
                 ReadEmotionalListCard(0);
         }
 
@@ -2245,7 +2242,7 @@ namespace DuelLinksAccess
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
                 if (emoList == null)
                 {
-                    _inEmotionalList = false;
+                    _emotionalList.IsActive = false;
                     return false;
                 }
 
@@ -2257,43 +2254,43 @@ namespace DuelLinksAccess
 
                 if (!goActive || isClosing || selectMax <= 0)
                 {
-                    _inEmotionalList = false;
-                    _emoListHandled = false;
+                    _emotionalList.IsActive = false;
+                    _emotionalList.IsHandled = false;
                     return false;
                 }
 
-                _emoListCount = emoList.itemList?.Count ?? 0;
+                _emotionalList.Count = emoList.itemList?.Count ?? 0;
             }
             catch
             {
-                _inEmotionalList = false;
+                _emotionalList.IsActive = false;
                 return false;
             }
 
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow))
             {
-                if (_emoListCount > 0)
+                if (_emotionalList.Count > 0)
                 {
-                    _emoListIndex = (_emoListIndex - 1 + _emoListCount) % _emoListCount;
+                    _emotionalList.Index = (_emotionalList.Index - 1 + _emotionalList.Count) % _emotionalList.Count;
                     // Multi-select: scroll only (don't toggle). Single-select: SelectIndex moves highlight.
                     if (selectMax > 1)
-                        ScrollEmotionalList(_emoListIndex);
+                        ScrollEmotionalList(_emotionalList.Index);
                     else
-                        SelectEmotionalListCard(_emoListIndex);
-                    ReadEmotionalListCard(_emoListIndex);
+                        SelectEmotionalListCard(_emotionalList.Index);
+                    ReadEmotionalListCard(_emotionalList.Index);
                 }
                 return true;
             }
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.RightArrow))
             {
-                if (_emoListCount > 0)
+                if (_emotionalList.Count > 0)
                 {
-                    _emoListIndex = (_emoListIndex + 1) % _emoListCount;
+                    _emotionalList.Index = (_emotionalList.Index + 1) % _emotionalList.Count;
                     if (selectMax > 1)
-                        ScrollEmotionalList(_emoListIndex);
+                        ScrollEmotionalList(_emotionalList.Index);
                     else
-                        SelectEmotionalListCard(_emoListIndex);
-                    ReadEmotionalListCard(_emoListIndex);
+                        SelectEmotionalListCard(_emotionalList.Index);
+                    ReadEmotionalListCard(_emotionalList.Index);
                 }
                 return true;
             }
@@ -2318,8 +2315,8 @@ namespace DuelLinksAccess
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.V))
             {
-                if (_emoListCount > 0)
-                    ReadEmotionalListCard(_emoListIndex, verbose: true);
+                if (_emotionalList.Count > 0)
+                    ReadEmotionalListCard(_emotionalList.Index, verbose: true);
                 return true;
             }
             return false;
@@ -2356,7 +2353,7 @@ namespace DuelLinksAccess
 
         private void ReadEmotionalListCard(int index, bool verbose = false)
         {
-            if (index < 0 || index >= _emoListCount) return;
+            if (index < 0 || index >= _emotionalList.Count) return;
 
             try
             {
@@ -2371,7 +2368,7 @@ namespace DuelLinksAccess
                 if (item == null)
                 {
                     ScreenReader.Say(Loc.Get("duel_card_select_item",
-                        index + 1, _emoListCount, Loc.Get("duel_unknown_card")));
+                        index + 1, _emotionalList.Count, Loc.Get("duel_unknown_card")));
                     return;
                 }
 
@@ -2432,14 +2429,14 @@ namespace DuelLinksAccess
                     : Loc.Get("duel_unknown_card");
 
                 ScreenReader.Say(Loc.Get("duel_card_select_item",
-                    index + 1, _emoListCount, info));
+                    index + 1, _emotionalList.Count, info));
             }
             catch (Exception ex)
             {
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
                     $"ReadEmotionalListCard error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("duel_card_select_item",
-                    index + 1, _emoListCount, Loc.Get("duel_unknown_card")));
+                    index + 1, _emotionalList.Count, Loc.Get("duel_unknown_card")));
             }
         }
 
@@ -2527,7 +2524,7 @@ namespace DuelLinksAccess
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
                 if (emoList == null) return;
 
-                emoList.SelectIndex(_emoListIndex, false);
+                emoList.SelectIndex(_emotionalList.Index, false);
 
                 int selectedCount = 0;
                 int selectMax = 0;
@@ -2551,7 +2548,7 @@ namespace DuelLinksAccess
                 if (emoList == null)
                 {
                     ScreenReader.Say(Loc.Get("duel_action_error"));
-                    _inEmotionalList = false;
+                    _emotionalList.IsActive = false;
                     return;
                 }
 
@@ -2581,19 +2578,19 @@ namespace DuelLinksAccess
                     try
                     {
                         var cards = emoList.cardList;
-                        if (cards != null && _emoListIndex < cards.Count)
+                        if (cards != null && _emotionalList.Index < cards.Count)
                         {
-                            var listCard = cards[_emoListIndex];
+                            var listCard = cards[_emotionalList.Index];
                             MelonLoader.MelonLogger.Msg(
-                                $"[FieldNav] Confirm: _emoListIndex={_emoListIndex}, " +
-                                $"calling OnClickCard(cardList[{_emoListIndex}])");
+                                $"[FieldNav] Confirm: _emotionalList.Index={_emotionalList.Index}, " +
+                                $"calling OnClickCard(cardList[{_emotionalList.Index}])");
                             emoList.OnClickCard(listCard);
                         }
                         else
                         {
                             MelonLoader.MelonLogger.Msg(
                                 $"[FieldNav] Confirm: cardList null or index out of range " +
-                                $"(_emoListIndex={_emoListIndex} count={cards?.Count ?? 0})");
+                                $"(_emotionalList.Index={_emotionalList.Index} count={cards?.Count ?? 0})");
                         }
                     }
                     catch (Exception ex)
@@ -2604,7 +2601,7 @@ namespace DuelLinksAccess
                 }
 
                 // Announce what's being picked (with card name)
-                string pickedName = GetEmoCardName(_emoListIndex);
+                string pickedName = GetEmoCardName(_emotionalList.Index);
                 ScreenReader.Say(Loc.Get("duel_card_picked", pickedName));
 
                 // Multi-select: fire the decideButton's onClick handler (the
@@ -2646,10 +2643,9 @@ namespace DuelLinksAccess
                     emoList.OnDecide();
                 }
 
-                _inEmotionalList = false;
-                _emoListHandled = true;
-                _emoListHandledUntil = UnityEngine.Time.unscaledTime
-                    + EmoListHandledTimeout;
+                _emotionalList.IsActive = false;
+                _emotionalList.MarkHandled(
+                    UnityEngine.Time.unscaledTime, EmoListHandledTimeout);
             }
             catch (Exception ex)
             {
@@ -2730,8 +2726,9 @@ namespace DuelLinksAccess
                     $"CancelEmotionalList error: {ex.Message}");
             }
 
-            _inEmotionalList = false;
-            _emoListHandled = true;
+            _emotionalList.IsActive = false;
+            _emotionalList.MarkHandled(
+                UnityEngine.Time.unscaledTime, EmoListHandledTimeout);
         }
 
         #endregion

@@ -29,6 +29,7 @@
     <Compile Include="..\..\src\DuelZoneActionPolicy.cs" Link="Source\DuelZoneActionPolicy.cs" />
     <Compile Include="..\..\src\DuelPositionTracker.cs" Link="Source\DuelPositionTracker.cs" />
     <Compile Include="..\..\src\EventLogOverflowPolicy.cs" Link="Source\EventLogOverflowPolicy.cs" />
+    <Compile Include="..\..\src\EmotionalListState.cs" Link="Source\EmotionalListState.cs" />
     <Compile Include="..\..\src\ExtraDeckSourcePolicy.cs" Link="Source\ExtraDeckSourcePolicy.cs" />
     <Compile Include="..\..\src\HarmonyPatchPolicy.cs" Link="Source\HarmonyPatchPolicy.cs" />
     <Compile Include="..\..\src\LateContentRetryPolicy.cs" Link="Source\LateContentRetryPolicy.cs" />
