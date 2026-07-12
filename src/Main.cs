@@ -407,13 +407,13 @@ namespace DuelLinksAccess
                     // exclude it from the sbhIdle fast branch to avoid a race
                     // where SBH going idle (screen=Dialog) fires the generic
                     // message before the home-screen speech finishes.
-                    if (announceShape == ArrowShape.WorldColliderPointer
-                        || (sbhIdle && announceShape != ArrowShape.UISelectablePointer))
+                    if (announceShape == TutorialArrowShape.WorldColliderPointer
+                        || (sbhIdle && announceShape != TutorialArrowShape.UISelectablePointer))
                     {
                         _orphanArrowAnnounced = true;
                         ScreenReader.Say(Loc.Get("duel_tutorial_arrow_pointing"));
                     }
-                    else if (announceShape == ArrowShape.UISelectablePointer)
+                    else if (announceShape == TutorialArrowShape.UISelectablePointer)
                     {
                         // Wait until home-screen speech settles before announcing.
                         float elapsed = UnityEngine.Time.time - _orphanArrowFirstSeen;
@@ -495,10 +495,10 @@ namespace DuelLinksAccess
                     float elapsed = UnityEngine.Time.time - _orphanArrowFirstSeen;
                     if (elapsed >= OrphanArrowIpclickTimeout)
                     {
-                        ArrowShape shape = ClassifyArrowShape(arrowVc);
+                        TutorialArrowShape shape = ClassifyArrowShape(arrowVc);
                         switch (shape)
                         {
-                            case ArrowShape.ClickToContinue:
+                            case TutorialArrowShape.ClickToContinue:
                                 if (physicTarget != null || dispTarget != null)
                                 {
                                     DebugLogger.Log(LogCategory.Game, "Main",
@@ -519,8 +519,8 @@ namespace DuelLinksAccess
                                 _orphanArrowHandled = true;
                                 return true;
 
-                            case ArrowShape.UISelectablePointer:
-                            case ArrowShape.WorldColliderPointer:
+                            case TutorialArrowShape.UISelectablePointer:
+                            case TutorialArrowShape.WorldColliderPointer:
                                 DebugLogger.Log(LogCategory.Game, "Main",
                                     $"Orphan TutorialArrow ({shape}): no " +
                                     $"auto-click; user must press Enter on " +
@@ -603,66 +603,30 @@ namespace DuelLinksAccess
             _orphanArrowAnnounced = false;
         }
 
-        internal enum ArrowShape
-        {
-            // physicTarget is null. Click anywhere dismisses; cutscene narrative
-            // text. Safe to auto-dismiss after a delay.
-            ClickToContinue,
-            // physicTarget is a UI Selectable / Graphic. The user navigates to
-            // it via SBH/DialogHandler and presses Enter; SBH's
-            // ActivateViaTutorialArrow routes through ipclick. No auto-click.
-            UISelectablePointer,
-            // physicTarget is a 3D world Collider (e.g. Collider_Cardshop on
-            // Home). targetCamera is non-null and not Camera.main.
-            // OnPointerClick fails (game-api.md:543); the working pair is
-            // ipclick + hardware mouse. No auto-click — user uses Enter on the
-            // navigated item or F11.
-            WorldColliderPointer
-        }
-
         /// <summary>
         /// Classifies a TutorialArrow into one of three shapes that need
-        /// different activation policies. See ArrowShape doc-comments.
+        /// different activation policies.
         /// </summary>
-        internal static ArrowShape ClassifyArrowShape(
+        internal static TutorialArrowShape ClassifyArrowShape(
             Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
         {
             try
             {
                 var physicTarget = arrowVc.physicTarget;
-                if (physicTarget == null)
-                {
-                    // A null-physicTarget arrow with an ipclick handler is
-                    // pointing at a specific UI button (e.g. Stage-7 Vagrant
-                    // shop tutorial: ipclick = Trainer Purchase button; GX
-                    // Series-unlock: ipclick = SeriesButton). Auto-firing the
-                    // ipclick reopens the very screen the user just closed,
-                    // creating an inescapable loop. Treat as UISelectablePointer
-                    // so the user navigates to the button and presses Enter.
-                    // Genuine cutscene "click anywhere" arrows have no ipclick.
-                    int ipclickCount = arrowVc.ipclick?.Length ?? 0;
-                    if (ipclickCount > 0) return ArrowShape.UISelectablePointer;
-                    return ArrowShape.ClickToContinue;
-                }
-
-                // 3D world target: arrow's own targetCamera is something
-                // other than Camera.main (typically "SingleCamera" or another
-                // scene-specific camera) AND the target has no UI Graphic.
-                // This is the signal documented in game-api.md:753 for the
-                // shop-on-Home case (Collider_Cardshop rendered by SingleCamera).
-                bool hasUiGraphic = physicTarget.GetComponent<UnityEngine.UI.Graphic>() != null;
+                bool hasTarget = physicTarget != null;
+                bool hasIpclick = (arrowVc.ipclick?.Length ?? 0) > 0;
+                bool hasUiGraphic = hasTarget
+                    && physicTarget.GetComponent<UnityEngine.UI.Graphic>() != null;
                 var targetCam = arrowVc.targetCamera;
                 bool worldCamera = targetCam != null && targetCam != Camera.main;
-
-                if (worldCamera && !hasUiGraphic) return ArrowShape.WorldColliderPointer;
-
-                return ArrowShape.UISelectablePointer;
+                return TutorialArrowPolicy.Classify(
+                    hasTarget, hasIpclick, worldCamera, hasUiGraphic);
             }
             catch
             {
                 // If we can't tell, treat as UI pointer (the safer default —
                 // no auto-click, user-driven).
-                return ArrowShape.UISelectablePointer;
+                return TutorialArrowPolicy.SafeDefault;
             }
         }
 

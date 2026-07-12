@@ -2457,10 +2457,10 @@ namespace DuelLinksAccess
                 // position check finds no target. Let normal activation handle the
                 // button; calling ScreenReader.Say here AND letting normal activation
                 // also announce produces a double-announcement on every key press.
-                if (shape == Main.ArrowShape.UISelectablePointer)
+                if (shape == TutorialArrowShape.UISelectablePointer)
                     return false;
 
-                if (shape == Main.ArrowShape.WorldColliderPointer)
+                if (shape == TutorialArrowShape.WorldColliderPointer)
                 {
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                         $"WorldColliderPointer: invoking ipclick + hardware mouse " +
