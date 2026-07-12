@@ -105,6 +105,7 @@ $MelonLoaderDll = Join-Path $GamePath "MelonLoader\net6\MelonLoader.dll"
 $HarmonyDll = Join-Path $GamePath "MelonLoader\net6\0Harmony.dll"
 $InteropDll = Join-Path $GamePath "MelonLoader\net6\Il2CppInterop.Runtime.dll"
 $UnityPlayerDll = Join-Path $GamePath "UnityPlayer.dll"
+$GameExecutable = Join-Path $GamePath "dlpc.exe"
 $AssemblyDirectory = Join-Path $GamePath "MelonLoader\Il2CppAssemblies"
 $BuildInputs = @(
     $MelonLoaderDll
@@ -124,6 +125,12 @@ foreach ($InputPath in $BuildInputs) {
         throw "Build input not found at '$InputPath'"
     }
 }
+$RuntimeInputs = @($GameExecutable, $UnityPlayerDll)
+foreach ($InputPath in $RuntimeInputs) {
+    if (-not (Test-Path -LiteralPath $InputPath -PathType Leaf)) {
+        throw "Runtime input not found at '$InputPath'"
+    }
+}
 
 $Commit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw "Could not resolve Git commit" }
@@ -140,6 +147,12 @@ $BuildInfo = @(
     "Build input SHA-256:"
 )
 foreach ($InputPath in $BuildInputs) {
+    $RelativeInput = [IO.Path]::GetRelativePath($GamePath, $InputPath).Replace('\', '/')
+    $InputHash = (Get-FileHash -LiteralPath $InputPath -Algorithm SHA256).Hash
+    $BuildInfo += "  ${RelativeInput}: $InputHash"
+}
+$BuildInfo += "Runtime input SHA-256:"
+foreach ($InputPath in $RuntimeInputs) {
     $RelativeInput = [IO.Path]::GetRelativePath($GamePath, $InputPath).Replace('\', '/')
     $InputHash = (Get-FileHash -LiteralPath $InputPath -Algorithm SHA256).Hash
     $BuildInfo += "  ${RelativeInput}: $InputHash"
