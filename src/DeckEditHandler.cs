@@ -245,7 +245,7 @@ namespace DuelLinksAccess
 
                 // Use trunkFiltered first (respects game's current filter/sort)
                 var filtered = _vc.trunkFiltered;
-                if (filtered != null && filtered.Count > 0)
+                if (DeckEditPolicy.UseFilteredCollection(filtered != null))
                 {
                     for (int i = 0; i < filtered.Count; i++)
                         _collectionMrks.Add(filtered[i]);
@@ -503,6 +503,9 @@ namespace DuelLinksAccess
 
             try
             {
+                int mainBefore = _mainDeckMrks.Count;
+                int extraBefore = _extraDeckMrks.Count;
+
                 // Check if card can be added — gives specific rejection reason
                 if (!_vc.IsCardAddible(mrk, -1))
                 {
@@ -520,8 +523,19 @@ namespace DuelLinksAccess
                 if (result)
                 {
                     RefreshAllLists();
-                    int count = _mainDeckMrks.Count;
-                    ScreenReader.Say(Loc.Get("deck_card_added_count", name, count));
+                    var changed = DeckEditPolicy.ResolveAddedCount(
+                        mainBefore,
+                        extraBefore,
+                        _mainDeckMrks.Count,
+                        _extraDeckMrks.Count);
+                    string zoneName = changed.IsExtraDeck
+                        ? Loc.Get("deck_zone_extra_name")
+                        : Loc.Get("deck_zone_main_name");
+                    ScreenReader.Say(Loc.Get(
+                        "deck_card_added_zone_count",
+                        name,
+                        zoneName,
+                        changed.Count));
                 }
                 else
                 {
@@ -547,6 +561,7 @@ namespace DuelLinksAccess
 
             int mrk = list[_focusIndex];
             string name = GetCardName(mrk);
+            bool removedFromExtraDeck = _currentZone == Zone.ExtraDeck;
 
             try
             {
@@ -560,8 +575,18 @@ namespace DuelLinksAccess
                 {
                     RefreshDeckLists();
                     ClampFocusIndex();
-                    int count = _mainDeckMrks.Count;
-                    ScreenReader.Say(Loc.Get("deck_card_removed_count", name, count));
+                    var changed = DeckEditPolicy.ResolveRemovedCount(
+                        removedFromExtraDeck,
+                        _mainDeckMrks.Count,
+                        _extraDeckMrks.Count);
+                    string zoneName = changed.IsExtraDeck
+                        ? Loc.Get("deck_zone_extra_name")
+                        : Loc.Get("deck_zone_main_name");
+                    ScreenReader.Say(Loc.Get(
+                        "deck_card_removed_zone_count",
+                        name,
+                        zoneName,
+                        changed.Count));
                 }
                 else
                 {

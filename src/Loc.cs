@@ -415,9 +415,9 @@ namespace DuelLinksAccess
             _english["deck_zone_empty"] = "No cards in this zone";
             _english["deck_card_position"] = "{0} of {1}: {2}";
             _english["deck_card_added"] = "{0} added to deck";
-            _english["deck_card_added_count"] = "{0} added. Main deck: {1}";
+            _english["deck_card_added_zone_count"] = "{0} added. {1}: {2}";
             _english["deck_card_removed"] = "{0} removed from deck";
-            _english["deck_card_removed_count"] = "{0} removed. Main deck: {1}";
+            _english["deck_card_removed_zone_count"] = "{0} removed. {1}: {2}";
             _english["deck_card_not_addible"] = "Cannot add {0}";
             _english["deck_card_not_addible_reason"] = "Cannot add {0}: {1}";
             _english["deck_card_in_deck"] = "{0} copies in deck";
