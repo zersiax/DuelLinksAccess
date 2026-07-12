@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Globalization;
 using Xunit;
 
 namespace DuelLinksAccess.Tests;
@@ -51,6 +52,40 @@ public sealed class LocalizationCatalogTests
             .ToArray();
 
         Assert.Empty(missing);
+    }
+
+    [Fact]
+    public void Catalog_HasValidCompositeFormatStrings()
+    {
+        Loc.Initialize();
+        var field = typeof(Loc).GetField(
+            "_english", BindingFlags.Static | BindingFlags.NonPublic);
+        var catalog = Assert.IsType<Dictionary<string, string>>(
+            field?.GetValue(null));
+        object[] arguments = Enumerable.Range(0, 100)
+            .Cast<object>()
+            .ToArray();
+
+        string[] invalid = catalog
+            .Where(entry => !CanFormat(entry.Value, arguments))
+            .Select(entry => entry.Key)
+            .OrderBy(key => key)
+            .ToArray();
+
+        Assert.Empty(invalid);
+    }
+
+    private static bool CanFormat(string template, object[] arguments)
+    {
+        try
+        {
+            string.Format(CultureInfo.InvariantCulture, template, arguments);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 
     private static string FindRepositoryRoot()
