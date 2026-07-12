@@ -12,6 +12,11 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw "Package-Release.ps1 requires PowerShell 7 or later (pwsh)."
 }
 $ProjectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$DirtyState = & git -C $ProjectRoot status --porcelain --untracked-files=normal
+if ($LASTEXITCODE -ne 0) { throw "Could not inspect Git worktree" }
+if ($DirtyState) {
+    throw "Refusing to package a dirty worktree. Commit or remove local changes first."
+}
 if (-not $GamePath) {
     $GamePath = "C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links"
 }
