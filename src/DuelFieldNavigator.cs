@@ -1933,10 +1933,19 @@ namespace DuelLinksAccess
                 // Fallback: if drag sequence didn't register, try OnDoCardCommand
                 bool directDragWorked = false;
                 try { directDragWorked = worker.autoAttack; } catch { }
-                if (!directDragWorked)
+                bool directBattleInputActive = false;
+                try
                 {
-                    MelonLogger.Msg("[FieldNav] Direct drag failed (autoAttack=false), " +
-                        $"trying OnDoCardCommand(Attack) for loc={atkLocate}");
+                    directBattleInputActive = worker.curInputType
+                        == Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase;
+                }
+                catch { }
+                if (AttackFallbackPolicy.ShouldRetry(
+                    directDragWorked, directBattleInputActive))
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        "Direct drag left Battle Phase input active; "
+                        + $"retrying Attack command for locate {atkLocate}");
                     try
                     {
                         worker.OnDoCardCommand(atkPlayer, atkLocate, atkSlot,
@@ -1975,10 +1984,19 @@ namespace DuelLinksAccess
                 // gates OnSelectAttacked (e.g. equipped monsters breaking cmdMask).
                 bool dragWorked = false;
                 try { dragWorked = worker.autoAttack; } catch { }
-                if (!dragWorked)
+                bool battleInputActive = false;
+                try
                 {
-                    MelonLogger.Msg("[FieldNav] Drag sequence failed (autoAttack=false), " +
-                        $"trying OnDoCardCommand(Attack) for loc={atkLocate}");
+                    battleInputActive = worker.curInputType
+                        == Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase;
+                }
+                catch { }
+                if (AttackFallbackPolicy.ShouldRetry(
+                    dragWorked, battleInputActive))
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        "Targeted drag left Battle Phase input active; "
+                        + $"retrying Attack command for locate {atkLocate}");
                     try
                     {
                         worker.OnDoCardCommand(atkPlayer, atkLocate, atkSlot,
