@@ -15,6 +15,7 @@ namespace DuelLinksAccess
         #region Fields
 
         private static bool _initialized = false;
+        private static readonly object _initializeLock = new();
         private static readonly Dictionary<string, string> _english = new();
 
         #endregion
@@ -26,8 +27,13 @@ namespace DuelLinksAccess
         /// </summary>
         public static void Initialize()
         {
-            InitializeStrings();
-            _initialized = true;
+            if (_initialized) return;
+            lock (_initializeLock)
+            {
+                if (_initialized) return;
+                InitializeStrings();
+                _initialized = true;
+            }
         }
 
         /// <summary>
