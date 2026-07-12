@@ -37,7 +37,7 @@ Press **F1** at any time to hear the full key list. A quick summary:
 - **F1** — help
 - **F11** — activate the current tutorial arrow target (fallback when Enter on the highlighted item doesn't advance the tutorial — e.g. the Shop button on Home during the boot tutorial)
 - **F12** — toggle debug mode
-- **Ctrl+F11** — open mod settings
+- **Ctrl+F11** - toggle mod settings
 
 ### In a duel
 - **Up / Down** — move between field rows

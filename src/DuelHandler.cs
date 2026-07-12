@@ -10,16 +10,16 @@ namespace DuelLinksAccess
     ///   Tab / Shift+Tab — Cycle field zones
     ///   Left / Right — Navigate cards within zone
     ///   Enter — Open actions for selected card
-    ///   C — Re-read current card (verbose)
+    ///   V — Re-read current card (verbose)
     ///   F — Field summary
     ///   P — Advance phase
-    ///   S — Status (LP, phase, turn)
-    ///   L — Toggle event log browsing
+    ///   I — Status (LP, phase, turn)
+    ///   J — Toggle event log browsing
     ///   Space — Retry automatic draw during Draw Phase
     ///   During log browsing:
     ///     Up/Down — Navigate entries (older/newer)
     ///     Tab — Re-read current entry
-    ///     Escape or L — Close log
+    ///     Escape or J — Close log
     ///   During action menu:
     ///     Up/Down — Navigate commands
     ///     Enter — Execute command

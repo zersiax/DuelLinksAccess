@@ -260,14 +260,14 @@ namespace DuelLinksAccess
             }
 
             // Ctrl+R = Repeat last announcement
-            if (Input.GetKey(KeyCode.LeftControl) && InputManager.TryConsumeKeyDown(KeyCode.R))
+            if (IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.R))
             {
                 RepeatLastAnnouncement();
                 return true;
             }
 
             // Ctrl+F11 = Mod Settings
-            if (Input.GetKey(KeyCode.LeftControl) && InputManager.TryConsumeKeyDown(KeyCode.F11))
+            if (IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.F11))
             {
                 ModConfig.ToggleMenu();
                 return true;
@@ -284,6 +284,12 @@ namespace DuelLinksAccess
             }
 
             return false;
+        }
+
+        private static bool IsControlHeld()
+        {
+            return Input.GetKey(KeyCode.LeftControl)
+                || Input.GetKey(KeyCode.RightControl);
         }
 
         #endregion

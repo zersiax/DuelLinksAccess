@@ -95,7 +95,13 @@ namespace DuelLinksAccess
         {
             if (!_menuOpen) return;
 
-            if (Input.GetKeyDown(KeyCode.UpArrow))
+            bool controlHeld = Input.GetKey(KeyCode.LeftControl)
+                || Input.GetKey(KeyCode.RightControl);
+            if (controlHeld && Input.GetKeyDown(KeyCode.F11))
+            {
+                ToggleMenu();
+            }
+            else if (Input.GetKeyDown(KeyCode.UpArrow))
             {
                 _currentSettingIndex--;
                 if (_currentSettingIndex < 0)
