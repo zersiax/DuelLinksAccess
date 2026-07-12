@@ -14,7 +14,7 @@ namespace DuelLinksAccess
     {
         #region Fields
 
-        private static bool _initialized = false;
+        private static volatile bool _initialized = false;
         private static readonly object _initializeLock = new();
         private static readonly Dictionary<string, string> _english = new();
 
