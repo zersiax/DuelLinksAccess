@@ -4,6 +4,7 @@
 
 - Windows
 - .NET 8 SDK or later
+- PowerShell 7 or later
 - Yu-Gi-Oh! Duel Links from Steam
 - MelonLoader 0.7.3 or later installed for `dlpc.exe`
 - One game launch after MelonLoader installation, so generated IL2CPP assemblies exist

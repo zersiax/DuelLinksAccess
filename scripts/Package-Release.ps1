@@ -4,12 +4,17 @@ param(
     [string]$Version,
 
     [string]$GamePath = $env:DUEL_LINKS_PATH,
-    [string]$OutputDirectory,
-    [switch]$SkipBuild
+    [string]$OutputDirectory
 )
 
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw "Package-Release.ps1 requires PowerShell 7 or later (pwsh)."
+}
 $ProjectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+if (-not $GamePath) {
+    $GamePath = "C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links"
+}
 if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $ProjectRoot "dist"
 }
@@ -35,27 +40,36 @@ if (-not $MelonVersionMatch.Success) {
 if ($MelonVersionMatch.Groups[1].Value -ne $Version) {
     throw "Package version $Version does not match MelonInfo version $($MelonVersionMatch.Groups[1].Value)"
 }
+$ProjectXml = [xml](Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "DuelLinksAccess.csproj") -Raw)
+$ProjectVersionNode = $ProjectXml.SelectSingleNode('/Project/PropertyGroup/Version')
+if ($null -eq $ProjectVersionNode) {
+    throw "Could not read Version from DuelLinksAccess.csproj"
+}
+if ($ProjectVersionNode.InnerText -ne $Version) {
+    throw "Package version $Version does not match project version $($ProjectVersionNode.InnerText)"
+}
 
-if (-not $SkipBuild) {
-    $BuildArgs = @(
-        "build",
-        (Join-Path $ProjectRoot "DuelLinksAccess.csproj"),
-        "--configuration", "Release",
-        "-p:Version=$Version"
-    )
-    if ($GamePath) {
-        $BuildArgs += "-p:DuelLinksPath=$GamePath"
-    }
+$BuildArgs = @(
+    "build",
+    (Join-Path $ProjectRoot "DuelLinksAccess.csproj"),
+    "--configuration", "Release",
+    "-p:Version=$Version",
+    "-p:DuelLinksPath=$GamePath"
+)
 
-    & dotnet $BuildArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Release build failed"
-    }
+& dotnet $BuildArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Release build failed"
 }
 
 $DllPath = Join-Path $ProjectRoot "bin\Release\net6.0\DuelLinksAccess.dll"
 if (-not (Test-Path -LiteralPath $DllPath -PathType Leaf)) {
     throw "Release DLL not found at $DllPath"
+}
+$DllVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($DllPath).ProductVersion
+if (($DllVersion -split '\+')[0] -ne $Version) {
+    throw "Built DLL version '$DllVersion' does not match package version '$Version'"
 }
 
 if (Test-Path -LiteralPath $StageRoot) {
@@ -68,6 +82,33 @@ Copy-Item -LiteralPath $DllPath -Destination (Join-Path $StageRoot "Mods")
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "LICENSE") -Destination $StageRoot
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.md") -Destination $StageRoot
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "release\README.txt") -Destination $StageRoot
+
+$LogPath = Join-Path $GamePath "MelonLoader\Latest.log"
+$LogContent = if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+    Get-Content -LiteralPath $LogPath -Raw
+} else { "" }
+function Read-BuildValue {
+    param([string]$Pattern)
+    $Match = [regex]::Match(
+        $LogContent, $Pattern, [Text.RegularExpressions.RegexOptions]::Multiline)
+    if ($Match.Success) { return $Match.Groups[1].Value.Trim() }
+    return "unknown"
+}
+
+$Commit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Could not resolve Git commit" }
+$DllHash = (Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash
+$BuildInfo = @(
+    "DuelLinksAccess version: $Version"
+    "Git commit: $Commit"
+    "Duel Links version: $(Read-BuildValue '^.*?Game Version:\s*(.+)$')"
+    "Unity version: $(Read-BuildValue '^.*?Unity Version:\s*(.+)$')"
+    "MelonLoader version: $(Read-BuildValue 'MelonLoader\s+v([\w.-]+)')"
+    "Il2CppInterop version: $(Read-BuildValue 'Using Il2CppInterop Version\s*=\s*(.+)$')"
+    "DuelLinksAccess.dll SHA-256: $DllHash"
+)
+Set-Content -LiteralPath (Join-Path $StageRoot "BUILD-INFO.txt") `
+    -Value $BuildInfo -Encoding ascii
 
 $ManifestPath = Join-Path $StageRoot "SHA256SUMS.txt"
 $ManifestLines = Get-ChildItem -LiteralPath $StageRoot -File -Recurse |

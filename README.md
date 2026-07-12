@@ -17,7 +17,7 @@ NVDA is the packaged and tested screen reader path. Tolk supports other screen r
 
 1. Install MelonLoader for `dlpc.exe` in the Duel Links folder. Launch the game once so MelonLoader generates its assemblies.
 2. Download Tolk from the URL in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and verify the ZIP SHA-256.
-3. Put `Tolk.dll` and `nvdaControllerClient64.dll` beside `dlpc.exe`.
+3. From the Tolk archive's `x64` folder, put `Tolk.dll` and `nvdaControllerClient64.dll` beside `dlpc.exe`.
 4. Download the current `DuelLinksAccess-vX.Y.Z.zip` from [GitHub Releases](https://github.com/zersiax/DuelLinksAccess/releases).
 5. Extract `Mods/DuelLinksAccess.dll` into the game's `Mods` folder.
 6. Start NVDA, then start Duel Links. The mod should announce that it loaded.

@@ -29,4 +29,9 @@ Desktop.ini
 
 # Local files
 *.zip
+*.log
+*.dmp
+*.dll
+*.exe
+*.pdb
 nul

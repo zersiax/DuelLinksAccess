@@ -27,15 +27,16 @@ git diff --check
 
 ## Package
 
-Create the archive with the release version:
+Create the archive with PowerShell 7 and the release version:
 
 ```powershell
-.\scripts\Package-Release.ps1 -Version '1.2.0'
+pwsh -File .\scripts\Package-Release.ps1 -Version 'X.Y.Z'
 ```
 
 The package contains only:
 
 - `Mods/DuelLinksAccess.dll`
+- `BUILD-INFO.txt`
 - project `LICENSE`
 - `README.txt`
 - `THIRD_PARTY_NOTICES.md`

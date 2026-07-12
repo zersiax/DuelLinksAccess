@@ -15,7 +15,7 @@ Install
 1. Install MelonLoader and launch Duel Links once.
 2. Download Tolk from the URL in THIRD_PARTY_NOTICES.md.
 3. Verify the Tolk ZIP SHA-256 before extracting it.
-4. Put Tolk.dll and nvdaControllerClient64.dll beside dlpc.exe.
+4. From Tolk's x64 folder, put Tolk.dll and nvdaControllerClient64.dll beside dlpc.exe.
 5. Copy Mods\DuelLinksAccess.dll from this archive into the game's Mods folder.
 6. Start NVDA, then start Duel Links.
 

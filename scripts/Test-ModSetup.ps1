@@ -61,6 +61,13 @@ Test-RequiredFile "MelonLoader net6 assembly" (Join-Path $MelonLoaderPath "net6\
 Test-RequiredFile "Harmony assembly" (Join-Path $MelonLoaderPath "net6\0Harmony.dll")
 Test-RequiredFile "Il2CppInterop runtime" (Join-Path $MelonLoaderPath "net6\Il2CppInterop.Runtime.dll")
 Test-RequiredFile "generated Assembly-CSharp" (Join-Path $AssembliesPath "Assembly-CSharp.dll")
+Test-RequiredFile "generated Il2Cppmscorlib" (Join-Path $AssembliesPath "Il2Cppmscorlib.dll")
+Test-RequiredFile "generated UnityEngine" (Join-Path $AssembliesPath "UnityEngine.dll")
+Test-RequiredFile "generated UnityEngine.CoreModule" (Join-Path $AssembliesPath "UnityEngine.CoreModule.dll")
+Test-RequiredFile "generated UnityEngine.InputLegacyModule" (Join-Path $AssembliesPath "UnityEngine.InputLegacyModule.dll")
+Test-RequiredFile "generated UnityEngine.UI" (Join-Path $AssembliesPath "UnityEngine.UI.dll")
+Test-RequiredFile "generated UnityEngine.IMGUIModule" (Join-Path $AssembliesPath "UnityEngine.IMGUIModule.dll")
+Test-RequiredFile "generated UnityEngine.UIModule" (Join-Path $AssembliesPath "UnityEngine.UIModule.dll")
 Test-RequiredFile "project file" (Join-Path $ProjectPath "DuelLinksAccess.csproj")
 Test-RequiredFile "mod entry point" (Join-Path $ProjectPath "src\Main.cs")
 

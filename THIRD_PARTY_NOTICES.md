@@ -22,7 +22,7 @@ Tolk's archive also contains screen reader client libraries under their own lice
 These dependencies are referenced from the local game or MelonLoader installation. They are not copied into the release archive.
 
 - MelonLoader 0.7.3 or later: Apache License 2.0, https://github.com/LavaGang/MelonLoader
-- Harmony 2.x: MIT License, https://github.com/pardeike/Harmony
+- HarmonyX 2.x: MIT License, https://github.com/BepInEx/HarmonyX
 - Il2CppInterop: GNU Lesser General Public License 3.0, https://github.com/BepInEx/Il2CppInterop
 
 Konami and Unity game assemblies are local build inputs. They are never part of a DuelLinksAccess release.
