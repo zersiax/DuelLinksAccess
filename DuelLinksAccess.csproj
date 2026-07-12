@@ -15,6 +15,7 @@
   <ItemGroup>
     <Compile Remove="decompiled\**" />
     <Compile Remove="templates\**" />
+    <Compile Remove="tests\**" />
   </ItemGroup>
 
   <!-- MelonLoader References (net6) -->
@@ -78,7 +79,7 @@
   </ItemGroup>
 
   <!-- Copy built DLL to Mods folder after build -->
-  <Target Name="CopyToMods" AfterTargets="Build">
+  <Target Name="CopyToMods" AfterTargets="Build" Condition="'$(SkipCopyToMods)' != 'true'">
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\Mods\" />
     <Message Text="Copied $(TargetFileName) to Mods folder" Importance="High" />
   </Target>

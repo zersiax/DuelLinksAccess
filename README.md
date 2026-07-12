@@ -50,6 +50,7 @@ Press **F1** at any time to hear the full key list. A quick summary:
 - **L** — read life points
 - **F** — field summary (card counts in each zone)
 - **P** — advance to the next phase
+- Draws happen automatically; press **Space** during Draw Phase to retry a delayed draw
 - **I** — status (turn, phase, LP)
 - **J** — browse the event log (Up/Down scroll, Escape close)
 

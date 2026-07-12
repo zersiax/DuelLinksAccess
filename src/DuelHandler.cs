@@ -15,6 +15,7 @@ namespace DuelLinksAccess
     ///   P — Advance phase
     ///   S — Status (LP, phase, turn)
     ///   L — Toggle event log browsing
+    ///   Space — Retry automatic draw during Draw Phase
     ///   During log browsing:
     ///     Up/Down — Navigate entries (older/newer)
     ///     Tab — Re-read current entry
@@ -33,6 +34,7 @@ namespace DuelLinksAccess
 
         private readonly DuelEventLog _eventLog = new();
         private readonly DuelFieldNavigator _fieldNav = new();
+        private readonly AutomaticDrawController _automaticDraw = new();
         private bool _wasActive;
         private bool _tutorialArrowAnnounced;
         private bool _tutorialArrowDismissAttempted;
@@ -88,6 +90,7 @@ namespace DuelLinksAccess
                         _eventLog.StopBrowsing();
                     _eventLog.Clear();
                     _fieldNav.Reset();
+                    _automaticDraw.Reset();
                     _tutorialArrowAnnounced = false;
                     _tutorialArrowDismissAttempted = false;
                     DuelEventAnnouncer.Reset();
@@ -107,7 +110,11 @@ namespace DuelLinksAccess
                 _yesNoCooldown = 0f;
                 _eventLog.Clear();
                 _fieldNav.Reset();
+                _automaticDraw.Reset();
             }
+
+            UpdateAutomaticDraw();
+            CompleteAutomaticDrawPresentation();
 
             // Log browsing mode takes priority for navigation keys
             if (_eventLog.IsBrowsing)
@@ -258,6 +265,22 @@ namespace DuelLinksAccess
 
         private void ProcessDuelKeys()
         {
+            if (IsAutomaticDrawEligible()
+                && InputManager.TryConsumeKeyDown(KeyCode.Space))
+            {
+                try
+                {
+                    _automaticDraw.Retry(true, true, true,
+                        () => DispatchDrawCommand("Space retry"));
+                }
+                catch (System.Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                        $"Space retry failed: {ex.Message}");
+                }
+                return;
+            }
+
             // I = Status report (LP, phase, turn) — was S, now S is spell zone hotkey
             if (InputManager.TryConsumeKeyDown(KeyCode.I))
             {
@@ -272,6 +295,133 @@ namespace DuelLinksAccess
                 _eventLog.StartBrowsing();
                 return;
             }
+        }
+
+        private void UpdateAutomaticDraw()
+        {
+            bool duelActive = DuelEventAnnouncer.InDuel
+                && !DuelEventAnnouncer.DuelEnded;
+            bool localTurn = duelActive
+                && DuelState.CurrentTurnPlayer == DuelState.MyPlayerNum();
+            bool drawPhase = DuelState.InputType
+                == Il2CppYgomGame.Duel.Engine.MenuActType.DrawPhase;
+
+            try
+            {
+                _automaticDraw.Update(duelActive, localTurn, drawPhase,
+                    () => DispatchDrawCommand("automatic"));
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                    $"Automatic draw failed: {ex.Message}");
+            }
+        }
+
+        private static bool IsAutomaticDrawEligible()
+        {
+            return DuelEventAnnouncer.InDuel
+                && !DuelEventAnnouncer.DuelEnded
+                && DuelState.CurrentTurnPlayer == DuelState.MyPlayerNum()
+                && DuelState.InputType
+                    == Il2CppYgomGame.Duel.Engine.MenuActType.DrawPhase;
+        }
+
+        private static void DispatchDrawCommand(string source)
+        {
+            int player = DuelState.MyPlayerNum();
+            DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                $"Dispatching {source} draw command for player {player}");
+            Il2CppYgomGame.Duel.Engine.DLL_DuelComDoCommand(
+                player,
+                15,
+                0,
+                (int)Il2CppYgomGame.Duel.Engine.CommandType.Draw);
+        }
+
+        private void CompleteAutomaticDrawPresentation()
+        {
+            Il2CppYgomGame.Duel.DrawOperationMultiDraw operation = null;
+            bool ready = false;
+
+            try
+            {
+                operation = Il2CppYgomGame.Duel.DuelClient.instance?
+                    .worker3d?.drawOperation?
+                    .TryCast<Il2CppYgomGame.Duel.DrawOperationMultiDraw>();
+                ready = operation != null
+                    && operation.step
+                        == Il2CppYgomGame.Duel.DrawOperationMultiDraw.Step.Touchable
+                    && (operation.phase
+                            == Il2CppYgomGame.Duel.DrawOperationMultiDraw.TouchPhase.Neutral
+                        || operation.phase
+                            == Il2CppYgomGame.Duel.DrawOperationMultiDraw.TouchPhase.Touching)
+                    && operation.deckPlace != null;
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                    $"Draw operation probe failed: {ex.Message}");
+            }
+
+            try
+            {
+                _automaticDraw.CompleteGesture(ready,
+                    () => SwipeDrawCard(operation));
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                    $"Automatic draw gesture failed: {ex.Message}");
+            }
+
+            bool detailReady = operation != null
+                && operation.step
+                    == Il2CppYgomGame.Duel.DrawOperationMultiDraw.Step.Touchable
+                && operation.phase
+                    == Il2CppYgomGame.Duel.DrawOperationMultiDraw.TouchPhase.WaitDetail;
+            try
+            {
+                _automaticDraw.CompleteDetail(detailReady, () =>
+                {
+                    operation.time = Il2CppYgomGame.Duel.DrawOperationMultiDraw
+                        .waitDetailPhaseTimeLimit;
+                    DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                        "Advanced automatic draw card detail");
+                });
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                    $"Automatic draw detail advance failed: {ex.Message}");
+            }
+        }
+
+        private static void SwipeDrawCard(
+            Il2CppYgomGame.Duel.DrawOperationMultiDraw operation)
+        {
+            var start = new Vector2(
+                Screen.width * 0.85f, Screen.height * 0.25f);
+
+            var end = new Vector2(Screen.width / 2f, Screen.height / 2f);
+
+            var eventData = new UnityEngine.EventSystems.PointerEventData(
+                UnityEngine.EventSystems.EventSystem.current)
+            {
+                button = UnityEngine.EventSystems.PointerEventData.InputButton.Left,
+                pointerId = -1,
+                position = start,
+                pressPosition = start
+            };
+
+            operation.OnTapDownDrawCard(eventData);
+            eventData.delta = end - eventData.position;
+            eventData.position = end;
+            operation.OnTapUpDrawCard(eventData);
+
+            DebugLogger.Log(LogCategory.Game, "DuelDraw",
+                $"Swiped draw card from ({start.x:F0},{start.y:F0}) " +
+                $"to ({end.x:F0},{end.y:F0})");
         }
 
         private void OnDuelAnnouncement(string message)
