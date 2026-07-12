@@ -3308,6 +3308,12 @@ namespace DuelLinksAccess
             // selection happens downstream via EmotionalList.
             if (locate == LocateExtra)
             {
+                if (DuelState.GetFieldCard(player, locate, slotIndex) == null)
+                {
+                    ScreenReader.Say(Loc.Get("duel_no_actions"));
+                    yield break;
+                }
+
                 var worker = client.worker2d;
                 if (worker != null)
                 {

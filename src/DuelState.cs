@@ -225,6 +225,13 @@ namespace DuelLinksAccess
                 // up the CardRoot by uniqueId instead of by index.
                 if (IsStackZone(locate))
                 {
+                    if (locate == LocateExtra
+                        && TryGetLiveExtraDeckCard(
+                            player, slot, out CardSnapshot? liveExtra))
+                    {
+                        return liveExtra;
+                    }
+
                     // PRIMARY: registered-deck array from EngineInitializer.
                     // For Extra Deck and Main Deck specifically, this is the
                     // only source that has the full cardDbId list in PvP —
@@ -416,6 +423,12 @@ namespace DuelLinksAccess
         public static int GetCardCount(int player, int locate)
         {
             if (locate == LocateHand) return GetHandSize(player);
+
+            if (locate == LocateExtra
+                && TryGetLiveExtraDeckCount(player, out int liveExtraCount))
+            {
+                return liveExtraCount;
+            }
 
             // Local player's extra deck / main deck: the EngineInitializer's
             // registered-deck array is the only authoritative source in PvP.
@@ -784,6 +797,46 @@ namespace DuelLinksAccess
             }
             catch { }
             return null;
+        }
+
+        private static bool TryGetLiveExtraDeckCount(
+            int player, out int count)
+        {
+            count = 0;
+            try
+            {
+                var place = GetStackPlace(player, LocateExtra);
+                var cards = place?.innerCards;
+                if (!ExtraDeckSourcePolicy.UseLiveStack(
+                    place != null,
+                    place?.isLoaded == true,
+                    cards != null)) return false;
+
+                count = cards.Count;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static bool TryGetLiveExtraDeckCard(
+            int player, int slot, out CardSnapshot? card)
+        {
+            card = null;
+            if (slot < 0) return false;
+            try
+            {
+                var place = GetStackPlace(player, LocateExtra);
+                var cards = place?.innerCards;
+                if (!ExtraDeckSourcePolicy.UseLiveStack(
+                    place != null,
+                    place?.isLoaded == true,
+                    cards != null)) return false;
+
+                if (slot < cards.Count && cards[slot] != null)
+                    card = MakeSnapshot(cards[slot], isFaceUp: true);
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>
