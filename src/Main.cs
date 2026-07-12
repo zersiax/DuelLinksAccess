@@ -85,7 +85,6 @@ namespace DuelLinksAccess
         {
             ScreenReader.Initialize();
             Loc.Initialize();
-            ModConfig.Initialize();
             _harmony = new HarmonyLib.Harmony("com.duellinksaccess.mod");
             InitializeHandlers();
             MelonCoroutines.Start(AnnounceStartupDelayed());
@@ -125,13 +124,6 @@ namespace DuelLinksAccess
         {
             // Input manager must update first — clears consumed keys
             InputManager.Update();
-
-            // Settings menu takes priority
-            if (ModConfig.IsMenuOpen)
-            {
-                ModConfig.Update();
-                return;
-            }
 
             // Global hotkeys work regardless of game ready state
             if (ProcessHotkeys()) return;
@@ -278,13 +270,6 @@ namespace DuelLinksAccess
             if (IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.R))
             {
                 RepeatLastAnnouncement();
-                return true;
-            }
-
-            // Ctrl+F11 = Mod Settings
-            if (IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.F11))
-            {
-                ModConfig.ToggleMenu();
                 return true;
             }
 
