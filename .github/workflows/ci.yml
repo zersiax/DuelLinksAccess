@@ -42,3 +42,7 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+
+      - name: Check forbidden public APIs
+        shell: pwsh
+        run: ./scripts/Test-PublicSourceSafety.ps1
