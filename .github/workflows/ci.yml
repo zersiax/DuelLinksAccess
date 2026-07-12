@@ -26,3 +26,19 @@ jobs:
 
       - name: Run portable tests
         run: dotnet test tests/DuelLinksAccess.Tests/DuelLinksAccess.Tests.csproj --configuration Release --no-restore
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File): $($_.Message)" }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }

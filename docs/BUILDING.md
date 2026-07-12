@@ -26,6 +26,12 @@ dotnet test tests\DuelLinksAccess.Tests\DuelLinksAccess.Tests.csproj -p:DuelLink
 
 ## Mod build
 
+Check a local setup when diagnosing missing dependencies:
+
+```powershell
+.\scripts\Test-ModSetup.ps1 -GamePath 'C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links'
+```
+
 The default Steam path is used when no override is supplied:
 
 ```powershell
