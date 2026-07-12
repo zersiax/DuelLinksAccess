@@ -67,8 +67,7 @@ namespace DuelLinksAccess
         private static int _localSeat = -1;
         private static Il2CppYgomGame.Duel.Engine.Phase _currentPhase
             = Il2CppYgomGame.Duel.Engine.Phase.Null;
-        private static int _currentTurnPlayer = -1;
-        private static int _turnNumber = 0;
+        private static readonly DuelTurnTracker _turnTracker = new();
         private static readonly int[] _lp = { -1, -1 };
         private static bool _inDuel;
         private static bool _duelEnded;
@@ -80,8 +79,8 @@ namespace DuelLinksAccess
         public static bool InDuel => _inDuel;
         public static bool DuelEnded => _duelEnded;
         public static Il2CppYgomGame.Duel.Engine.Phase CurrentPhase => _currentPhase;
-        public static int CurrentTurnPlayer => _currentTurnPlayer;
-        public static int TurnNumber => _turnNumber;
+        public static int CurrentTurnPlayer => _turnTracker.CurrentPlayer;
+        public static int TurnNumber => _turnTracker.TurnNumber;
 
         /// <summary>Engine's current input-wait mode (BattlePhase, CheckChain, LockOn, etc.).</summary>
         public static Il2CppYgomGame.Duel.Engine.MenuActType InputType
@@ -840,8 +839,7 @@ namespace DuelLinksAccess
                     _duelEnded = false;
                     _localSeat = -1; // matchmaking may have assigned a new seat
                     _currentPhase = Il2CppYgomGame.Duel.Engine.Phase.Null;
-                    _currentTurnPlayer = -1;
-                    _turnNumber = 0;
+                    _turnTracker.Reset();
                     // Don't reset _lp — LifeSet fires BEFORE DuelStart with
                     // the starting values, and we want to keep them.
                     break;
@@ -853,11 +851,11 @@ namespace DuelLinksAccess
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.PhaseChange:
                     _currentPhase = (Il2CppYgomGame.Duel.Engine.Phase)p2;
+                    _turnTracker.ObservePhase(p1);
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.TurnChange:
-                    if (p1 == 0 || p1 == 1) _currentTurnPlayer = p1;
-                    _turnNumber++;
+                    _turnTracker.ObserveTurnChange(p1);
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.LifeSet:
@@ -888,8 +886,7 @@ namespace DuelLinksAccess
             _duelEnded = false;
             _localSeat = -1;
             _currentPhase = Il2CppYgomGame.Duel.Engine.Phase.Null;
-            _currentTurnPlayer = -1;
-            _turnNumber = 0;
+            _turnTracker.Reset();
             _lp[0] = -1;
             _lp[1] = -1;
         }
