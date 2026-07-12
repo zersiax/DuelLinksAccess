@@ -92,9 +92,6 @@ namespace DuelLinksAccess
 
         private void InitializeHandlers()
         {
-            // Subscribe to screen changes to update AccessStateManager context
-            GameStateTracker.OnScreenChanged += OnScreenChanged;
-
             _dialogHandler = new DialogHandler();
             _screenButtonHandler = new ScreenButtonHandler();
             _duelHandler = new DuelHandler();
@@ -104,13 +101,6 @@ namespace DuelLinksAccess
             _cardTraderHandler = new CardTraderHandler();
             _cardCatalogHandler = new CardCatalogHandler();
             _homeHandler = new HomeHandler();
-        }
-
-        private void OnScreenChanged(GameStateTracker.GameScreen oldScreen,
-            GameStateTracker.GameScreen newScreen)
-        {
-            var newContext = AccessStateManager.ContextFromScreen(newScreen);
-            AccessStateManager.SetContext(newContext);
         }
 
         private IEnumerator AnnounceStartupDelayed()
@@ -167,7 +157,6 @@ namespace DuelLinksAccess
             _harmonyPatchAttempts = 0;
             _nextHarmonyPatchAttempt = 0f;
             GameStateTracker.Reset();
-            AccessStateManager.ForceReset();
         }
 
         public override void OnApplicationQuit()
