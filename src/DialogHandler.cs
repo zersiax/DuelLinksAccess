@@ -240,17 +240,17 @@ namespace DuelLinksAccess
                 }
                 if (dialogRoot == null)
                 {
-                    MelonLogger.Msg("[Dialog] No top dialog VC found");
+                    if (DiagnosticPolicy.ShouldCollect(Main.DebugMode))
+                        MelonLogger.Msg("[Dialog] No top dialog VC found");
                     return;
                 }
 
-                MelonLogger.Msg($"[Dialog] Scanning dialog root: {dialogRoot.name}");
-
-                // Log the actual VC type + full dialog stack for diagnostics
-                LogDialogVcType(dialogRoot.name);
-
-                // Diagnostics: dump toggles, button interactable states, and special VCs
-                DumpDialogDiagnostics(dialogRoot);
+                if (DiagnosticPolicy.ShouldCollect(Main.DebugMode))
+                {
+                    MelonLogger.Msg($"[Dialog] Scanning dialog root: {dialogRoot.name}");
+                    LogDialogVcType(dialogRoot.name);
+                    DumpDialogDiagnostics(dialogRoot);
+                }
 
                 // Read and announce dialog text first (Say to interrupt "Dialog" announcement).
                 // Skip re-announcing identical text on retry scans.

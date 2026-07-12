@@ -274,6 +274,7 @@ namespace DuelLinksAccess
 
         private static void UserTutorialDialog_Prefix(int _id_)
         {
+            if (!DiagnosticPolicy.ShouldCollect(Main.DebugMode)) return;
             try
             {
                 DebugLogger.Log(LogCategory.Game, "Tutorial",
@@ -292,6 +293,7 @@ namespace DuelLinksAccess
 
         private static void TutorialManagerFetch_Prefix()
         {
+            if (!DiagnosticPolicy.ShouldCollect(Main.DebugMode)) return;
             try
             {
                 DebugLogger.Log(LogCategory.Game, "Tutorial",
@@ -310,6 +312,7 @@ namespace DuelLinksAccess
 
         private static void TutorialManagerNotificator_Prefix(Il2CppSystem.Object obj)
         {
+            if (!DiagnosticPolicy.ShouldCollect(Main.DebugMode)) return;
             try
             {
                 string objStr = "(null)";

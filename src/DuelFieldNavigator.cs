@@ -1333,8 +1333,8 @@ namespace DuelLinksAccess
             {
                 uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
 
-                // Always log attack diagnostics for field monsters
-                if (isLocalMonster)
+                if (isLocalMonster
+                    && DiagnosticPolicy.ShouldCollect(Main.DebugMode))
                 {
                     string inputType = "?";
                     int attackMask = 0;
@@ -4095,7 +4095,8 @@ namespace DuelLinksAccess
                     // user's "what would a mouse click do?" lookup — once
                     // we identify the right Button by name, we can target
                     // it directly via onClick.Invoke().
-                    DumpPhaseRelatedButtons();
+                    if (DiagnosticPolicy.ShouldCollect(Main.DebugMode))
+                        DumpPhaseRelatedButtons();
                 }
 
                 // PvP-aware path: the game's own PhaseButtonViewController knows

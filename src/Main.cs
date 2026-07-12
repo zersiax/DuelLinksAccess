@@ -1046,8 +1046,7 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Logs the boot tutorial state (inProgress + waitTarget) any time
-        /// either changes. Cheap per-frame query that only emits a log line
-        /// on transition. Combined with the Harmony patches on
+        /// either changes while debug mode is enabled. Combined with the Harmony patches on
         /// API.User_tutorial_dialog / TutorialManager.fetch / .Notificator
         /// this gives a full timeline of tutorial gate-state transitions
         /// alongside the calls that drove them — the missing oracle for
@@ -1055,6 +1054,7 @@ namespace DuelLinksAccess
         /// </summary>
         private void DumpTutorialStateOnChange()
         {
+            if (!DiagnosticPolicy.ShouldCollect(DebugMode)) return;
             try
             {
                 if (!GameStateTracker.IsGameReady) return;
