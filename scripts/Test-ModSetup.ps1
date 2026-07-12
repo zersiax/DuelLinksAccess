@@ -176,7 +176,7 @@ if (Test-Path $tolkDll) {
     Write-Check "Tolk.dll vorhanden" "OK"
 } else {
     Write-Check "Tolk.dll vorhanden" "FEHLER" "Tolk.dll nicht im Spielordner"
-    Write-Solution "Tolk.dll von https://github.com/ndarilek/tolk/releases herunterladen und in den Spielordner kopieren"
+    Write-Solution "Tolk.dll von https://github.com/dkager/tolk/releases herunterladen und in den Spielordner kopieren"
 }
 
 # NVDA Controller Client
@@ -236,7 +236,7 @@ if ($csprojFiles.Count -eq 0) {
 }
 
 # Main.cs pruefen
-$mainCs = Join-Path $ProjectPath "Main.cs"
+$mainCs = Join-Path $ProjectPath "src\Main.cs"
 if (Test-Path $mainCs) {
     Write-Check "Main.cs vorhanden" "OK"
 
