@@ -23,6 +23,7 @@
     <Compile Include="..\..\src\CardProgressionFormatter.cs" Link="Source\CardProgressionFormatter.cs" />
     <Compile Include="..\..\src\DialogControlPolicy.cs" Link="Source\DialogControlPolicy.cs" />
     <Compile Include="..\..\src\DuelTurnTracker.cs" Link="Source\DuelTurnTracker.cs" />
+    <Compile Include="..\..\src\DuelPositionTracker.cs" Link="Source\DuelPositionTracker.cs" />
     <Compile Include="..\..\src\EventLogOverflowPolicy.cs" Link="Source\EventLogOverflowPolicy.cs" />
     <Compile Include="..\..\src\LateContentRetryPolicy.cs" Link="Source\LateContentRetryPolicy.cs" />
     <Compile Include="..\..\src\Loc.cs" Link="Source\Loc.cs" />

@@ -5,50 +5,6 @@ using MelonLoader;
 namespace DuelLinksAccess
 {
     /// <summary>
-    /// Tracks the ATK/DEF battle position of monsters by their runtime uniqueId.
-    /// The command-mask heuristic (TurnAtk/TurnDef bits) only works the turn AFTER
-    /// a position change — once a monster has changed position this turn, both bits
-    /// drop and the heuristic falls back to ATK regardless of actual orientation.
-    /// CutinTurn / CutinReverse events fire in real time when the engine animates
-    /// a position change, so this cache is the authoritative source.
-    /// </summary>
-    public static class DuelPositionTracker
-    {
-        // uniqueId -> true if currently in defense position
-        private static readonly Dictionary<int, bool> _isDefense = new();
-
-        public static void Reset() => _isDefense.Clear();
-
-        public static void SetAttack(int uniqueId)
-        {
-            if (uniqueId > 0) _isDefense[uniqueId] = false;
-        }
-
-        public static void SetDefense(int uniqueId)
-        {
-            if (uniqueId > 0) _isDefense[uniqueId] = true;
-        }
-
-        public static void Toggle(int uniqueId)
-        {
-            if (uniqueId <= 0) return;
-            _isDefense[uniqueId] = !(_isDefense.TryGetValue(uniqueId, out bool cur) && cur);
-        }
-
-        public static void Forget(int uniqueId)
-        {
-            if (uniqueId > 0) _isDefense.Remove(uniqueId);
-        }
-
-        /// <summary>Returns null if the uid has no cached position.</summary>
-        public static bool? IsDefense(int uniqueId)
-        {
-            if (uniqueId <= 0) return null;
-            return _isDefense.TryGetValue(uniqueId, out bool isDef) ? (bool?)isDef : null;
-        }
-    }
-
-    /// <summary>
     /// Processes duel events from DuelClient.RunEffect and generates announcements.
     /// Translates Engine.ViewType events into human-readable screen reader output.
     /// </summary>
@@ -393,6 +349,7 @@ namespace DuelLinksAccess
             _pendingPhaseAnnouncement = false;
             _pendingPhaseDeadline = -1f;
             _pendingDialogText = null;
+            DuelPositionTracker.Reset();
             DuelState.Reset();
         }
 
