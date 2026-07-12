@@ -30,6 +30,7 @@
     <Compile Include="..\..\src\SpeechTextFormatter.cs" Link="Source\SpeechTextFormatter.cs" />
     <Compile Include="..\..\src\TicketExchangePolicy.cs" Link="Source\TicketExchangePolicy.cs" />
     <Compile Include="..\..\src\TradeExecutionPolicy.cs" Link="Source\TradeExecutionPolicy.cs" />
+    <Compile Include="..\..\src\TurnAnnouncementTracker.cs" Link="Source\TurnAnnouncementTracker.cs" />
   </ItemGroup>
 
 </Project>

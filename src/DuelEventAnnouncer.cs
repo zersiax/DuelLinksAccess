@@ -29,7 +29,7 @@ namespace DuelLinksAccess
         // Last-announced state — used purely for de-duplication so we don't
         // re-announce the same phase/turn back-to-back. Actual state lives
         // in DuelState (LP, phase, turn player, etc.).
-        private static int _lastAnnouncedTurnPlayer = -1;
+        private static readonly TurnAnnouncementTracker _turnAnnouncements = new();
         private static int _lastAnnouncedPhase = -1;
 
         // Phase announcements debounce so the rapid Draw → Standby → Main
@@ -157,7 +157,7 @@ namespace DuelLinksAccess
                     // DuelState handles InDuel/DuelEnded flags and clears its
                     // own state. We just reset our announcement-dedup vars
                     // and the position tracker, then announce.
-                    _lastAnnouncedTurnPlayer = -1;
+                    _turnAnnouncements.Reset();
                     _lastAnnouncedPhase = -1;
                     DuelPositionTracker.Reset();
                     DumpPlayerSeats();
@@ -344,7 +344,7 @@ namespace DuelLinksAccess
         public static void Reset()
         {
             _lastMessage = "";
-            _lastAnnouncedTurnPlayer = -1;
+            _turnAnnouncements.Reset();
             _lastAnnouncedPhase = -1;
             _pendingPhaseAnnouncement = false;
             _pendingPhaseDeadline = -1f;
@@ -420,8 +420,8 @@ namespace DuelLinksAccess
                 int turnPlayer = DuelState.CurrentTurnPlayer;
                 int turnNum = DuelState.TurnNumber;
 
-                if (turnPlayer == _lastAnnouncedTurnPlayer) return;
-                _lastAnnouncedTurnPlayer = turnPlayer;
+                if (!_turnAnnouncements.ShouldAnnounce(
+                    turnNum, turnPlayer)) return;
 
                 string whose = turnPlayer == DuelState.MyPlayerNum()
                     ? Loc.Get("duel_your_turn")
