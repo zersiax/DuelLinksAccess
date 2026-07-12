@@ -86,7 +86,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. A deck accessories, card sleeve and game mat. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
             _english["debug_mode"] = "Debug mode {0}";
             _english["tutorial_arrow_activated"] = "Tutorial arrow activated";
             _english["tutorial_arrow_no_arrow"] = "No tutorial arrow active";
@@ -190,7 +190,8 @@ namespace DuelLinksAccess
 
             // ===== HOME / DUEL WORLD HANDLER =====
             _english["home_items"] = "Home screen: {0} items";
-            _english["home_item"] = "{0} of {1}: {2}";
+            // Label first — position info is secondary for navigation efficiency
+            _english["home_item"] = "{2}, {0} of {1}";
             _english["home_area_selector"] = "Area: {0}";
             _english["home_area_changed"] = "Now in {0}";
             _english["home_area_left"] = "Previous area";
@@ -228,6 +229,8 @@ namespace DuelLinksAccess
             _english["home_character_button"] = "Open character panel";
             _english["home_duel_shortcut"] = "Quick duel";
             _english["home_series"] = "Change duel world";
+            _english["home_series_option"] = "World: {0}";
+            _english["home_series_cancel"] = "Cancel world change";
             _english["map_card_portal"] = "Card Portal";
             _english["map_alley_gomibako"] = "Trash";
             _english["map_event_panel"] = "Event";
@@ -402,7 +405,7 @@ namespace DuelLinksAccess
             // ===== DUEL: TUTORIAL =====
             _english["duel_tutorial_arrow"] = "Press Space to continue tutorial";
             _english["duel_tutorial_arrow_pointing"] = "Tutorial arrow active. Navigate to its target with arrow keys and press Enter, or press F11 if the target isn't reachable.";
-            _english["tutorial_arrow_target_named"] = "Tutorial: navigate to {0} and press Enter";
+            _english["tutorial_arrow_target_named"] = "Tutorial: press F11 to activate {0}, or navigate to it and press Enter";
             _english["tutorial_arrow_back"] = "Tutorial: navigate back to find the target button.";
             _english["tutorial_arrow_back_named"] = "Tutorial: press Escape to go back, then navigate to {0}.";
 
@@ -433,6 +436,22 @@ namespace DuelLinksAccess
             _english["deck_reason_limit"] = "already have {0} copies";
             _english["deck_reason_no_copies"] = "no more copies available";
             _english["deck_reason_unknown"] = "not allowed";
+
+            // ===== DECK ACCESSORIES (sleeve / mat / ace card) =====
+            _english["deck_edit_accessories_opening"] = "Opening deck accessories";
+            _english["accessory_sleeve"] = "Card sleeve: {0}";
+            _english["accessory_mat"] = "Game mat: {0}";
+            _english["accessory_ace"] = "Ace card: {0}";
+            _english["accessory_none"] = "none";
+            _english["accessory_preview"] = "{0}, preview";
+            _english["accessory_current"] = "{0}, current";
+            _english["accessory_new"] = "{0}, new";
+            _english["accessory_confirm_sleeve_toggle"] = "Apply card sleeve, checkbox {0}";
+            _english["accessory_confirm_mat_toggle"] = "Apply game mat, checkbox {0}";
+            _english["accessory_checked"] = "checked";
+            _english["accessory_unchecked"] = "unchecked";
+            _english["accessory_confirm_yes"] = "OK";
+            _english["accessory_confirm_nochange"] = "Don't change";
 
             // ===== DUEL: EVENT LOG =====
             _english["duel_log_entry"] = "{0} of {1}: {2}";

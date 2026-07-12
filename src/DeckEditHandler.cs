@@ -411,6 +411,13 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // A — open deck accessories (card sleeve, game mat, ace card)
+            if (InputManager.TryConsumeKeyDown(KeyCode.A))
+            {
+                OpenAccessories();
+                return;
+            }
+
             // Escape — go back
             if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
                 || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
@@ -663,6 +670,36 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Handler, "DeckEdit",
                     $"OpenSkillSelection error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        /// <summary>
+        /// Opens the deck accessory dialog (card sleeve, game mat, ace card)
+        /// via DeckEdit2ViewController.AccessoryClicked() — the same entry
+        /// point the on-screen accessory button uses. The dialog lands on the
+        /// dialog stack where DialogHandler takes over; its accessory-aware
+        /// relabel pass names the sleeve/mat/ace items.
+        /// </summary>
+        private void OpenAccessories()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+
+                ScreenReader.Say(Loc.Get("deck_edit_accessories_opening"));
+                _vc.AccessoryClicked();
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    "AccessoryClicked() invoked");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"OpenAccessories error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("deck_operation_error"));
             }
         }

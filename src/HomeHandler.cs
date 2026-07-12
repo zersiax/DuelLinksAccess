@@ -83,6 +83,18 @@ namespace DuelLinksAccess
         private bool _sbhFallback;
         private bool _wasActive;
 
+        // Series-change panel overlay (SerieseChangePanel — game's own
+        // spelling). It opens and closes without a VC change, so its active
+        // state is polled and the curated list rebuilt on flips.
+        private Il2CppYgomGame.Single.SerieseChangePanel _seriesPanel;
+        private bool _seriesPanelWasOpen;
+        private float _seriesPanelPollAt;
+
+        // Quiet rebuild after a Left/Right character change — the panel's
+        // per-character widgets (deck, exp-up, style switcher) repopulate
+        // async, so the curated list is rebuilt without re-announcing.
+        private float _quietRebuildAt = -1f;
+
         #endregion
 
         #region Properties
@@ -150,6 +162,35 @@ namespace DuelLinksAccess
                 StartScan();
             }
 
+            // The series-change panel opens and closes WITHOUT a VC change,
+            // so poll its active state and rebuild the list on flips.
+            if (Time.unscaledTime >= _seriesPanelPollAt)
+            {
+                _seriesPanelPollAt = Time.unscaledTime + 0.25f;
+                bool open = IsSeriesPanelOpen();
+                if (open != _seriesPanelWasOpen)
+                {
+                    _seriesPanelWasOpen = open;
+                    DebugLogger.Log(LogCategory.Handler, "Home",
+                        $"Series panel {(open ? "opened" : "closed")} — rebuilding");
+                    StartScan();
+                }
+            }
+
+            // Quiet rebuild after a character change: refresh per-character
+            // items (deck, exp-up, style switcher) without re-announcing.
+            if (_quietRebuildAt > 0f && Time.unscaledTime >= _quietRebuildAt)
+            {
+                _quietRebuildAt = -1f;
+                int keepFocus = _focusIndex;
+                if (IsActive && TryBuildItems())
+                {
+                    _focusIndex = Mathf.Clamp(keepFocus, 0, _items.Count - 1);
+                    DebugLogger.Log(LogCategory.Handler, "Home",
+                        $"Quiet rebuild after chara change: {_items.Count} items");
+                }
+            }
+
             // Delayed scan — keep retrying until the view supplies content.
             if (!_scanDone)
             {
@@ -214,6 +255,9 @@ namespace DuelLinksAccess
             _items.Clear();
             _lastVcName = "";
             _scanDone = false;
+            _seriesPanel = null;
+            _seriesPanelWasOpen = false;
+            _quietRebuildAt = -1f;
             AccessStateManager.Exit(AccessStateManager.State.Home);
             DebugLogger.Log(LogCategory.Handler, "Home", "Deactivated");
         }
@@ -445,6 +489,16 @@ namespace DuelLinksAccess
 
         private void BuildSingleViewItems(SingleViewController view)
         {
+            // The series-change panel is modal — while it's open, curate its
+            // world options only (v10.9.0 user request: "it will improve once
+            // that screen exposes its controls properly").
+            if (IsSeriesPanelOpen())
+            {
+                BuildSeriesPanelItems(_seriesPanel);
+                if (_items.Count > 0) return;
+                // Panel yielded nothing usable — fall through to the map list.
+            }
+
             SyncMapAreaIndex();
 
             _items.Add(new HomeItem
@@ -537,11 +591,17 @@ namespace DuelLinksAccess
 
             // Series / world switcher (DM / GX / 5Ds / Zexal / Arc-V /
             // VRAINS). Renders the active world's name as the label when
-            // possible, otherwise falls back to "Change duel world". Click
-            // opens the series-change panel.
+            // possible, otherwise falls back to "Change duel world".
+            // Activation must be a real hardware click:
+            // SingleViewController.OnOpenSeriesChangePanel() silently
+            // no-ops for this footer button (v10.9.0 user log 2026-07-10),
+            // while a hardware click at the button — the same thing F11
+            // does for the Series-unlock tutorial arrow — is confirmed to
+            // open the panel.
             AddButtonByName(view.gameObject, "SeriesLogo",
                 Loc.Get("home_series"),
-                () => { try { view.OnOpenSeriesChangePanel(); } catch { } });
+                () => HardwareClickByName(view.gameObject, "SeriesLogo",
+                    () => { try { view.OnOpenSeriesChangePanel(); } catch { } }));
 
             // Footer left — missions, with live stage label when available
             AddButton(view.gameObject,
@@ -549,6 +609,126 @@ namespace DuelLinksAccess
                 "Mission", GetMissionLabel());
 
             NumberDuplicateLabels();
+        }
+
+        // ── Series-change panel (SerieseChangePanel) ─────────────────────────
+
+        /// <summary>
+        /// Finds the series-change panel (lazily, cached) and reports whether
+        /// it is currently shown. The panel lives inside the Single subtree
+        /// and toggles without any ViewController change.
+        /// </summary>
+        private bool IsSeriesPanelOpen()
+        {
+            try
+            {
+                if (_seriesPanel == null)
+                {
+                    var singleVc = FindActiveViewController<SingleViewController>();
+                    if (singleVc?.gameObject != null)
+                    {
+                        _seriesPanel = singleVc.gameObject
+                            .GetComponentInChildren<
+                                Il2CppYgomGame.Single.SerieseChangePanel>(true);
+                    }
+                }
+                return _seriesPanel != null
+                    && _seriesPanel.gameObject.activeInHierarchy;
+            }
+            catch
+            {
+                _seriesPanel = null;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Curates the open series-change panel: one item per selectable
+        /// world (SerieseChangePanelChild) plus a cancel item. Activation
+        /// uses a hardware click on the child's button — the same path the
+        /// F11 arrow activation confirmed working for the GX logo.
+        /// </summary>
+        private void BuildSeriesPanelItems(Il2CppYgomGame.Single.SerieseChangePanel panel)
+        {
+            try
+            {
+                var children = panel.children;
+                if (children == null) return;
+
+                foreach (var child in children)
+                {
+                    if (child?.gameObject == null) continue;
+                    if (!child.gameObject.activeInHierarchy) continue;
+
+                    string series = null;
+                    try { series = child.series; } catch { }
+                    string label = string.IsNullOrWhiteSpace(series)
+                        ? LabelExtractor.CleanGoName(child.gameObject.name)
+                        : series.ToUpperInvariant();
+
+                    DebugLogger.Log(LogCategory.Handler, "Home",
+                        $"SeriesPanel child: series='{series}' " +
+                        $"go={child.gameObject.name}");
+
+                    var captured = child;
+                    _items.Add(new HomeItem
+                    {
+                        Label = Loc.Get("home_series_option", label),
+                        Go = child.gameObject,
+                        Activate = () => ActivateSeriesPanelChild(captured)
+                    });
+                }
+
+                if (_items.Count > 0)
+                {
+                    var capturedPanel = panel;
+                    _items.Add(new HomeItem
+                    {
+                        Label = Loc.Get("home_series_cancel"),
+                        Go = panel.gameObject,
+                        Activate = () =>
+                        {
+                            try { capturedPanel.selectFinish(""); }
+                            catch (Exception ex)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "Home",
+                                    $"selectFinish failed: {ex.Message}");
+                            }
+                        }
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Home",
+                    $"BuildSeriesPanelItems error: {ex.Message}");
+            }
+        }
+
+        private static void ActivateSeriesPanelChild(
+            Il2CppYgomGame.Single.SerieseChangePanelChild child)
+        {
+            try
+            {
+                // Prefer the real input pipeline — the GX-unlock arrow's F11
+                // hardware click on this exact button family is confirmed
+                // working (v10.9.0 log, LogoButton).
+                var go = child.gameObject;
+                var btn = go.GetComponentInChildren<Button>(true);
+                var target = btn != null && btn.gameObject.activeInHierarchy
+                    ? btn.gameObject : go;
+                if (Main.TryGetUiScreenPos(target, out Vector2 pos)
+                    && Main.ClickViaHardwareMouse(pos, "Home-SeriesPanel"))
+                {
+                    return;
+                }
+                child.OnPanelButton();
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Home",
+                    $"ActivateSeriesPanelChild error: {ex.Message}");
+            }
         }
 
         private void AddMapObjectItems()
@@ -891,6 +1071,31 @@ namespace DuelLinksAccess
             });
         }
 
+        /// <summary>
+        /// Activates a button with a real hardware mouse click at its
+        /// RectTransform center. For buttons whose VC method and onClick
+        /// paths silently no-op (home-footer SeriesButton family), the
+        /// hardware click is the only confirmed-working activation — it is
+        /// exactly the sighted tap, so tutorial gates observe it too.
+        /// Falls back to the given action when the click cannot be sent.
+        /// </summary>
+        private static void HardwareClickByName(GameObject root, string goName,
+            Action fallback)
+        {
+            var btn = ResolveButtonByName(root, goName);
+            var go = btn?.gameObject;
+            if (go != null
+                && Main.TryGetUiScreenPos(go, out Vector2 pos)
+                && Main.ClickViaHardwareMouse(pos, "Home-" + goName))
+            {
+                return;
+            }
+
+            DebugLogger.Log(LogCategory.Handler, "Home",
+                $"HardwareClickByName: click for '{goName}' not sent, using fallback");
+            try { fallback?.Invoke(); } catch { }
+        }
+
         private static Button ResolveButtonByName(GameObject root, string goName)
         {
             if (root == null || string.IsNullOrEmpty(goName)) return null;
@@ -1063,11 +1268,53 @@ namespace DuelLinksAccess
             int cid = _unlockedCharas[_charaListIndex];
             try
             {
-                view.OnChangeChara(cid, true);
+                // Alternate-style entries: OnChangeChara(styleCid) alone
+                // silently reverts to the base outfit (v10.9.0 user report
+                // 2026-07-10). Mirror the game's own flow: register the
+                // outfit via CharaUtil.SetNowStyle first, then change to the
+                // BASE character. Selecting a base entry of a character that
+                // owns styles likewise resets the outfit to base, so the
+                // plain entry always means "default outfit".
+                int target = cid;
+                try
+                {
+                    bool isStyle = CharaUtil.IsAnotherStyle(cid);
+                    bool ownsStyles = false;
+                    if (!isStyle)
+                    {
+                        try
+                        {
+                            ownsStyles =
+                                (CharaUtil.GetAnotherStyle(cid)?.Count ?? 0) > 0;
+                        }
+                        catch { }
+                    }
+
+                    if (isStyle || ownsStyles)
+                    {
+                        CharaUtil.SetNowStyle(cid);
+                        if (isStyle) target = CharaUtil.GetBaseStyle(cid, cid);
+                        DebugLogger.Log(LogCategory.Handler, "Home",
+                            $"Chara change: cid={cid} isStyle={isStyle} " +
+                            $"ownsStyles={ownsStyles} target={target} " +
+                            $"nowStyle={CharaUtil.GetNowStyle(target, -1)}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "Home",
+                        $"Style resolution failed cid={cid}: {ex.Message}");
+                }
+
+                view.OnChangeChara(target, true);
                 string name = GetCharacterDisplayName(cid);
                 if (_items.Count > 0)
                     _items[0].Label = Loc.Get("home_chara_selector", name);
                 ScreenReader.Say(name);
+
+                // Per-character widgets (deck, exp-up, style switcher)
+                // repopulate async — refresh the curated list quietly.
+                _quietRebuildAt = Time.unscaledTime + 1.2f;
             }
             catch (Exception ex)
             {
@@ -1449,17 +1696,7 @@ namespace DuelLinksAccess
         }
 
         private static bool ContainsJapanese(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return false;
-            foreach (char c in s)
-            {
-                if ((c >= '぀' && c <= 'ヿ')     // Hiragana + Katakana
-                    || (c >= '一' && c <= '鿿')  // CJK Unified Ideographs
-                    || (c >= '㐀' && c <= '䶿')) // CJK Extension A
-                    return true;
-            }
-            return false;
-        }
+            => LabelExtractor.ContainsJapanese(s);
 
         #endregion
     }

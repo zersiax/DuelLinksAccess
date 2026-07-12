@@ -265,6 +265,14 @@ namespace DuelLinksAccess
                 // and insert them in DOM order among the button items
                 FindCategoryHeaders(dialogRoot);
 
+                // Character list / filter dialog: replace the bare "LV: 23"
+                // cell labels with character names resolved from the VC's data
+                ApplyCharaFilterLabels(dialogRoot);
+
+                // Deck accessory dialogs (sleeve / mat / ace card): name the
+                // image-only grid cells and preview buttons from the VC data
+                ApplyAccessoryLabels(dialogRoot);
+
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
                 // dismiss it or pass through so other handlers can run
                 if (_items.Count == 0 && string.IsNullOrEmpty(dialogText))
@@ -730,6 +738,447 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"[Dialog] FindButtons error: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Character list / filter dialog (CharaFilterDialogViewController):
+        /// the grid cells carry no text except a small "LV: n" label, so the
+        /// generic scan announces levels only (v10.9.0 user report,
+        /// 2026-07-10). Resolve each cell's character id from the VC's own
+        /// data (activeSeries ordering, then the per-series cid list) and
+        /// relabel the cell items "name, LV: n". Trailing cells beyond the
+        /// data are empty grid fillers and get removed.
+        /// </summary>
+        private void ApplyCharaFilterLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<
+                    Il2CppYgomGame.Menu.CharaFilterDialogViewController>();
+                if (vc == null) return;
+
+                // Flatten the dialog's chara data in display order.
+                var cids = new List<int>();
+                var actives = vc.activeSeries;
+                var charas = vc.charas;
+                if (actives == null || charas == null) return;
+                for (int i = 0; i < actives.Count; i++)
+                {
+                    if (charas.TryGetValue(actives[i], out var list) && list != null)
+                    {
+                        for (int j = 0; j < list.Count; j++)
+                            cids.Add(list[j]);
+                    }
+                }
+                if (cids.Count == 0) return;
+
+                // Rows sit under contentRoot in sibling order; each row's
+                // buttons[] are the cells, filled left to right.
+                var content = vc.contentRoot;
+                if (content == null) return;
+
+                var rows = new List<Il2CppYgomGame.Menu.CharaFilterRow>();
+                for (int i = 0; i < content.childCount; i++)
+                {
+                    var row = content.GetChild(i)?.GetComponent<
+                        Il2CppYgomGame.Menu.CharaFilterRow>();
+                    if (row != null && row.gameObject.activeInHierarchy)
+                        rows.Add(row);
+                }
+                if (rows.Count == 0) return;
+
+                int flat = 0;
+                var fillerCells = new List<GameObject>();
+                foreach (var row in rows)
+                {
+                    var buttons = row.buttons;
+                    var levels = row.levels;
+                    if (buttons == null) continue;
+
+                    for (int c = 0; c < buttons.Length; c++)
+                    {
+                        var go = buttons[c]?.gameObject;
+                        if (go == null || !go.activeInHierarchy) continue;
+
+                        int itemIdx = _items.FindIndex(it => it.Go == go);
+
+                        if (flat >= cids.Count)
+                        {
+                            // Grid filler after the last real character.
+                            if (itemIdx >= 0) fillerCells.Add(go);
+                            continue;
+                        }
+
+                        int cid = cids[flat];
+                        flat++;
+                        if (itemIdx < 0) continue;
+
+                        string name = ResolveCharaName(cid);
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        string lv = null;
+                        try
+                        {
+                            if (levels != null && c < levels.Length)
+                                lv = levels[c]?.text;
+                        }
+                        catch { }
+
+                        _items[itemIdx].Label = string.IsNullOrWhiteSpace(lv)
+                            ? name : $"{name}, {lv.Trim()}";
+                        DebugLogger.Log(LogCategory.Handler, "Dialog",
+                            $"CharaFilter cell {flat - 1}: cid={cid} -> " +
+                            $"\"{_items[itemIdx].Label}\"");
+                    }
+                }
+
+                if (fillerCells.Count > 0)
+                    _items.RemoveAll(it => fillerCells.Contains(it.Go));
+
+                if (flat < cids.Count)
+                {
+                    // More characters than instantiated cells — the scroll
+                    // view recycles rows. Off-screen entries are unreachable
+                    // for now; log so the limitation is visible in reports.
+                    DebugLogger.Log(LogCategory.Handler, "Dialog",
+                        $"CharaFilter: {cids.Count - flat} of {cids.Count} " +
+                        $"charas beyond the instantiated rows");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyCharaFilterLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>Resolves a character id to a display name via CharaUtil.</summary>
+        private static string ResolveCharaName(int cid)
+        {
+            if (cid <= 0) return null;
+            foreach (var resolver in new Func<int, string>[]
+            {
+                Il2CppYgomGame.Utility.CharaUtil.GetNameWithSeries,
+                Il2CppYgomGame.Utility.CharaUtil.GetNameAndSeries,
+                Il2CppYgomGame.Utility.CharaUtil.GetName
+            })
+            {
+                try
+                {
+                    string v = resolver(cid);
+                    if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Deck accessory dialogs: the sleeve/mat picker cells and preview
+        /// buttons are image-only, so the generic scan yields bare GO names.
+        /// Detects the three accessory VCs and relabels their items from the
+        /// VC's own data (SleeveUtil / MatUtil name resolvers).
+        /// </summary>
+        private void ApplyAccessoryLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var hub = dialogRoot.GetComponent<
+                    Il2CppYgomGame.Deck.AccessoryDialogViewController>();
+                if (hub != null)
+                {
+                    ApplyAccessoryHubLabels(hub);
+                    return;
+                }
+
+                var list = dialogRoot.GetComponent<
+                    Il2CppYgomGame.Customize.AccessoriesListDialogViewController>();
+                if (list != null)
+                {
+                    ApplyAccessoriesListLabels(list);
+                    return;
+                }
+
+                var confirm = dialogRoot.GetComponent<
+                    Il2CppYgomGame.Customize.AccessoryChangeConfirmDialogViewController>();
+                if (confirm != null)
+                    ApplyAccessoryConfirmLabels(confirm);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyAccessoryLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// AccessoryDialogViewController (deck editor accessory hub): labels
+        /// the sleeve/mat/ace-card preview buttons with the currently equipped
+        /// item's name so the user hears what is set before changing it.
+        /// </summary>
+        private void ApplyAccessoryHubLabels(
+            Il2CppYgomGame.Deck.AccessoryDialogViewController vc)
+        {
+            // GetName output is self-describing ("Card Sleeves: Default" /
+            // "Game Mat: Default" — 2026-07-11 log), so only wrap it in our
+            // category prefix when resolution fell back to the raw id.
+            string sleeveName = BuildAccessoryLabel("accessory_sleeve",
+                Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE.Sleeve,
+                vc.sleeveId);
+            string matName = BuildAccessoryLabel("accessory_mat",
+                Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE.Mat,
+                vc.matId);
+            string aceName = null;
+            try { aceName = vc.aceCardName?.text; } catch { }
+
+            DebugLogger.Log(LogCategory.Handler, "Dialog",
+                $"Accessory hub: deckId={vc.deckId} sleeveId={vc.sleeveId} " +
+                $"matId={vc.matId} locked={vc.isLocked}");
+
+            Transform sleeveTf = null, matTf = null, aceTf = null;
+            try { sleeveTf = vc.sleeveImage?.transform; } catch { }
+            try { matTf = vc.matImage?.transform; } catch { }
+            try { aceTf = vc.aceCardImage?.transform; } catch { }
+
+            foreach (var item in _items)
+            {
+                if (item.Go == null) continue;
+                var tf = item.Go.transform;
+
+                // The sleeve/mat/ace-card areas are zoom PREVIEWS (they open
+                // an image-only TextureImageDialog — 2026-07-11 user log).
+                // The actual change flow is the game's own "Change
+                // accessories" / "Change card" buttons on this dialog. Mark
+                // the previews so users don't mistake them for the picker.
+                if (IsSameOrRelated(tf, sleeveTf))
+                    item.Label = Loc.Get("accessory_preview", sleeveName);
+                else if (IsSameOrRelated(tf, matTf))
+                    item.Label = Loc.Get("accessory_preview", matName);
+                else if (IsSameOrRelated(tf, aceTf))
+                    item.Label = Loc.Get("accessory_preview",
+                        Loc.Get("accessory_ace",
+                            string.IsNullOrWhiteSpace(aceName)
+                                ? Loc.Get("accessory_none") : aceName.Trim()));
+            }
+        }
+
+        /// <summary>
+        /// AccessoriesListDialogViewController (sleeve/mat/emblem picker):
+        /// maps the visible grid cells to the dialog's display-order id list
+        /// (setupList) and relabels them with the accessory name, plus
+        /// "current" / "new" markers. Cells beyond the data are grid fillers
+        /// and get removed. Off-screen entries (ScrollRect row recycling) are
+        /// unreachable — logged as a known limitation.
+        /// </summary>
+        private void ApplyAccessoriesListLabels(
+            Il2CppYgomGame.Customize.AccessoriesListDialogViewController vc)
+        {
+            var ids = vc.setupList;
+            if (ids == null || ids.Count == 0)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Dialog",
+                    "Accessories list: setupList empty");
+                return;
+            }
+
+            string currentId = null;
+            try { currentId = vc.curAccessoryId; } catch { }
+            var mode = vc.Mode;
+
+            var content = vc.scrollRect?.content;
+            if (content == null) return;
+
+            int flat = 0;
+            var fillerCells = new List<GameObject>();
+            for (int i = 0; i < content.childCount; i++)
+            {
+                var row = content.GetChild(i)?.GetComponent<
+                    Il2CppYgomGame.Customize.AccessoriesListRow>();
+                if (row == null || !row.gameObject.activeInHierarchy) continue;
+
+                var buttons = row.buttons;
+                if (buttons == null) continue;
+                var newIcons = row.newIcons;
+
+                for (int c = 0; c < buttons.Count; c++)
+                {
+                    var go = buttons[c]?.gameObject;
+                    if (go == null || !go.activeInHierarchy) continue;
+
+                    int itemIdx = _items.FindIndex(it => it.Go == go);
+
+                    if (flat >= ids.Count)
+                    {
+                        // Grid filler after the last real accessory
+                        if (itemIdx >= 0) fillerCells.Add(go);
+                        continue;
+                    }
+
+                    string id = ids[flat];
+                    flat++;
+
+                    // The game pads setupList to the row width with empty
+                    // ids (2026-07-11 log: 2 sleeves -> ids [4000, 4080,
+                    // "", "", ""]). Those cells are placeholders — drop them.
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        if (itemIdx >= 0) fillerCells.Add(go);
+                        continue;
+                    }
+
+                    if (itemIdx < 0) continue;
+
+                    string label = ResolveAccessoryName(mode, id);
+                    if (!string.IsNullOrEmpty(currentId) && id == currentId)
+                        label = Loc.Get("accessory_current", label);
+                    try
+                    {
+                        if (newIcons != null && c < newIcons.Count
+                            && newIcons[c] != null
+                            && newIcons[c].gameObject.activeSelf)
+                            label = Loc.Get("accessory_new", label);
+                    }
+                    catch { }
+
+                    _items[itemIdx].Label = label;
+                    DebugLogger.Log(LogCategory.Handler, "Dialog",
+                        $"Accessory cell {flat - 1}: id={id} -> \"{label}\"");
+                }
+            }
+
+            if (fillerCells.Count > 0)
+                _items.RemoveAll(it => fillerCells.Contains(it.Go));
+
+            DebugLogger.Log(LogCategory.Handler, "Dialog",
+                $"Accessories list: mode={mode} ids={ids.Count} " +
+                $"cells mapped={flat} current={currentId ?? "?"}");
+
+            if (flat < ids.Count)
+            {
+                // More accessories than instantiated cells — the scroll view
+                // recycles rows. Off-screen entries are unreachable for now.
+                DebugLogger.Log(LogCategory.Handler, "Dialog",
+                    $"Accessories list: {ids.Count - flat} of {ids.Count} " +
+                    $"entries beyond the instantiated rows");
+            }
+        }
+
+        /// <summary>
+        /// AccessoryChangeConfirmDialogViewController: names the sleeve/mat
+        /// apply-toggles (image checkboxes) with their state, and replaces
+        /// junk labels on the known yes / no-change buttons. Scope buttons
+        /// (this deck / character decks / series decks) carry real text
+        /// labels the generic extractor already reads.
+        /// </summary>
+        private void ApplyAccessoryConfirmLabels(
+            Il2CppYgomGame.Customize.AccessoryChangeConfirmDialogViewController vc)
+        {
+            Transform protectorTf = null, duelFieldTf = null,
+                yesTf = null, noChangeTf = null;
+            try { protectorTf = vc.protectorToggle?.transform; } catch { }
+            try { duelFieldTf = vc.duelFieldToggle?.transform; } catch { }
+            try { yesTf = vc.yesButton?.transform; } catch { }
+            try { noChangeTf = vc.nochangeButton?.transform; } catch { }
+
+            bool protectorOn = false, duelFieldOn = false;
+            try { protectorOn = vc.protectorToggle?.isOn ?? false; } catch { }
+            try { duelFieldOn = vc.duelFieldToggle?.isOn ?? false; } catch { }
+
+            foreach (var item in _items)
+            {
+                if (item.Go == null) continue;
+                var tf = item.Go.transform;
+
+                if (IsSameOrRelated(tf, protectorTf))
+                    item.Label = Loc.Get("accessory_confirm_sleeve_toggle",
+                        Loc.Get(protectorOn ? "accessory_checked" : "accessory_unchecked"));
+                else if (IsSameOrRelated(tf, duelFieldTf))
+                    item.Label = Loc.Get("accessory_confirm_mat_toggle",
+                        Loc.Get(duelFieldOn ? "accessory_checked" : "accessory_unchecked"));
+                else if (IsSameOrRelated(tf, yesTf) && IsJunkLabel(item.Label, item.Go))
+                    item.Label = Loc.Get("accessory_confirm_yes");
+                else if (IsSameOrRelated(tf, noChangeTf) && IsJunkLabel(item.Label, item.Go))
+                    item.Label = Loc.Get("accessory_confirm_nochange");
+            }
+
+            DebugLogger.Log(LogCategory.Handler, "Dialog",
+                $"Accessory confirm: sleeveToggle={protectorOn} " +
+                $"matToggle={duelFieldOn}");
+        }
+
+        /// <summary>
+        /// Resolves an accessory id to a label, wrapping it in the given
+        /// category prefix (e.g. "Card sleeve: {0}") only when name
+        /// resolution fell back to the raw id — resolved names already
+        /// carry their category ("Card Sleeves: Default").
+        /// </summary>
+        private static string BuildAccessoryLabel(string prefixKey,
+            Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE mode,
+            int id)
+        {
+            string raw = id.ToString();
+            string name = ResolveAccessoryName(mode, raw);
+            return name == raw ? Loc.Get(prefixKey, name) : name;
+        }
+
+        /// <summary>
+        /// Resolves an accessory id to a display name for the given picker
+        /// mode (SleeveUtil for sleeves, MatUtil for mats). Falls back to the
+        /// raw id when the id isn't numeric or the resolver has no name
+        /// (e.g. emblems, which have no Util resolver).
+        /// </summary>
+        private static string ResolveAccessoryName(
+            Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE mode,
+            string id)
+        {
+            try
+            {
+                if (int.TryParse(id, out int numId))
+                {
+                    string name = null;
+                    switch (mode)
+                    {
+                        case Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE.Sleeve:
+                        case Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE.Shop_Sleeve:
+                            name = Il2CppYgomGame.Utility.SleeveUtil.GetName(numId);
+                            break;
+                        case Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE.Mat:
+                        case Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE.Shop_Mat:
+                            name = Il2CppYgomGame.Utility.MatUtil.GetName(numId);
+                            break;
+                    }
+                    if (!string.IsNullOrWhiteSpace(name))
+                        return LabelExtractor.StripRichText(name).Trim();
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ResolveAccessoryName({mode}, {id}) error: {ex.Message}");
+            }
+            return id;
+        }
+
+        /// <summary>
+        /// True when the extracted label is unusable for speech: empty, the
+        /// bare GO name, a generic "Button", or hardcoded Japanese.
+        /// </summary>
+        private static bool IsJunkLabel(string label, GameObject go)
+        {
+            if (string.IsNullOrWhiteSpace(label)) return true;
+            if (label == "Button") return true;
+            if (go != null && (label == go.name
+                || label == LabelExtractor.CleanGoName(go.name))) return true;
+            return LabelExtractor.ContainsJapanese(label);
+        }
+
+        /// <summary>
+        /// True when the two transforms refer to the same UI control: equal,
+        /// or one is an ancestor of the other (a button often wraps the image
+        /// the VC field points at, or vice versa).
+        /// </summary>
+        private static bool IsSameOrRelated(Transform a, Transform b)
+        {
+            if (a == null || b == null) return false;
+            if (a == b) return true;
+            return a.IsChildOf(b) || b.IsChildOf(a);
         }
 
         private bool IsChildOfSlider(GameObject go, GameObject root)

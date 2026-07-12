@@ -78,6 +78,19 @@ namespace DuelLinksAccess
 
         public override void OnInitializeMelon()
         {
+            // Build stamp: the MelonInfo version only changes on releases, so
+            // user logs from interim builds are indistinguishable without this.
+            try
+            {
+                string dllPath = MelonAssembly.Location;
+                MelonLogger.Msg(
+                    $"Build: {System.IO.File.GetLastWriteTime(dllPath):yyyy-MM-dd HH:mm}");
+            }
+            catch (System.Exception ex)
+            {
+                MelonLogger.Msg($"Build stamp unavailable: {ex.Message}");
+            }
+
             ScreenReader.Initialize();
             Loc.Initialize();
             ModConfig.Initialize();
@@ -480,6 +493,17 @@ namespace DuelLinksAccess
                             {
                                 string label = !string.IsNullOrEmpty(liveLabel)
                                     ? liveLabel : GetIpclickTargetLabel(arrowVc);
+                                // Some targets carry hardcoded JP labels (e.g.
+                                // SeriesButton "ステージ") that non-JP TTS
+                                // voices skip entirely — the v10.9.0 user heard
+                                // "navigate to ... and press Enter" with a
+                                // silent gap. Fall back to the cleaned GO name.
+                                if (LabelExtractor.ContainsJapanese(label))
+                                {
+                                    var jpGo = GetIpclickGO(arrowVc);
+                                    if (jpGo != null)
+                                        label = LabelExtractor.CleanGoName(jpGo.name);
+                                }
                                 msg = !string.IsNullOrEmpty(label)
                                     ? Loc.Get("tutorial_arrow_target_named", label)
                                     : Loc.Get("duel_tutorial_arrow_pointing");
@@ -707,7 +731,7 @@ namespace DuelLinksAccess
         }
 
         /// <summary>Returns the GameObject of ipclick[0], or null.</summary>
-        private static GameObject GetIpclickGO(
+        internal static GameObject GetIpclickGO(
             Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
         {
             try
@@ -717,6 +741,37 @@ namespace DuelLinksAccess
                 return ipclick[0]?.TryCast<MonoBehaviour>()?.gameObject;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Computes the Unity screen position of a UI GameObject's
+        /// RectTransform center, using its Canvas camera for the conversion.
+        /// Returns false for non-UI objects (no RectTransform).
+        /// </summary>
+        internal static bool TryGetUiScreenPos(GameObject go, out Vector2 unityPos)
+        {
+            unityPos = default;
+            try
+            {
+                var rt = go?.GetComponent<RectTransform>();
+                if (rt == null) return false;
+
+                // Screen Space - Overlay canvases already live in screen
+                // coordinates; WorldToScreenPoint must get a null camera for
+                // them. Camera-space canvases need their worldCamera.
+                var canvas = go.GetComponentInParent<Canvas>();
+                Camera cam = null;
+                if (canvas != null
+                    && canvas.renderMode != RenderMode.ScreenSpaceOverlay)
+                    cam = canvas.worldCamera;
+
+                // rect.center via TransformPoint — rt.position is the pivot,
+                // which is off-center for many game buttons.
+                Vector3 world = rt.TransformPoint(rt.rect.center);
+                unityPos = RectTransformUtility.WorldToScreenPoint(cam, world);
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -1390,6 +1445,28 @@ namespace DuelLinksAccess
                             $"screen {Screen.width}x{Screen.height}");
                         clickedHardware = ClickViaHardwareMouse(
                             new Vector2(screenPos.x, screenPos.y), "F11");
+                    }
+                }
+                else
+                {
+                    // UI-pointer arrows (e.g. GX Series-unlock: ipclick =
+                    // SeriesButton, physicTarget AND dispTarget null) have no
+                    // world target, but the ipclick handler's own RectTransform
+                    // gives the on-screen button. Step 1's direct OnPointerClick
+                    // is NOT enough for YgomButton handlers — their navigation
+                    // sits behind the real input pipeline (v10.9.0 user log:
+                    // dispatched 1/1, nothing happened). A hardware click at
+                    // the button's center is exactly the sighted tap the arrow
+                    // gate expects, so send that instead of skipping Step 2.
+                    var ipclickGo = GetIpclickGO(arrowVc);
+                    if (ipclickGo != null
+                        && TryGetUiScreenPos(ipclickGo, out Vector2 uiPos))
+                    {
+                        MelonLogger.Msg($"F11 UI target ({ipclickGo.name}): " +
+                            $"Unity ({uiPos.x:F0}, {uiPos.y:F0}), " +
+                            $"screen {Screen.width}x{Screen.height}");
+                        clickedHardware = ClickViaHardwareMouse(
+                            uiPos, "F11-ipclickGO");
                     }
                 }
 

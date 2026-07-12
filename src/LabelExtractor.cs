@@ -171,6 +171,25 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Returns true if the string contains Japanese characters (Hiragana,
+        /// Katakana, or CJK ideographs). Some game labels are hardcoded JP
+        /// regardless of game language; non-JP TTS voices skip or garble them,
+        /// so callers should fall back to a cleaned GO name or Loc string.
+        /// </summary>
+        public static bool ContainsJapanese(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            foreach (char c in s)
+            {
+                if ((c >= '぀' && c <= 'ヿ')     // Hiragana + Katakana
+                    || (c >= '一' && c <= '鿿')  // CJK Unified Ideographs
+                    || (c >= '㐀' && c <= '䶿')) // CJK Extension A
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Checks if a string is a valid, meaningful label.
         /// Rejects null, empty, all-digit, and too-short strings.
         /// </summary>

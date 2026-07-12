@@ -145,7 +145,20 @@ namespace DuelLinksAccess
                     _scanAttempts++;
                     ScanScreen();
 
-                    if (_items.Count == 0 && !_textMode && _scanAttempts < 3)
+                    if (_items.Count == 0 && !_textMode
+                        && GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Title)
+                    {
+                        // Title buttons (initiate link, account options, ...)
+                        // activate several seconds into the LWF intro
+                        // animation — later than the normal 3-attempt scan
+                        // window, and the VC name never changes to trigger a
+                        // rescan. Keep rescanning until they appear.
+                        if (_scanAttempts == 3)
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                "Title screen still empty — rescanning until buttons activate");
+                        _scanDelay = 1.0f;
+                    }
+                    else if (_items.Count == 0 && !_textMode && _scanAttempts < 3)
                     {
                         DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                             $"No items or text found, retrying (attempt {_scanAttempts})");
@@ -1383,8 +1396,13 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
-                // If TutorialArrow is active, dismiss it instead of rescanning
-                if (IsTutorialArrowActive())
+                // If a click-to-continue TutorialArrow is active, dismiss it
+                // instead of rescanning. Pointer arrows (UI or world target)
+                // must be advanced via their target — a screen-center dismiss
+                // can strand the tutorial gate with no guidance (v10.9.0 GX
+                // Series-unlock log, 2026-07-09) — so those fall through to
+                // the normal rescan.
+                if (IsTutorialArrowActive() && IsArrowClickToContinue())
                 {
                     DismissTutorialArrow();
                     return;
@@ -1632,7 +1650,7 @@ namespace DuelLinksAccess
 
             // Route through TutorialArrow ipclick if present — direct clicks
             // don't satisfy the tutorial condition (documented in game-api.md)
-            if (IsTutorialArrowActive() && ActivateViaTutorialArrow(item.Label))
+            if (IsTutorialArrowActive() && ActivateViaTutorialArrow(item.Label, item.Go))
                 return;
 
             try
@@ -2377,6 +2395,26 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Returns true if the current TutorialArrow (any manager) is a
+        /// click-to-continue arrow — the only shape that is safe to dismiss
+        /// with a generic click. Returns false when no arrow is found.
+        /// </summary>
+        private static bool IsArrowClickToContinue()
+        {
+            try
+            {
+                var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedManager == null) return false;
+                if (!GameStateTracker.TryFindArrowAcrossManagers(
+                        namedManager, out var arrowVc, out _, out _))
+                    return false;
+                return Main.ClassifyArrowShape(arrowVc)
+                    == Main.ArrowShape.ClickToContinue;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Handles TutorialArrow overlay when activating a button.
         /// For click-to-continue arrows (no ipclick): dismisses and returns true.
         /// For pointing arrows: taps the arrow at the physicTarget's screen position
@@ -2386,7 +2424,7 @@ namespace DuelLinksAccess
         /// After the arrow tap, also falls through to TryCallVcMethod (returns false)
         /// in case the tutorial system blocks navigation.
         /// </summary>
-        private bool ActivateViaTutorialArrow(string label)
+        private bool ActivateViaTutorialArrow(string label, GameObject itemGo)
         {
             try
             {
@@ -2429,11 +2467,42 @@ namespace DuelLinksAccess
 
                 // Shape B (UISelectablePointer): ipclick set, physicTarget null.
                 // arrowVc.OnPointerClick at screen center is a no-op — the arrow's
-                // position check finds no target. Let normal activation handle the
-                // button; calling ScreenReader.Say here AND letting normal activation
-                // also announce produces a double-announcement on every key press.
+                // position check finds no target.
                 if (shape == Main.ArrowShape.UISelectablePointer)
+                {
+                    // If the item being activated IS the arrow's ipclick
+                    // target (or a parent/child of it — dedup can keep a
+                    // child like SeriesLogo under the ipclick'd SeriesButton),
+                    // activate it exactly like F11: direct ipclick dispatch
+                    // for the tutorial gate PLUS a hardware mouse click
+                    // through the real input pipeline. Direct OnPointerClick
+                    // alone silently no-ops for YgomButton ipclick handlers
+                    // (v10.9.0 GX Series-unlock arrow, user log 2026-07-09).
+                    var ipclickGo = Main.GetIpclickGO(arrowVc);
+                    if (ipclickGo != null && itemGo != null
+                        && (itemGo == ipclickGo
+                            || itemGo.transform.IsChildOf(ipclickGo.transform)
+                            || ipclickGo.transform.IsChildOf(itemGo.transform)))
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                            $"UISelectablePointer: item {itemGo.name} matches " +
+                            $"ipclick target {ipclickGo.name}, firing ipclick " +
+                            $"+ hardware click");
+                        Main.InvokeArrowIpclickDirect(arrowVc);
+                        if (Main.TryGetUiScreenPos(ipclickGo, out Vector2 uiPos))
+                            Main.ClickViaHardwareMouse(uiPos, "ScreenBtn-ArrowUI");
+                        ScreenReader.Say(label);
+                        // The hardware click is the real activation; skip the
+                        // synthetic click strategies so they can't double-fire
+                        // the button in the same frame.
+                        return true;
+                    }
+
+                    // Unrelated item: let normal activation handle the button;
+                    // announcing here AND in normal activation would produce a
+                    // double-announcement on every key press.
                     return false;
+                }
 
                 if (shape == Main.ArrowShape.WorldColliderPointer)
                 {
