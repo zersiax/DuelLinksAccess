@@ -216,13 +216,8 @@ namespace DuelLinksAccess
             var root = FindFieldCardRoot(player, locate, slot);
             if (root == null)
             {
-                // Stack zones (Extra Deck, Grave, Deck) may have engine data
-                // for slots whose CardRoot.locator.index doesn't equal `slot` —
-                // the visual layer's index field can be assigned out of order
-                // (e.g. Extra Deck card with locator.index=1 even though it's
-                // the only one in cardRoots, leaving slot=0 reading as Empty).
-                // Re-resolve via the engine's per-slot uniqueId API, then look
-                // up the CardRoot by uniqueId instead of by index.
+                // Stack-zone CardRoots may be sparse or indexed out of order.
+                // Resolve through zone-specific sources before engine fallback.
                 if (IsStackZone(locate))
                 {
                     if (locate == LocateExtra
@@ -232,16 +227,9 @@ namespace DuelLinksAccess
                         return liveExtra;
                     }
 
-                    // PRIMARY: registered-deck array from EngineInitializer.
-                    // For Extra Deck and Main Deck specifically, this is the
-                    // only source that has the full cardDbId list in PvP —
-                    // the visual layer only materializes the top of stack,
-                    // and DLL_DuelGetCardUniqueID/CardIDByUniqueID2 are
-                    // hollow. Confirmed via 2026-05-20 dump:
-                    // EngineInitializer.deck1[1] = [13170,4223,10593,...]
-                    // for our 9 extra deck cards while cardRoots showed 1.
-                    // Privacy is enforced inside GetRegisteredDeckCard
-                    // (opponent → null).
+                    // Before a live Extra Deck stack is loaded, registered-deck
+                    // data supplies its initial local-player contents. Privacy
+                    // is enforced inside GetRegisteredDeckCard.
                     var fromDeck = GetRegisteredDeckCard(player, locate, slot);
                     if (fromDeck.HasValue) return fromDeck;
 
@@ -430,14 +418,8 @@ namespace DuelLinksAccess
                 return liveExtraCount;
             }
 
-            // Local player's extra deck / main deck: the EngineInitializer's
-            // registered-deck array is the only authoritative source in PvP.
-            // The visual layer materializes only the top of stack so a 9-card
-            // extra deck reports as 1 CardRoot; the engine DLL queries are
-            // hollow. The registered array is fixed at duel start (and may
-            // grow if a skill adds cards), so the count from here is accurate
-            // for "cards the user could have summoned from extra deck this
-            // duel" even if some have already been used.
+            // Registered data is the initialization fallback for the local
+            // Extra Deck and Main Deck before a live stack is available.
             if (locate == LocateExtra || locate == LocateDeck)
             {
                 int registered = GetRegisteredDeckCount(player, locate);
@@ -497,277 +479,6 @@ namespace DuelLinksAccess
             }
             catch { }
             return count;
-        }
-
-        // The helpers below (GetStackCardRootByIndex, GetStackPlace,
-        // DumpStackZoneState, _lastStackDumpTime) were diagnostic scaffolding
-        // for the 2026-05-20 investigation into extra-deck data sources.
-        // The investigation concluded that EngineInitializer.deck{N} is the
-        // authoritative source (see GetRegisteredDeckArray above) and the
-        // DeckCardPlace path doesn't carry the data in PvP. The helpers are
-        // left intact in case future work needs the same probes for graveyard
-        // or banished zones, but they're no longer called from GetFieldCard.
-        private static Il2CppYgomGame.Duel.CardRoot GetStackCardRootByIndex(
-            int player, int locate, int slot)
-        {
-            if (slot < 0) return null;
-            var place = GetStackPlace(player, locate);
-            if (place == null)
-            {
-                DebugLogger.Log(LogCategory.Game, "DuelState",
-                    $"GetStackCardRootByIndex(p={player}, l={locate}, slot={slot}): place is null");
-                return null;
-            }
-            int innerCount = -1, localNum = -1, topIdx = -1, botIdx = -1;
-            try { innerCount = place.innerCards?.Count ?? -1; } catch { }
-            try { localNum = place.localCardNum; } catch { }
-            try { topIdx = place.localTopCardIndex; } catch { }
-            try { botIdx = place.bottomIndex; } catch { }
-
-            int engineUid = 0;
-            try
-            {
-                engineUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                    player, locate, slot);
-            }
-            catch { }
-
-            DebugLogger.Log(LogCategory.Game, "DuelState",
-                $"GetStackCardRootByIndex(p={player}, l={locate}, slot={slot}): " +
-                $"innerCards.Count={innerCount} localCardNum={localNum} " +
-                $"localTopCardIndex={topIdx} bottomIndex={botIdx} " +
-                $"DLL_DuelGetCardUniqueID={engineUid}");
-
-            // Throttled one-shot dump: on the first slot=0 read of a stack
-            // zone (per duel or every few seconds), dump the entire visual-
-            // layer card inventory so we can see where extra-deck data
-            // actually lives. Far too verbose to fire every read, but
-            // invaluable for the first navigation of a new zone.
-            if (slot == 0)
-            {
-                try
-                {
-                    float now = UnityEngine.Time.unscaledTime;
-                    if (now - _lastStackDumpTime > 2f)
-                    {
-                        _lastStackDumpTime = now;
-                        DumpStackZoneState(player, locate, place);
-                    }
-                }
-                catch { }
-            }
-
-            try
-            {
-                var inner = place.innerCards;
-                if (inner != null && slot < inner.Count)
-                {
-                    var root = inner[slot];
-                    if (root != null) return root;
-                }
-            }
-            catch { }
-            return null;
-        }
-
-        private static float _lastStackDumpTime;
-
-        /// <summary>
-        /// Dumps everything we can probe about a stack zone — the full
-        /// cardInstancePool inventory filtered to this (player, locate),
-        /// every per-slot uid the engine reports, and the DeckCardPlace's
-        /// own GameObject child counts. The goal is to surface the actual
-        /// storage location of extra-deck card data when both innerCards
-        /// and cardRoots are clearly undersized vs. the deck's real size.
-        /// </summary>
-        private static void DumpStackZoneState(
-            int player, int locate, Il2CppYgomGame.Duel.DeckCardPlace place)
-        {
-            try
-            {
-                DebugLogger.Log(LogCategory.Game, "DuelState",
-                    $"=== DumpStackZoneState p={player} l={locate} ===");
-
-                // 1. cardInstancePool: every CardRoot ever allocated for this
-                // duel, including ones not in goManager.cardRoots.
-                var gom = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.goManager;
-                var pool = gom?.cardInstancePool;
-                var poolList = pool?.list;
-                if (poolList != null)
-                {
-                    int total = poolList.Count;
-                    int matching = 0;
-                    int rendered = 0;
-                    DebugLogger.Log(LogCategory.Game, "DuelState",
-                        $"  cardInstancePool.list.Count={total}");
-                    for (int i = 0; i < total; i++)
-                    {
-                        var root = poolList[i];
-                        if (root == null) continue;
-                        var p = root.toLocator?.cardPlace;
-                        if (p == null) continue;
-                        if (p.team != player || p.position != locate) continue;
-                        matching++;
-                        int rid = 0, ruid = 0, rmid = 0, rlidx = -1;
-                        try { rid = root.cardId; } catch { }
-                        try { ruid = root.uniqueId; } catch { }
-                        try { rmid = root.cardPlane?.cardModel?.cardId ?? 0; } catch { }
-                        try { rlidx = root.toLocator.index; } catch { }
-                        bool inRoots = false;
-                        try
-                        {
-                            var live = gom.cardRoots;
-                            if (live != null)
-                            {
-                                for (int j = 0; j < live.Count; j++)
-                                {
-                                    if (live[j] == root) { inRoots = true; break; }
-                                }
-                            }
-                        }
-                        catch { }
-                        if (inRoots) rendered++;
-                        DebugLogger.Log(LogCategory.Game, "DuelState",
-                            $"  pool[match {matching - 1}]: locator.index={rlidx} cardId={rid} " +
-                            $"modelCardId={rmid} uniqueId={ruid} inGoManagerCardRoots={inRoots}");
-                    }
-                    DebugLogger.Log(LogCategory.Game, "DuelState",
-                        $"  total pool matches at (p={player},l={locate})={matching} renderedInGoManager={rendered}");
-                }
-
-                // 2. Per-slot engine uid probes for slots 0..localCardNum-1
-                int localNum = -1;
-                try { localNum = place.localCardNum; } catch { }
-                if (localNum > 0 && localNum <= 60)
-                {
-                    var uidLine = new System.Text.StringBuilder("  per-slot DLL_DuelGetCardUniqueID: ");
-                    for (int s = 0; s < localNum; s++)
-                    {
-                        int uid = 0;
-                        try
-                        {
-                            uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                                player, locate, s);
-                        }
-                        catch { }
-                        // For each non-zero uid, also try the cardId resolver
-                        int cid = 0;
-                        if (uid > 0)
-                        {
-                            try
-                            {
-                                uint c = Il2CppYgomGame.Duel.Engine
-                                    .DLL_DuelGetCardIDByUniqueID2(uid);
-                                if (c < 100000) cid = (int)c;
-                            }
-                            catch { }
-                        }
-                        uidLine.Append($"[{s}]uid={uid}/cid={cid} ");
-                    }
-                    DebugLogger.Log(LogCategory.Game, "DuelState", uidLine.ToString());
-                }
-
-                // 3. DeckCardPlace's own GameObject children — outDeck / inDeck
-                // / fadingDeck / shuffleDeck might house additional CardRoots.
-                try
-                {
-                    int outChildren = place.outDeck?.transform?.childCount ?? -1;
-                    int inChildren  = place.inDeck?.transform?.childCount ?? -1;
-                    int fadingChildren = place.fadingDeck?.transform?.childCount ?? -1;
-                    int shuffleChildren = place.shuffleDeck?.transform?.childCount ?? -1;
-                    DebugLogger.Log(LogCategory.Game, "DuelState",
-                        $"  place GameObject children: outDeck={outChildren} " +
-                        $"inDeck={inChildren} fadingDeck={fadingChildren} " +
-                        $"shuffleDeck={shuffleChildren}");
-                }
-                catch { }
-
-                // 4. EngineInitializer deck data — this is where
-                // DLL_DuelSysSetDeck2 caches the registered deck. Structure:
-                // engineInitializer.deck{0..5} is an
-                // Il2CppReferenceArray<Il2CppStructArray<int>> — outer
-                // probably indexed by [main, extra, side], inner by card
-                // position. The visual layer doesn't materialize extra-deck
-                // cards in PvP, but this static cache should still have the
-                // mrk (card db id) list for the local player's deck.
-                try
-                {
-                    var init = Il2CppYgomGame.Duel.DuelClient.GetEngineInitializer();
-                    if (init == null)
-                    {
-                        DebugLogger.Log(LogCategory.Game, "DuelState",
-                            "  EngineInitializer is null");
-                    }
-                    else
-                    {
-                        int myNum = -1;
-                        int rushFlag = -1;
-                        try { myNum = init.myPlayerNum; } catch { }
-                        try { rushFlag = init.isRushDuel ? 1 : 0; } catch { }
-                        DebugLogger.Log(LogCategory.Game, "DuelState",
-                            $"  EngineInitializer: myPlayerNum={myNum} isRushDuel={rushFlag}");
-
-                        for (int p = 0; p < 2; p++)
-                        {
-                            Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<
-                                Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<int>> deck = null;
-                            try
-                            {
-                                deck = p switch
-                                {
-                                    0 => init.deck0,
-                                    1 => init.deck1,
-                                    _ => null
-                                };
-                            }
-                            catch { }
-                            if (deck == null)
-                            {
-                                DebugLogger.Log(LogCategory.Game, "DuelState",
-                                    $"  deck{p}: null");
-                                continue;
-                            }
-                            int outerLen = deck.Length;
-                            DebugLogger.Log(LogCategory.Game, "DuelState",
-                                $"  deck{p}.Length={outerLen}");
-                            for (int s = 0; s < outerLen && s < 5; s++)
-                            {
-                                var inner = deck[s];
-                                if (inner == null)
-                                {
-                                    DebugLogger.Log(LogCategory.Game, "DuelState",
-                                        $"    deck{p}[{s}]: null");
-                                    continue;
-                                }
-                                int innerLen = inner.Length;
-                                // Dump up to 12 ints from each inner array
-                                var sb = new System.Text.StringBuilder();
-                                int dumpN = Math.Min(innerLen, 12);
-                                for (int i = 0; i < dumpN; i++)
-                                {
-                                    if (i > 0) sb.Append(',');
-                                    sb.Append(inner[i]);
-                                }
-                                if (innerLen > dumpN) sb.Append(",...");
-                                DebugLogger.Log(LogCategory.Game, "DuelState",
-                                    $"    deck{p}[{s}]: Length={innerLen} [{sb}]");
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    DebugLogger.Log(LogCategory.Game, "DuelState",
-                        $"  EngineInitializer dump threw: {ex.Message}");
-                }
-
-                DebugLogger.Log(LogCategory.Game, "DuelState", "=== End DumpStackZoneState ===");
-            }
-            catch (Exception ex)
-            {
-                DebugLogger.Log(LogCategory.Game, "DuelState",
-                    $"DumpStackZoneState threw: {ex.Message}");
-            }
         }
 
         /// <summary>
