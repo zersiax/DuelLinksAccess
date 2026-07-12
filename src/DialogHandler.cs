@@ -688,17 +688,24 @@ namespace DuelLinksAccess
                     string label = null;
 
                     var selectable = go.GetComponent<Selectable>();
-                    if (selectable != null && selectable.interactable)
+                    bool nameLooksInteractive = goName.Contains("btn")
+                        || goName.Contains("button")
+                        || goName.Contains("close")
+                        || goName.Contains("ok");
+                    bool selectedTab = false;
+                    try
                     {
-                        isButton = true;
-                        label = LabelExtractor.GetLabel(go);
+                        selectedTab = selectable != null
+                            && !selectable.interactable
+                            && IsTabButton(go);
                     }
-                    else if (goName.Contains("btn") || goName.Contains("button")
-                        || goName.Contains("close") || goName.Contains("ok"))
-                    {
-                        isButton = true;
-                        label = LabelExtractor.GetLabel(go);
-                    }
+                    catch { }
+                    isButton = DialogControlPolicy.ShouldInclude(
+                        selectable != null,
+                        selectable?.interactable == true,
+                        nameLooksInteractive,
+                        selectedTab);
+                    if (isButton) label = LabelExtractor.GetLabel(go);
 
                     if (!isButton) continue;
                     if (string.IsNullOrEmpty(label)) label = go.name;
@@ -1114,6 +1121,15 @@ namespace DuelLinksAccess
                 return;
             }
 
+            var itemSelectable = GetNearestSelectable(item.Go);
+            if (!DialogControlPolicy.CanActivate(
+                itemSelectable != null,
+                itemSelectable?.interactable == true))
+            {
+                ScreenReader.Say(Loc.Get("dialog_click_error"));
+                return;
+            }
+
             // If TutorialArrow is on top, route through its ipclick handler.
             // The tutorial system requires clicks to go through the arrow's
             // routing — direct clicks on the target button don't register.
@@ -1125,7 +1141,7 @@ namespace DuelLinksAccess
                 MelonLogger.Msg($"[Dialog] Activating: {item.Label} ({item.Go.name})");
 
                 // Diagnostics: log interactable state and toggle status at activation time
-                var selectable = item.Go.GetComponent<Selectable>();
+                var selectable = itemSelectable;
                 if (selectable != null)
                     MelonLogger.Msg($"[Dialog]   Selectable interactable={selectable.interactable}");
                 else
@@ -1157,7 +1173,8 @@ namespace DuelLinksAccess
                 if (buttonWidget != null)
                 {
                     var ygomBtn = buttonWidget.button;
-                    if (ygomBtn != null && ygomBtn.gameObject != null)
+                    if (ygomBtn != null && ygomBtn.gameObject != null
+                        && IsControlInteractable(ygomBtn.gameObject))
                     {
                         MelonLogger.Msg($"[Dialog] Htjson ButtonWidget, clicking YgomButton on {ygomBtn.gameObject.name}");
                         var btnGo = ygomBtn.gameObject;
@@ -1200,7 +1217,9 @@ namespace DuelLinksAccess
                         if (siblingBtnSet != null)
                         {
                             var btnSetButton = siblingBtnSet.GetComponent<Button>();
-                            if (btnSetButton != null && btnSetButton.onClick != null)
+                            if (btnSetButton != null
+                                && btnSetButton.interactable
+                                && btnSetButton.onClick != null)
                             {
                                 MelonLogger.Msg($"[Dialog] TextArea -> sibling ButtonSet onClick.Invoke");
                                 btnSetButton.onClick.Invoke();
@@ -1230,7 +1249,9 @@ namespace DuelLinksAccess
                     while (parent != null && depth < 4)
                     {
                         var parentBtn = parent.GetComponent<Button>();
-                        if (parentBtn != null && parentBtn.onClick != null)
+                        if (parentBtn != null
+                            && parentBtn.interactable
+                            && parentBtn.onClick != null)
                         {
                             MelonLogger.Msg($"[Dialog] ButtonSet parent onClick.Invoke on {parent.gameObject.name}");
                             parentBtn.onClick.Invoke();
@@ -1276,6 +1297,21 @@ namespace DuelLinksAccess
                 MelonLogger.Msg($"[Dialog] Activate error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("dialog_click_error"));
             }
+        }
+
+        private static Selectable GetNearestSelectable(GameObject go)
+        {
+            if (go == null) return null;
+            return go.GetComponent<Selectable>()
+                ?? go.GetComponentInParent<Selectable>();
+        }
+
+        private static bool IsControlInteractable(GameObject go)
+        {
+            var selectable = GetNearestSelectable(go);
+            return DialogControlPolicy.CanActivate(
+                selectable != null,
+                selectable?.interactable == true);
         }
 
         /// <summary>
