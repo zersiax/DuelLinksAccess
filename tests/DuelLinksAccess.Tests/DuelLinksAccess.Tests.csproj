@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <IsPackable>false</IsPackable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,8 +18,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\DuelLinksAccess.csproj"
-                      AdditionalProperties="SkipCopyToMods=true" />
+    <Compile Include="..\..\src\AttackFallbackPolicy.cs" Link="Source\AttackFallbackPolicy.cs" />
+    <Compile Include="..\..\src\AutomaticDrawController.cs" Link="Source\AutomaticDrawController.cs" />
+    <Compile Include="..\..\src\CardProgressionFormatter.cs" Link="Source\CardProgressionFormatter.cs" />
+    <Compile Include="..\..\src\DialogControlPolicy.cs" Link="Source\DialogControlPolicy.cs" />
+    <Compile Include="..\..\src\DuelTurnTracker.cs" Link="Source\DuelTurnTracker.cs" />
+    <Compile Include="..\..\src\LateContentRetryPolicy.cs" Link="Source\LateContentRetryPolicy.cs" />
+    <Compile Include="..\..\src\Loc.cs" Link="Source\Loc.cs" />
+    <Compile Include="..\..\src\SpeechTextFormatter.cs" Link="Source\SpeechTextFormatter.cs" />
+    <Compile Include="..\..\src\TicketExchangePolicy.cs" Link="Source\TicketExchangePolicy.cs" />
+    <Compile Include="..\..\src\TradeExecutionPolicy.cs" Link="Source\TradeExecutionPolicy.cs" />
   </ItemGroup>
 
 </Project>
