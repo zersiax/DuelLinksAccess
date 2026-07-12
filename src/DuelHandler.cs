@@ -60,7 +60,7 @@ namespace DuelLinksAccess
         /// True when a duel is in progress OR the screen is classified as Duel.
         /// </summary>
         public bool IsActive => DuelEventAnnouncer.InDuel
-            || GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Duel;
+            || GameStateTracker.CurrentScreen == GameScreen.Duel;
 
         #endregion
 
@@ -187,7 +187,7 @@ namespace DuelLinksAccess
             // so DialogHandler can handle duel dialogs (Yes/No, card selection).
             // Tab for zone cycling always works — it doesn't conflict with dialog keys.
             bool dialogActive = GameStateTracker.CurrentScreen
-                == GameStateTracker.GameScreen.Dialog;
+                == GameScreen.Dialog;
 
             // EmotionalList works regardless of dialog state — both when already
             // active and when first detected. RunList often fires alongside RunDialog,

@@ -34,6 +34,7 @@
     <Compile Include="..\..\src\HarmonyPatchPolicy.cs" Link="Source\HarmonyPatchPolicy.cs" />
     <Compile Include="..\..\src\LateContentRetryPolicy.cs" Link="Source\LateContentRetryPolicy.cs" />
     <Compile Include="..\..\src\Loc.cs" Link="Source\Loc.cs" />
+    <Compile Include="..\..\src\ScreenClassificationPolicy.cs" Link="Source\ScreenClassificationPolicy.cs" />
     <Compile Include="..\..\src\SpeechTextFormatter.cs" Link="Source\SpeechTextFormatter.cs" />
     <Compile Include="..\..\src\TicketExchangePolicy.cs" Link="Source\TicketExchangePolicy.cs" />
     <Compile Include="..\..\src\TradeExecutionPolicy.cs" Link="Source\TradeExecutionPolicy.cs" />

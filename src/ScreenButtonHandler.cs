@@ -50,11 +50,11 @@ namespace DuelLinksAccess
         /// Screens that this handler should NOT process.
         /// Dialog is handled by DialogHandler; Duel will get its own handler.
         /// </summary>
-        private static readonly HashSet<GameStateTracker.GameScreen> _excludedScreens = new()
+        private static readonly HashSet<GameScreen> _excludedScreens = new()
         {
-            GameStateTracker.GameScreen.Unknown,
-            GameStateTracker.GameScreen.Dialog,
-            GameStateTracker.GameScreen.Duel,
+            GameScreen.Unknown,
+            GameScreen.Dialog,
+            GameScreen.Duel,
         };
 
         #endregion
@@ -281,11 +281,11 @@ namespace DuelLinksAccess
                 FilterItems();
 
                 // On the Home/Duel World screen, also scan 3D map objects (NPCs, events, etc.)
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                if (GameStateTracker.CurrentScreen == GameScreen.Home)
                     FindMapObjects();
 
                 // On the Deck screen, scan DeckSelectItem components (not standard Selectables)
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Deck)
+                if (GameStateTracker.CurrentScreen == GameScreen.Deck)
                     FindDeckItems(_screenRoot);
 
                 // Result screens: replace the generic button scan with structured text extraction
@@ -1377,14 +1377,14 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow))
             {
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                if (GameStateTracker.CurrentScreen == GameScreen.Home)
                     CycleMapArea(-1);
                 else
                     AdjustSlider(-1);
             }
             else if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.RightArrow))
             {
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                if (GameStateTracker.CurrentScreen == GameScreen.Home)
                     CycleMapArea(1);
                 else
                     AdjustSlider(1);

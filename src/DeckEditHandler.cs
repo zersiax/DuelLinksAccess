@@ -64,7 +64,7 @@ namespace DuelLinksAccess
                 _operationCooldown -= Time.deltaTime;
 
             // Only activate on Deck screens
-            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.Deck)
+            if (GameStateTracker.CurrentScreen != GameScreen.Deck)
             {
                 if (_wasActive) Deactivate();
                 return;

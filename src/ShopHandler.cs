@@ -75,7 +75,7 @@ namespace DuelLinksAccess
             if (_operationCooldown > 0f)
                 _operationCooldown -= Time.deltaTime;
 
-            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.Shop)
+            if (GameStateTracker.CurrentScreen != GameScreen.Shop)
             {
                 if (_wasActive) Deactivate();
                 return;

@@ -1110,7 +1110,7 @@ namespace DuelLinksAccess
         /// </summary>
         private static string TryDuelTrialsBanner(GameObject go)
         {
-            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.DuelTrials)
+            if (GameStateTracker.CurrentScreen != GameScreen.DuelTrials)
                 return null;
 
             // Match BannerN pattern

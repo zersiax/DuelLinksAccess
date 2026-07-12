@@ -69,7 +69,7 @@ namespace DuelLinksAccess
         /// </summary>
         public void Update()
         {
-            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.Dialog)
+            if (GameStateTracker.CurrentScreen != GameScreen.Dialog)
             {
                 if (_lastDialogName != "")
                 {
@@ -209,7 +209,7 @@ namespace DuelLinksAccess
         /// Whether a dialog is currently being handled.
         /// </summary>
         public bool IsActive =>
-            GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Dialog
+            GameStateTracker.CurrentScreen == GameScreen.Dialog
             && !_passthrough;
 
         #endregion
