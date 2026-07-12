@@ -1068,6 +1068,7 @@ namespace DuelLinksAccess
                 if (_items.Count > 0)
                     _items[0].Label = Loc.Get("home_chara_selector", name);
                 ScreenReader.Say(name);
+                StartScan();
             }
             catch (Exception ex)
             {
