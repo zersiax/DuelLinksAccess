@@ -324,6 +324,8 @@ namespace DuelLinksAccess
             _english["duel_card_opponent_owned"] = "{0}, opponent's";
             _english["duel_position_changed"] = "Switched to {0}: {1}";
             _english["duel_position_changed_opponent"] = "Opponent switched to {0}: {1}";
+            _english["duel_position_changed_generic"] = "Position changed: {0}";
+            _english["duel_position_changed_opponent_generic"] = "Opponent changed position: {0}";
             _english["duel_lp_read"] = "Your LP: {0}. Opponent LP: {1}";
             _english["duel_empty_slot_named"] = "Slot {0}: Empty";
             _english["duel_grid_edge_top"] = "Top of field";

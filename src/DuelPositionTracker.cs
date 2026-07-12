@@ -27,6 +27,25 @@ namespace DuelLinksAccess
                 && current);
         }
 
+        public static bool? ApplyPositionChange(
+            int uniqueId, bool? observedIsDefense)
+        {
+            if (uniqueId <= 0) return null;
+
+            if (observedIsDefense.HasValue)
+            {
+                _isDefense[uniqueId] = observedIsDefense.Value;
+                return observedIsDefense.Value;
+            }
+
+            if (!_isDefense.TryGetValue(uniqueId, out bool current))
+                return null;
+
+            bool changed = !current;
+            _isDefense[uniqueId] = changed;
+            return changed;
+        }
+
         public static void Forget(int uniqueId)
         {
             if (uniqueId > 0) _isDefense.Remove(uniqueId);

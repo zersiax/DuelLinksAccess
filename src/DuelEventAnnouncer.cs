@@ -43,6 +43,12 @@ namespace DuelLinksAccess
         // phase transition) replace each other so only the last one speaks
         private static string _pendingDialogText;
 
+        private readonly record struct PendingPositionChange(
+            int Player, int Locate, int UniqueId, float Deadline);
+
+        private static readonly List<PendingPositionChange> _pendingPositionChanges = new();
+        private const float PositionReadDelaySeconds = 0.10f;
+
         #endregion
 
         #region Public Methods
@@ -133,6 +139,8 @@ namespace DuelLinksAccess
                     _pendingDialogText = null;
                 }
             }
+
+            ResolvePendingPositionChanges();
         }
 
         /// <summary>
@@ -349,6 +357,7 @@ namespace DuelLinksAccess
             _pendingPhaseAnnouncement = false;
             _pendingPhaseDeadline = -1f;
             _pendingDialogText = null;
+            _pendingPositionChanges.Clear();
             DuelPositionTracker.Reset();
             DuelState.Reset();
         }
@@ -590,8 +599,8 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Handles a CutinTurn event: toggles the cached position for the affected
-        /// monster and announces the new position. Without this, ReadCurrentCard
+        /// Handles a CutinTurn event: resolves the affected monster's new position
+        /// and announces it. Without this, ReadCurrentCard
         /// reports the wrong position from the moment of the change until the next
         /// turn (when TurnAtk/TurnDef bits return to the command mask).
         ///
@@ -622,11 +631,62 @@ namespace DuelLinksAccess
 
             if (uid <= 0) return;
 
-            DuelPositionTracker.Toggle(uid);
-            bool isDef = DuelPositionTracker.IsDefense(uid) ?? false;
+            bool? isDef = DuelPositionTracker.ApplyPositionChange(
+                uid, observedIsDefense: null);
 
+            if (!isDef.HasValue)
+            {
+                _pendingPositionChanges.Add(new PendingPositionChange(
+                    player,
+                    locate,
+                    uid,
+                    UnityEngine.Time.unscaledTime + PositionReadDelaySeconds));
+                return;
+            }
+
+            AnnouncePositionChange(player, uid, isDef);
+        }
+
+        private static void ResolvePendingPositionChanges()
+        {
+            float now = UnityEngine.Time.unscaledTime;
+            for (int i = _pendingPositionChanges.Count - 1; i >= 0; i--)
+            {
+                PendingPositionChange pending = _pendingPositionChanges[i];
+                if (now < pending.Deadline) continue;
+                _pendingPositionChanges.RemoveAt(i);
+
+                bool? observedIsDefense = null;
+                try
+                {
+                    CardSnapshot? snapshot = DuelState.GetFieldCard(
+                        pending.Player, pending.Locate, 0);
+                    if (snapshot?.UniqueId == pending.UniqueId)
+                        observedIsDefense = !snapshot.Value.IsAttack;
+                }
+                catch { }
+
+                bool? isDefense = DuelPositionTracker.ApplyPositionChange(
+                    pending.UniqueId, observedIsDefense);
+                AnnouncePositionChange(
+                    pending.Player, pending.UniqueId, isDefense);
+            }
+        }
+
+        private static void AnnouncePositionChange(
+            int player, int uid, bool? isDef)
+        {
             string cardName = TryGetCardName(uid) ?? Loc.Get("duel_a_card");
-            string position = isDef
+            if (!isDef.HasValue)
+            {
+                string genericKey = player == MyPlayerNum()
+                    ? "duel_position_changed_generic"
+                    : "duel_position_changed_opponent_generic";
+                Announce(Loc.Get(genericKey, cardName));
+                return;
+            }
+
+            string position = isDef.Value
                 ? Loc.Get("duel_defense_position")
                 : Loc.Get("duel_attack_position");
 
