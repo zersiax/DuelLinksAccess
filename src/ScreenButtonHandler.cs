@@ -145,11 +145,16 @@ namespace DuelLinksAccess
                     _scanAttempts++;
                     ScanScreen();
 
-                    if (_items.Count == 0 && !_textMode && _scanAttempts < 3)
+                    if (LateContentRetryPolicy.ShouldRetry(
+                        _items.Count, _textMode, false))
                     {
-                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                            $"No items or text found, retrying (attempt {_scanAttempts})");
-                        _scanDelay = 1.0f;
+                        _scanDelay = LateContentRetryPolicy.GetDelay(
+                            _scanAttempts, 1.0f, 5.0f);
+                        if (_scanAttempts <= 3)
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"No items or text found, retrying (attempt {_scanAttempts})");
+                        }
                     }
                     else
                     {
@@ -1336,7 +1341,27 @@ namespace DuelLinksAccess
                 return;
             }
 
-            if (_items.Count == 0) return;
+            if (_items.Count == 0)
+            {
+                if (InputManager.TryConsumeKeyDown(KeyCode.Space))
+                {
+                    if (IsTutorialArrowActive())
+                        DismissTutorialArrow();
+                    else
+                    {
+                        _scanned = false;
+                        _scanDelay = 0.1f;
+                        _scanAttempts = 0;
+                        ScreenReader.Say(Loc.Get("screen_rescan"));
+                    }
+                }
+                else if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
+                {
+                    GoBack();
+                }
+                return;
+            }
 
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
             {

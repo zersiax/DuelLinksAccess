@@ -171,11 +171,17 @@ namespace DuelLinksAccess
                     // Pass through immediately so the orphan handler can dismiss it.
                     bool isTutorialArrowEmpty = _items.Count == 0 && !_textMode && IsTutorialArrowOnTop();
 
-                    // Retry if we found nothing — but not for empty TutorialArrows
-                    if (_items.Count == 0 && !_textMode && _scanAttempts < 3 && !isTutorialArrowEmpty)
+                    bool shouldRetry = LateContentRetryPolicy.ShouldRetry(
+                        _items.Count, _textMode, isTutorialArrowEmpty);
+                    if (shouldRetry)
                     {
-                        MelonLogger.Msg($"[Dialog] No dialog items found, retrying in 2s (attempt {_scanAttempts})");
-                        _scanDelay = 2.0f;
+                        _scanDelay = LateContentRetryPolicy.GetDelay(
+                            _scanAttempts, 2.0f, 5.0f);
+                        if (_scanAttempts <= 3)
+                        {
+                            MelonLogger.Msg(
+                                $"[Dialog] No dialog items found, retrying in {_scanDelay}s (attempt {_scanAttempts})");
+                        }
                     }
                     else
                     {
@@ -984,7 +990,22 @@ namespace DuelLinksAccess
                 return;
             }
 
-            if (_items.Count == 0) return;
+            if (_items.Count == 0)
+            {
+                if (InputManager.TryConsumeKeyDown(KeyCode.Space))
+                {
+                    _scanned = false;
+                    _scanDelay = 0.1f;
+                    _scanAttempts = 0;
+                    ScreenReader.Say(Loc.Get("screen_rescan"));
+                }
+                else if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
+                {
+                    DismissDialog();
+                }
+                return;
+            }
 
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
             {
