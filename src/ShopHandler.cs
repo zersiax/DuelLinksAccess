@@ -487,7 +487,8 @@ namespace DuelLinksAccess
             }
 
             // Enter — activate current item (open detail / purchase)
-            if (InputManager.TryConsumeKeyDown(KeyCode.Return))
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
                 ActivateCurrentItem();
                 return;

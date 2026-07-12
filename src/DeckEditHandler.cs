@@ -344,7 +344,8 @@ namespace DuelLinksAccess
             }
 
             // Enter — add (collection) or remove (deck)
-            if (InputManager.TryConsumeKeyDown(KeyCode.Return))
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
                 if (_currentZone == Zone.Collection)
                     AddCurrentCard();

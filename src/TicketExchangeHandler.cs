@@ -276,7 +276,8 @@ namespace DuelLinksAccess
             }
 
             // Enter — select/add current card
-            if (InputManager.TryConsumeKeyDown(KeyCode.Return))
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
                 SelectCurrentCard();
                 return;
