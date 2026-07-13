@@ -148,8 +148,7 @@ namespace DuelLinksAccess
                     if (LateContentRetryPolicy.ShouldRetry(
                         _items.Count, _textMode, false))
                     {
-                        if (GameStateTracker.CurrentScreen
-                            == GameStateTracker.GameScreen.Title)
+                        if (GameStateTracker.CurrentScreen == GameScreen.Title)
                         {
                             // Title buttons (initiate link, account options,
                             // ...) activate several seconds into the LWF intro
