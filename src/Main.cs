@@ -17,7 +17,7 @@ using System.Collections;
 //   See docs/technical-reference.md section "CRITICAL: Accessing Game Code"
 // ============================================================================
 
-[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.2.0", "DuelLinksAccess Team")]
+[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.3.0", "DuelLinksAccess Team")]
 [assembly: MelonGame("Konami Digital Entertainment Co., Ltd.", "Yu-Gi-Oh! DUEL LINKS")]
 
 namespace DuelLinksAccess
@@ -31,6 +31,11 @@ namespace DuelLinksAccess
         #region Fields
 
         private bool _gameReady = false;
+        private bool _harmonyPatchesApplied = false;
+        private int _harmonyPatchAttempts = 0;
+        private float _nextHarmonyPatchAttempt = 0f;
+        private const int MaxHarmonyPatchAttempts = 3;
+        private const float HarmonyPatchRetryDelay = 2f;
         private HarmonyLib.Harmony _harmony;
 
         /// <summary>
@@ -93,7 +98,6 @@ namespace DuelLinksAccess
 
             ScreenReader.Initialize();
             Loc.Initialize();
-            ModConfig.Initialize();
             _harmony = new HarmonyLib.Harmony("com.duellinksaccess.mod");
             InitializeHandlers();
             MelonCoroutines.Start(AnnounceStartupDelayed());
@@ -101,9 +105,6 @@ namespace DuelLinksAccess
 
         private void InitializeHandlers()
         {
-            // Subscribe to screen changes to update AccessStateManager context
-            GameStateTracker.OnScreenChanged += OnScreenChanged;
-
             _dialogHandler = new DialogHandler();
             _screenButtonHandler = new ScreenButtonHandler();
             _duelHandler = new DuelHandler();
@@ -113,13 +114,6 @@ namespace DuelLinksAccess
             _cardTraderHandler = new CardTraderHandler();
             _cardCatalogHandler = new CardCatalogHandler();
             _homeHandler = new HomeHandler();
-        }
-
-        private void OnScreenChanged(GameStateTracker.GameScreen oldScreen,
-            GameStateTracker.GameScreen newScreen)
-        {
-            var newContext = AccessStateManager.ContextFromScreen(newScreen);
-            AccessStateManager.SetContext(newContext);
         }
 
         private IEnumerator AnnounceStartupDelayed()
@@ -133,13 +127,6 @@ namespace DuelLinksAccess
         {
             // Input manager must update first — clears consumed keys
             InputManager.Update();
-
-            // Settings menu takes priority
-            if (ModConfig.IsMenuOpen)
-            {
-                ModConfig.Update();
-                return;
-            }
 
             // Global hotkeys work regardless of game ready state
             if (ProcessHotkeys()) return;
@@ -156,12 +143,20 @@ namespace DuelLinksAccess
 
         private bool CheckGameReady()
         {
-            if (_gameReady) return true;
+            if (!_gameReady)
+                _gameReady = GameStateTracker.CheckGameReady();
 
-            if (GameStateTracker.CheckGameReady())
+            if (_gameReady && HarmonyPatchPolicy.ShouldAttempt(
+                _harmonyPatchesApplied,
+                _harmonyPatchAttempts,
+                Time.unscaledTime,
+                _nextHarmonyPatchAttempt,
+                MaxHarmonyPatchAttempts))
             {
-                _gameReady = true;
-                HarmonyPatches.Apply(_harmony);
+                _harmonyPatchAttempts++;
+                _harmonyPatchesApplied = HarmonyPatches.Apply(_harmony);
+                _nextHarmonyPatchAttempt =
+                    Time.unscaledTime + HarmonyPatchRetryDelay;
             }
 
             return _gameReady;
@@ -172,8 +167,9 @@ namespace DuelLinksAccess
             MelonLogger.Msg($"Scene loaded: {sceneName}");
             DebugLogger.LogState($"Scene changed to: {sceneName}");
             _gameReady = false;
+            _harmonyPatchAttempts = 0;
+            _nextHarmonyPatchAttempt = 0f;
             GameStateTracker.Reset();
-            AccessStateManager.ForceReset();
         }
 
         public override void OnApplicationQuit()
@@ -223,41 +219,6 @@ namespace DuelLinksAccess
                 return true;
             }
 
-            // F4 = Try to complete stuck Boot tutorial (debug)
-            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F4))
-            {
-                TryCompleteTutorial();
-                return true;
-            }
-
-            // F5 = Start tutorial duel directly (debug)
-            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F5))
-            {
-                TryStartTutorialDuel();
-                return true;
-            }
-
-            // F6 = ShowFirstTimer for Boot tutorial (debug)
-            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F6))
-            {
-                TryShowFirstTimer();
-                return true;
-            }
-
-            // F7 = Clear waitTarget and re-fetch (debug)
-            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F7))
-            {
-                TryClearWaitTarget();
-                return true;
-            }
-
-            // F8 = Account_create — reset/recreate account (debug, nuclear option)
-            if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F8))
-            {
-                TryCreateAccount();
-                return true;
-            }
-
             // F9 = Simulate real mouse click at TutorialArrow physicTarget (debug)
             if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F9))
             {
@@ -273,16 +234,9 @@ namespace DuelLinksAccess
             }
 
             // Ctrl+R = Repeat last announcement
-            if (Input.GetKey(KeyCode.LeftControl) && InputManager.TryConsumeKeyDown(KeyCode.R))
+            if (IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.R))
             {
                 RepeatLastAnnouncement();
-                return true;
-            }
-
-            // Ctrl+F11 = Mod Settings
-            if (Input.GetKey(KeyCode.LeftControl) && InputManager.TryConsumeKeyDown(KeyCode.F11))
-            {
-                ModConfig.ToggleMenu();
                 return true;
             }
 
@@ -297,6 +251,12 @@ namespace DuelLinksAccess
             }
 
             return false;
+        }
+
+        private static bool IsControlHeld()
+        {
+            return Input.GetKey(KeyCode.LeftControl)
+                || Input.GetKey(KeyCode.RightControl);
         }
 
         #endregion
@@ -460,13 +420,13 @@ namespace DuelLinksAccess
                     // exclude it from the sbhIdle fast branch to avoid a race
                     // where SBH going idle (screen=Dialog) fires the generic
                     // message before the home-screen speech finishes.
-                    if (announceShape == ArrowShape.WorldColliderPointer
-                        || (sbhIdle && announceShape != ArrowShape.UISelectablePointer))
+                    if (announceShape == TutorialArrowShape.WorldColliderPointer
+                        || (sbhIdle && announceShape != TutorialArrowShape.UISelectablePointer))
                     {
                         _orphanArrowAnnounced = true;
                         ScreenReader.Say(Loc.Get("duel_tutorial_arrow_pointing"));
                     }
-                    else if (announceShape == ArrowShape.UISelectablePointer)
+                    else if (announceShape == TutorialArrowShape.UISelectablePointer)
                     {
                         // Wait until home-screen speech settles before announcing.
                         float elapsed = UnityEngine.Time.time - _orphanArrowFirstSeen;
@@ -559,10 +519,10 @@ namespace DuelLinksAccess
                     float elapsed = UnityEngine.Time.time - _orphanArrowFirstSeen;
                     if (elapsed >= OrphanArrowIpclickTimeout)
                     {
-                        ArrowShape shape = ClassifyArrowShape(arrowVc);
+                        TutorialArrowShape shape = ClassifyArrowShape(arrowVc);
                         switch (shape)
                         {
-                            case ArrowShape.ClickToContinue:
+                            case TutorialArrowShape.ClickToContinue:
                                 if (physicTarget != null || dispTarget != null)
                                 {
                                     DebugLogger.Log(LogCategory.Game, "Main",
@@ -583,8 +543,8 @@ namespace DuelLinksAccess
                                 _orphanArrowHandled = true;
                                 return true;
 
-                            case ArrowShape.UISelectablePointer:
-                            case ArrowShape.WorldColliderPointer:
+                            case TutorialArrowShape.UISelectablePointer:
+                            case TutorialArrowShape.WorldColliderPointer:
                                 DebugLogger.Log(LogCategory.Game, "Main",
                                     $"Orphan TutorialArrow ({shape}): no " +
                                     $"auto-click; user must press Enter on " +
@@ -667,66 +627,30 @@ namespace DuelLinksAccess
             _orphanArrowAnnounced = false;
         }
 
-        internal enum ArrowShape
-        {
-            // physicTarget is null. Click anywhere dismisses; cutscene narrative
-            // text. Safe to auto-dismiss after a delay.
-            ClickToContinue,
-            // physicTarget is a UI Selectable / Graphic. The user navigates to
-            // it via SBH/DialogHandler and presses Enter; SBH's
-            // ActivateViaTutorialArrow routes through ipclick. No auto-click.
-            UISelectablePointer,
-            // physicTarget is a 3D world Collider (e.g. Collider_Cardshop on
-            // Home). targetCamera is non-null and not Camera.main.
-            // OnPointerClick fails (game-api.md:543); the working pair is
-            // ipclick + hardware mouse. No auto-click — user uses Enter on the
-            // navigated item or F11.
-            WorldColliderPointer
-        }
-
         /// <summary>
         /// Classifies a TutorialArrow into one of three shapes that need
-        /// different activation policies. See ArrowShape doc-comments.
+        /// different activation policies.
         /// </summary>
-        internal static ArrowShape ClassifyArrowShape(
+        internal static TutorialArrowShape ClassifyArrowShape(
             Il2CppYgomGame.Menu.TutorialArrowViewController arrowVc)
         {
             try
             {
                 var physicTarget = arrowVc.physicTarget;
-                if (physicTarget == null)
-                {
-                    // A null-physicTarget arrow with an ipclick handler is
-                    // pointing at a specific UI button (e.g. Stage-7 Vagrant
-                    // shop tutorial: ipclick = Trainer Purchase button; GX
-                    // Series-unlock: ipclick = SeriesButton). Auto-firing the
-                    // ipclick reopens the very screen the user just closed,
-                    // creating an inescapable loop. Treat as UISelectablePointer
-                    // so the user navigates to the button and presses Enter.
-                    // Genuine cutscene "click anywhere" arrows have no ipclick.
-                    int ipclickCount = arrowVc.ipclick?.Length ?? 0;
-                    if (ipclickCount > 0) return ArrowShape.UISelectablePointer;
-                    return ArrowShape.ClickToContinue;
-                }
-
-                // 3D world target: arrow's own targetCamera is something
-                // other than Camera.main (typically "SingleCamera" or another
-                // scene-specific camera) AND the target has no UI Graphic.
-                // This is the signal documented in game-api.md:753 for the
-                // shop-on-Home case (Collider_Cardshop rendered by SingleCamera).
-                bool hasUiGraphic = physicTarget.GetComponent<UnityEngine.UI.Graphic>() != null;
+                bool hasTarget = physicTarget != null;
+                bool hasIpclick = (arrowVc.ipclick?.Length ?? 0) > 0;
+                bool hasUiGraphic = hasTarget
+                    && physicTarget.GetComponent<UnityEngine.UI.Graphic>() != null;
                 var targetCam = arrowVc.targetCamera;
                 bool worldCamera = targetCam != null && targetCam != Camera.main;
-
-                if (worldCamera && !hasUiGraphic) return ArrowShape.WorldColliderPointer;
-
-                return ArrowShape.UISelectablePointer;
+                return TutorialArrowPolicy.Classify(
+                    hasTarget, hasIpclick, worldCamera, hasUiGraphic);
             }
             catch
             {
                 // If we can't tell, treat as UI pointer (the safer default —
                 // no auto-click, user-driven).
-                return ArrowShape.UISelectablePointer;
+                return TutorialArrowPolicy.SafeDefault;
             }
         }
 
@@ -1080,8 +1004,7 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Logs the boot tutorial state (inProgress + waitTarget) any time
-        /// either changes. Cheap per-frame query that only emits a log line
-        /// on transition. Combined with the Harmony patches on
+        /// either changes while debug mode is enabled. Combined with the Harmony patches on
         /// API.User_tutorial_dialog / TutorialManager.fetch / .Notificator
         /// this gives a full timeline of tutorial gate-state transitions
         /// alongside the calls that drove them — the missing oracle for
@@ -1089,6 +1012,7 @@ namespace DuelLinksAccess
         /// </summary>
         private void DumpTutorialStateOnChange()
         {
+            if (!DiagnosticPolicy.ShouldCollect(DebugMode)) return;
             try
             {
                 if (!GameStateTracker.IsGameReady) return;
@@ -1245,78 +1169,6 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"Tutorial dump error: {ex.Message}");
                 ScreenReader.Say("Tutorial dump failed");
-            }
-        }
-
-        /// <summary>
-        /// F5: Directly calls TutorialViewController.StartTutorialDuel() to trigger a tutorial duel.
-        /// </summary>
-        private void TryStartTutorialDuel()
-        {
-            try
-            {
-                MelonLogger.Msg("=== F5: Calling TutorialViewController.StartTutorialDuel() ===");
-                Il2CppYgomGame.Menu.TutorialViewController.StartTutorialDuel();
-                MelonLogger.Msg("StartTutorialDuel() called successfully");
-                ScreenReader.Say("Tutorial duel started. Check screen.");
-            }
-            catch (System.Exception ex)
-            {
-                MelonLogger.Msg($"StartTutorialDuel error: {ex.Message}");
-                ScreenReader.Say($"Tutorial duel failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// F6: Calls TutorialUtil.ShowFirstTimer(Boot) to re-trigger the boot tutorial flow.
-        /// </summary>
-        private void TryShowFirstTimer()
-        {
-            try
-            {
-                MelonLogger.Msg("=== F6: Calling TutorialUtil.ShowFirstTimer(Boot) ===");
-                var handle = Il2CppYgomGame.Utility.TutorialUtil.ShowFirstTimer(
-                    Il2CppYgomGame.Utility.TutorialUtil.Type.Boot);
-                MelonLogger.Msg($"ShowFirstTimer returned: {handle}");
-                ScreenReader.Say("ShowFirstTimer called. Check screen.");
-            }
-            catch (System.Exception ex)
-            {
-                MelonLogger.Msg($"ShowFirstTimer error: {ex.Message}");
-                ScreenReader.Say($"ShowFirstTimer failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// F7: Clears TutorialManager.waitTarget and calls fetch() to nudge the tutorial system.
-        /// </summary>
-        private void TryClearWaitTarget()
-        {
-            try
-            {
-                string oldTarget = Il2CppYgomSystem.Utility.TutorialManager.waitTarget;
-                MelonLogger.Msg($"=== F7: Clearing waitTarget (was \"{oldTarget}\") ===");
-
-                Il2CppYgomSystem.Utility.TutorialManager.waitTarget = "";
-                MelonLogger.Msg("waitTarget cleared");
-
-                // Also try to find and call checkTarget on the instance
-                var tmObj = UnityEngine.Object.FindObjectOfType<Il2CppYgomSystem.Utility.TutorialManager>();
-                if (tmObj != null)
-                {
-                    tmObj.checkTarget();
-                    MelonLogger.Msg("checkTarget() called");
-                }
-
-                Il2CppYgomSystem.Utility.TutorialManager.fetch();
-                MelonLogger.Msg("fetch() called");
-
-                ScreenReader.Say($"Wait target cleared (was {oldTarget}). Fetched.");
-            }
-            catch (System.Exception ex)
-            {
-                MelonLogger.Msg($"ClearWaitTarget error: {ex.Message}");
-                ScreenReader.Say($"Clear wait target failed: {ex.Message}");
             }
         }
 
@@ -1506,96 +1358,6 @@ namespace DuelLinksAccess
 
         private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         private const uint MOUSEEVENTF_LEFTUP = 0x0004;
-
-        /// <summary>
-        /// F8: Calls Account_create() to attempt a fresh account on the server.
-        /// Nuclear option when tutorial is irreparably stuck.
-        /// </summary>
-        private void TryCreateAccount()
-        {
-            try
-            {
-                MelonLogger.Msg("=== F8: Calling Account_create() ===");
-                var handle = Il2CppYgomSystem.Network.API.Account_create();
-                MelonLogger.Msg($"Account_create() returned: {handle}");
-                ScreenReader.Say("Account create called. Restart the game.");
-            }
-            catch (System.Exception ex)
-            {
-                MelonLogger.Msg($"Account_create error: {ex.Message}");
-                ScreenReader.Say($"Account create failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Attempts to unstick the Boot tutorial by calling User_tutorial_dialog
-        /// and manipulating TutorialManager state.
-        /// </summary>
-        private void TryCompleteTutorial()
-        {
-            try
-            {
-                MelonLogger.Msg("=== Attempting to complete tutorial ===");
-
-                // Step 1: Check current state
-                bool bootInProgress = Il2CppYgomGame.Utility.TutorialUtil
-                    .IsTutorialProgress(Il2CppYgomGame.Utility.TutorialUtil.Type.Boot);
-                string bootProgress = Il2CppYgomGame.Utility.TutorialUtil
-                    .GetTutorialProgress(Il2CppYgomGame.Utility.TutorialUtil.Type.Boot);
-                string waitTarget = Il2CppYgomSystem.Utility.TutorialManager.waitTarget;
-
-                MelonLogger.Msg($"Boot tutorial: inProgress={bootInProgress}, progress=\"{bootProgress}\", waitTarget=\"{waitTarget}\"");
-
-                // Step 2: Try User_tutorial_dialog for all tutorial types that are in progress
-                var values = System.Enum.GetValues(
-                    typeof(Il2CppYgomGame.Utility.TutorialUtil.Type));
-                foreach (Il2CppYgomGame.Utility.TutorialUtil.Type t in values)
-                {
-                    try
-                    {
-                        if (Il2CppYgomGame.Utility.TutorialUtil.IsTutorialProgress(t))
-                        {
-                            int id = (int)t;
-                            MelonLogger.Msg($"Calling User_tutorial_dialog({id}) for {t}...");
-                            var handle = Il2CppYgomSystem.Network.API.User_tutorial_dialog(id);
-                            MelonLogger.Msg($"  Returned handle: {handle}");
-                        }
-                    }
-                    catch (System.Exception ex)
-                    {
-                        MelonLogger.Msg($"  User_tutorial_dialog error for {t}: {ex.Message}");
-                    }
-                }
-
-                // Step 3: If waitTarget is set, try checkTarget to advance
-                if (!string.IsNullOrEmpty(waitTarget))
-                {
-                    MelonLogger.Msg($"Calling TutorialManager.checkTarget() (waitTarget=\"{waitTarget}\")...");
-                    var tmObj = UnityEngine.Object.FindObjectOfType<Il2CppYgomSystem.Utility.TutorialManager>();
-                    if (tmObj != null)
-                    {
-                        tmObj.checkTarget();
-                        MelonLogger.Msg("checkTarget() called on instance");
-                    }
-                    else
-                    {
-                        MelonLogger.Msg("TutorialManager instance not found");
-                    }
-                }
-
-                // Step 4: Re-fetch tutorial data from server
-                MelonLogger.Msg("Calling TutorialManager.fetch()...");
-                Il2CppYgomSystem.Utility.TutorialManager.fetch();
-                MelonLogger.Msg("fetch() called");
-
-                ScreenReader.Say("Tutorial completion attempted. Press F3 to check state.");
-            }
-            catch (System.Exception ex)
-            {
-                MelonLogger.Msg($"TryCompleteTutorial error: {ex.Message}");
-                ScreenReader.Say("Tutorial completion failed. Check log.");
-            }
-        }
 
         #endregion
     }

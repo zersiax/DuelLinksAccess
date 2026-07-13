@@ -75,7 +75,7 @@ namespace DuelLinksAccess
             if (_operationCooldown > 0f)
                 _operationCooldown -= Time.deltaTime;
 
-            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.Shop)
+            if (GameStateTracker.CurrentScreen != GameScreen.Shop)
             {
                 if (_wasActive) Deactivate();
                 return;
@@ -224,6 +224,9 @@ namespace DuelLinksAccess
                 if (IsMerchViewListActive(_vc.cardMerchViews))
                     _availableCategories.Add(Category.Cards);
 
+                if (GetFirstActiveStructureView() != null)
+                    _availableCategories.Add(Category.Structure);
+
                 if (IsMerchViewActive(_vc.etcMerchView2))
                     _availableCategories.Add(Category.Etc);
 
@@ -287,6 +290,7 @@ namespace DuelLinksAccess
                 return _currentCategory switch
                 {
                     Category.Cards => GetFirstActiveMerchView(_vc.cardMerchViews),
+                    Category.Structure => GetFirstActiveStructureView(),
                     Category.Etc => _vc.etcMerchView2,
                     Category.Bundle => _vc.bundleMerchView2,
                     Category.DPass => _vc.dpassMerchView,
@@ -307,6 +311,24 @@ namespace DuelLinksAccess
                 {
                     if (IsMerchViewActive(views[i]))
                         return views[i];
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private MerchViewBase GetFirstActiveStructureView()
+        {
+            try
+            {
+                var views = _vc?.merchViewBases;
+                if (views == null) return null;
+                for (int i = 0; i < views.Count; i++)
+                {
+                    var view = views[i];
+                    if (!IsMerchViewActive(view)) continue;
+                    if (view.TryCast<StructureMerchView>() != null)
+                        return view;
                 }
             }
             catch { }
@@ -487,7 +509,8 @@ namespace DuelLinksAccess
             }
 
             // Enter — activate current item (open detail / purchase)
-            if (InputManager.TryConsumeKeyDown(KeyCode.Return))
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
                 ActivateCurrentItem();
                 return;

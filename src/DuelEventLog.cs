@@ -37,7 +37,11 @@ namespace DuelLinksAccess
             if (string.IsNullOrEmpty(message)) return;
             _entries.Add(message);
             if (_entries.Count > MaxEntries)
+            {
                 _entries.RemoveAt(0);
+                _browseIndex = EventLogOverflowPolicy.AdjustBrowseIndex(
+                    _browsing, _browseIndex);
+            }
         }
 
         /// <summary>Clears all log entries.</summary>

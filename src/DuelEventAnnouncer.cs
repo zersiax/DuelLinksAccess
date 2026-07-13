@@ -5,50 +5,6 @@ using MelonLoader;
 namespace DuelLinksAccess
 {
     /// <summary>
-    /// Tracks the ATK/DEF battle position of monsters by their runtime uniqueId.
-    /// The command-mask heuristic (TurnAtk/TurnDef bits) only works the turn AFTER
-    /// a position change — once a monster has changed position this turn, both bits
-    /// drop and the heuristic falls back to ATK regardless of actual orientation.
-    /// CutinTurn / CutinReverse events fire in real time when the engine animates
-    /// a position change, so this cache is the authoritative source.
-    /// </summary>
-    public static class DuelPositionTracker
-    {
-        // uniqueId -> true if currently in defense position
-        private static readonly Dictionary<int, bool> _isDefense = new();
-
-        public static void Reset() => _isDefense.Clear();
-
-        public static void SetAttack(int uniqueId)
-        {
-            if (uniqueId > 0) _isDefense[uniqueId] = false;
-        }
-
-        public static void SetDefense(int uniqueId)
-        {
-            if (uniqueId > 0) _isDefense[uniqueId] = true;
-        }
-
-        public static void Toggle(int uniqueId)
-        {
-            if (uniqueId <= 0) return;
-            _isDefense[uniqueId] = !(_isDefense.TryGetValue(uniqueId, out bool cur) && cur);
-        }
-
-        public static void Forget(int uniqueId)
-        {
-            if (uniqueId > 0) _isDefense.Remove(uniqueId);
-        }
-
-        /// <summary>Returns null if the uid has no cached position.</summary>
-        public static bool? IsDefense(int uniqueId)
-        {
-            if (uniqueId <= 0) return null;
-            return _isDefense.TryGetValue(uniqueId, out bool isDef) ? (bool?)isDef : null;
-        }
-    }
-
-    /// <summary>
     /// Processes duel events from DuelClient.RunEffect and generates announcements.
     /// Translates Engine.ViewType events into human-readable screen reader output.
     /// </summary>
@@ -73,7 +29,7 @@ namespace DuelLinksAccess
         // Last-announced state — used purely for de-duplication so we don't
         // re-announce the same phase/turn back-to-back. Actual state lives
         // in DuelState (LP, phase, turn player, etc.).
-        private static int _lastAnnouncedTurnPlayer = -1;
+        private static readonly TurnAnnouncementTracker _turnAnnouncements = new();
         private static int _lastAnnouncedPhase = -1;
 
         // Phase announcements debounce so the rapid Draw → Standby → Main
@@ -86,6 +42,12 @@ namespace DuelLinksAccess
         // Deferred dialog text — rapid-fire RunDialog events (multiple per
         // phase transition) replace each other so only the last one speaks
         private static string _pendingDialogText;
+
+        private readonly record struct PendingPositionChange(
+            int Player, int Locate, int UniqueId, float Deadline);
+
+        private static readonly List<PendingPositionChange> _pendingPositionChanges = new();
+        private const float PositionReadDelaySeconds = 0.10f;
 
         #endregion
 
@@ -177,6 +139,8 @@ namespace DuelLinksAccess
                     _pendingDialogText = null;
                 }
             }
+
+            ResolvePendingPositionChanges();
         }
 
         /// <summary>
@@ -201,7 +165,7 @@ namespace DuelLinksAccess
                     // DuelState handles InDuel/DuelEnded flags and clears its
                     // own state. We just reset our announcement-dedup vars
                     // and the position tracker, then announce.
-                    _lastAnnouncedTurnPlayer = -1;
+                    _turnAnnouncements.Reset();
                     _lastAnnouncedPhase = -1;
                     DuelPositionTracker.Reset();
                     DumpPlayerSeats();
@@ -388,11 +352,13 @@ namespace DuelLinksAccess
         public static void Reset()
         {
             _lastMessage = "";
-            _lastAnnouncedTurnPlayer = -1;
+            _turnAnnouncements.Reset();
             _lastAnnouncedPhase = -1;
             _pendingPhaseAnnouncement = false;
             _pendingPhaseDeadline = -1f;
             _pendingDialogText = null;
+            _pendingPositionChanges.Clear();
+            DuelPositionTracker.Reset();
             DuelState.Reset();
         }
 
@@ -463,8 +429,8 @@ namespace DuelLinksAccess
                 int turnPlayer = DuelState.CurrentTurnPlayer;
                 int turnNum = DuelState.TurnNumber;
 
-                if (turnPlayer == _lastAnnouncedTurnPlayer) return;
-                _lastAnnouncedTurnPlayer = turnPlayer;
+                if (!_turnAnnouncements.ShouldAnnounce(
+                    turnNum, turnPlayer)) return;
 
                 string whose = turnPlayer == DuelState.MyPlayerNum()
                     ? Loc.Get("duel_your_turn")
@@ -633,8 +599,8 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Handles a CutinTurn event: toggles the cached position for the affected
-        /// monster and announces the new position. Without this, ReadCurrentCard
+        /// Handles a CutinTurn event: resolves the affected monster's new position
+        /// and announces it. Without this, ReadCurrentCard
         /// reports the wrong position from the moment of the change until the next
         /// turn (when TurnAtk/TurnDef bits return to the command mask).
         ///
@@ -665,11 +631,62 @@ namespace DuelLinksAccess
 
             if (uid <= 0) return;
 
-            DuelPositionTracker.Toggle(uid);
-            bool isDef = DuelPositionTracker.IsDefense(uid) ?? false;
+            bool? isDef = DuelPositionTracker.ApplyPositionChange(
+                uid, observedIsDefense: null);
 
+            if (!isDef.HasValue)
+            {
+                _pendingPositionChanges.Add(new PendingPositionChange(
+                    player,
+                    locate,
+                    uid,
+                    UnityEngine.Time.unscaledTime + PositionReadDelaySeconds));
+                return;
+            }
+
+            AnnouncePositionChange(player, uid, isDef);
+        }
+
+        private static void ResolvePendingPositionChanges()
+        {
+            float now = UnityEngine.Time.unscaledTime;
+            for (int i = _pendingPositionChanges.Count - 1; i >= 0; i--)
+            {
+                PendingPositionChange pending = _pendingPositionChanges[i];
+                if (now < pending.Deadline) continue;
+                _pendingPositionChanges.RemoveAt(i);
+
+                bool? observedIsDefense = null;
+                try
+                {
+                    CardSnapshot? snapshot = DuelState.GetFieldCard(
+                        pending.Player, pending.Locate, 0);
+                    if (snapshot?.UniqueId == pending.UniqueId)
+                        observedIsDefense = !snapshot.Value.IsAttack;
+                }
+                catch { }
+
+                bool? isDefense = DuelPositionTracker.ApplyPositionChange(
+                    pending.UniqueId, observedIsDefense);
+                AnnouncePositionChange(
+                    pending.Player, pending.UniqueId, isDefense);
+            }
+        }
+
+        private static void AnnouncePositionChange(
+            int player, int uid, bool? isDef)
+        {
             string cardName = TryGetCardName(uid) ?? Loc.Get("duel_a_card");
-            string position = isDef
+            if (!isDef.HasValue)
+            {
+                string genericKey = player == MyPlayerNum()
+                    ? "duel_position_changed_generic"
+                    : "duel_position_changed_opponent_generic";
+                Announce(Loc.Get(genericKey, cardName));
+                return;
+            }
+
+            string position = isDef.Value
                 ? Loc.Get("duel_defense_position")
                 : Loc.Get("duel_attack_position");
 
@@ -821,61 +838,24 @@ namespace DuelLinksAccess
                 fragments[i] = ResolveFragment(types[i], data, content);
             }
 
-            // Second pass: compose text, substituting %s placeholders in AddString
-            // with the next Ins* fragment (InsCard, InsNum, InsType, InsAttr, InsString)
-            var sb = new System.Text.StringBuilder();
-            int nextIns = 0; // index of next unconsumed Ins* fragment
-
+            var mix = new DialogMixFragment[count];
             for (int i = 0; i < count; i++)
             {
-                switch (types[i])
+                DialogMixFragmentKind kind = types[i] switch
                 {
-                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddString:
-                        string text = fragments[i] ?? "";
-                        // Strip color/formatting tags like @3, @0
-                        text = System.Text.RegularExpressions.Regex.Replace(
-                            text, @"@\d", "");
-                        // Substitute %s placeholders with Ins* fragments
-                        while (text.Contains("%s"))
-                        {
-                            string replacement = "";
-                            // Find next Ins* fragment
-                            while (nextIns < count)
-                            {
-                                if (IsInsertFragment(types[nextIns]))
-                                {
-                                    replacement = fragments[nextIns] ?? "";
-                                    nextIns++;
-                                    break;
-                                }
-                                nextIns++;
-                            }
-                            int pos = text.IndexOf("%s");
-                            text = text.Substring(0, pos) + replacement
-                                + text.Substring(pos + 2);
-                        }
-                        sb.Append(text);
-                        break;
-
-                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddCr:
-                        sb.Append(' ');
-                        break;
-
-                    case Il2CppYgomGame.Duel.Engine.DialogMixTextType.Null:
-                        break;
-
-                    default:
-                        // Ins* fragments not consumed by %s — append directly
-                        if (i >= nextIns && !string.IsNullOrEmpty(fragments[i]))
-                            sb.Append(fragments[i]);
-                        break;
-                }
+                    Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddString
+                        => DialogMixFragmentKind.Text,
+                    Il2CppYgomGame.Duel.Engine.DialogMixTextType.AddCr
+                        => DialogMixFragmentKind.Break,
+                    _ when IsInsertFragment(types[i])
+                        => DialogMixFragmentKind.Insert,
+                    _ => DialogMixFragmentKind.Ignore,
+                };
+                mix[i] = new DialogMixFragment(kind, fragments[i]);
             }
 
-            string result = sb.ToString().Trim();
-            // Collapse multiple spaces
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"  +", " ");
-            if (string.IsNullOrEmpty(result)) return null;
+            string result = DialogMixComposer.Compose(mix);
+            if (result == null) return null;
 
             DebugLogger.Log(LogCategory.Game, "DuelDialog",
                 $"Composed: {result}");

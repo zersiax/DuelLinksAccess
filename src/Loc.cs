@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace DuelLinksAccess
 {
@@ -7,14 +7,15 @@ namespace DuelLinksAccess
     /// English only for now, but all strings go through here for easy expansion.
     ///
     /// Usage:
-    ///   Loc.Get("key")              — get string
-    ///   Loc.Get("key", arg1, arg2)  — get string with placeholders {0}, {1}
+    ///   Loc.Get("key")              â€” get string
+    ///   Loc.Get("key", arg1, arg2)  â€” get string with placeholders {0}, {1}
     /// </summary>
     public static class Loc
     {
         #region Fields
 
-        private static bool _initialized = false;
+        private static volatile bool _initialized = false;
+        private static readonly object _initializeLock = new();
         private static readonly Dictionary<string, string> _english = new();
 
         #endregion
@@ -26,8 +27,13 @@ namespace DuelLinksAccess
         /// </summary>
         public static void Initialize()
         {
-            InitializeStrings();
-            _initialized = true;
+            if (_initialized) return;
+            lock (_initializeLock)
+            {
+                if (_initialized) return;
+                InitializeStrings();
+                _initialized = true;
+            }
         }
 
         /// <summary>
@@ -86,7 +92,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. A deck accessories, card sleeve and game mat. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement. Control F11 Mod settings.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. Draws happen automatically. Press Space during Draw Phase to retry a delayed draw. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. A deck accessories, card sleeve and game mat. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement.";
             _english["debug_mode"] = "Debug mode {0}";
             _english["tutorial_arrow_activated"] = "Tutorial arrow activated";
             _english["tutorial_arrow_no_arrow"] = "No tutorial arrow active";
@@ -94,9 +100,6 @@ namespace DuelLinksAccess
             _english["hardware_click_no_window"] = "Hardware click failed: no game window";
 
             // ===== SETTINGS =====
-            _english["settings_opened"] = "Mod settings opened";
-            _english["settings_closed"] = "Mod settings closed and saved";
-            _english["settings_item"] = "{0} of {1}: {2}, {3}. Left right to change.";
 
             // ===== SCREEN CHANGES =====
             _english["screen_home"] = "Home screen";
@@ -160,10 +163,10 @@ namespace DuelLinksAccess
             _english["trader_cannot_trade"] = "cannot trade";
             _english["trader_cost_gold"] = "{0} gold";
             _english["trader_cost_gold_poss"] = "{0} gold (have {1})";
-            _english["trader_cost_card"] = "{1} ×{0}";
-            _english["trader_cost_card_poss"] = "{1} ×{0} (have {2})";
-            _english["trader_cost_item"] = "{0} ×{1}";
-            _english["trader_cost_item_poss"] = "{0} ×{1} (have {2})";
+            _english["trader_cost_card"] = "{1} Ã—{0}";
+            _english["trader_cost_card_poss"] = "{1} Ã—{0} (have {2})";
+            _english["trader_cost_item"] = "{0} Ã—{1}";
+            _english["trader_cost_item_poss"] = "{0} Ã—{1} (have {2})";
             _english["trader_stock"] = "Stock: {0}";
             _english["trader_gold"] = "Gold: {0}";
             _english["trader_gold_unknown"] = "Gold balance unavailable";
@@ -190,7 +193,7 @@ namespace DuelLinksAccess
 
             // ===== HOME / DUEL WORLD HANDLER =====
             _english["home_items"] = "Home screen: {0} items";
-            // Label first — position info is secondary for navigation efficiency
+            // Label first â€” position info is secondary for navigation efficiency
             _english["home_item"] = "{2}, {0} of {1}";
             _english["home_area_selector"] = "Area: {0}";
             _english["home_area_changed"] = "Now in {0}";
@@ -327,6 +330,8 @@ namespace DuelLinksAccess
             _english["duel_card_opponent_owned"] = "{0}, opponent's";
             _english["duel_position_changed"] = "Switched to {0}: {1}";
             _english["duel_position_changed_opponent"] = "Opponent switched to {0}: {1}";
+            _english["duel_position_changed_generic"] = "Position changed: {0}";
+            _english["duel_position_changed_opponent_generic"] = "Opponent changed position: {0}";
             _english["duel_lp_read"] = "Your LP: {0}. Opponent LP: {1}";
             _english["duel_empty_slot_named"] = "Slot {0}: Empty";
             _english["duel_grid_edge_top"] = "Top of field";
@@ -418,9 +423,9 @@ namespace DuelLinksAccess
             _english["deck_zone_empty"] = "No cards in this zone";
             _english["deck_card_position"] = "{0} of {1}: {2}";
             _english["deck_card_added"] = "{0} added to deck";
-            _english["deck_card_added_count"] = "{0} added. Main deck: {1}";
+            _english["deck_card_added_zone_count"] = "{0} added. {1}: {2}";
             _english["deck_card_removed"] = "{0} removed from deck";
-            _english["deck_card_removed_count"] = "{0} removed. Main deck: {1}";
+            _english["deck_card_removed_zone_count"] = "{0} removed. {1}: {2}";
             _english["deck_card_not_addible"] = "Cannot add {0}";
             _english["deck_card_not_addible_reason"] = "Cannot add {0}: {1}";
             _english["deck_card_in_deck"] = "{0} copies in deck";
@@ -428,6 +433,8 @@ namespace DuelLinksAccess
             _english["deck_saved"] = "Deck saved";
             _english["deck_operation_error"] = "Operation failed";
             _english["deck_level"] = "Level";
+            _english["deck_rank"] = "Rank";
+            _english["deck_link"] = "Link";
             _english["deck_skill"] = "Skill: {0}. Press K to change.";
             _english["deck_no_skill"] = "No skill set. Press K to select.";
             _english["deck_use_deck_pressed"] = "Setting as your active deck";

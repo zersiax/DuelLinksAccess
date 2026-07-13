@@ -5,26 +5,34 @@
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <LangVersion>latest</LangVersion>
+    <LangVersion>10.0</LangVersion>
 
     <AssemblyName>DuelLinksAccess</AssemblyName>
     <RootNamespace>DuelLinksAccess</RootNamespace>
+    <Version>1.3.0</Version>
+
+    <DuelLinksPath Condition="'$(DuelLinksPath)' == '' and '$(DUEL_LINKS_PATH)' != ''">$(DUEL_LINKS_PATH)</DuelLinksPath>
+    <DuelLinksPath Condition="'$(DuelLinksPath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links</DuelLinksPath>
+    <MelonLoaderPath>$(DuelLinksPath)\MelonLoader</MelonLoaderPath>
+    <GameAssembliesPath>$(MelonLoaderPath)\Il2CppAssemblies</GameAssembliesPath>
+    <DeployToMods Condition="'$(DeployToMods)' == ''">false</DeployToMods>
   </PropertyGroup>
 
   <!-- Exclude decompiled files and templates from build -->
   <ItemGroup>
     <Compile Remove="decompiled\**" />
     <Compile Remove="templates\**" />
+    <Compile Remove="tests\**" />
   </ItemGroup>
 
   <!-- MelonLoader References (net6) -->
   <ItemGroup>
     <Reference Include="MelonLoader">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\net6\MelonLoader.dll</HintPath>
+      <HintPath>$(MelonLoaderPath)\net6\MelonLoader.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="0Harmony">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\net6\0Harmony.dll</HintPath>
+      <HintPath>$(MelonLoaderPath)\net6\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
@@ -32,11 +40,11 @@
   <!-- Il2CppInterop Runtime and IL2CPP core (required for IL2CPP games) -->
   <ItemGroup>
     <Reference Include="Il2CppInterop.Runtime">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath>
+      <HintPath>$(MelonLoaderPath)\net6\Il2CppInterop.Runtime.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Il2Cppmscorlib">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
@@ -44,27 +52,27 @@
   <!-- Unity Interop Assemblies (from MelonLoader Il2CppAssemblies) -->
   <ItemGroup>
     <Reference Include="UnityEngine">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\UnityEngine.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\UnityEngine.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\UnityEngine.InputLegacyModule.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.UI">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\UnityEngine.UI.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\UnityEngine.IMGUIModule.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.UIModule">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\UnityEngine.UIModule.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
@@ -72,14 +80,23 @@
   <!-- Game Assembly (IL2CPP interop) -->
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
+      <HintPath>$(GameAssembliesPath)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
 
-  <!-- Copy built DLL to Mods folder after build -->
-  <Target Name="CopyToMods" AfterTargets="Build">
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links\Mods\" />
+  <Target Name="ValidateGameDependencies" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(MelonLoaderPath)\net6\MelonLoader.dll')"
+           Text="MelonLoader assemblies not found under '$(DuelLinksPath)'. Set DuelLinksPath with -p:DuelLinksPath=... or DUEL_LINKS_PATH." />
+    <Error Condition="!Exists('$(GameAssembliesPath)\Assembly-CSharp.dll')"
+           Text="Generated IL2CPP assemblies not found under '$(GameAssembliesPath)'. Run Duel Links through MelonLoader once." />
+  </Target>
+
+  <!-- Deployment is opt-in so ordinary builds never modify the game install. -->
+  <Target Name="CopyToMods" AfterTargets="Build"
+          Condition="'$(DeployToMods)' == 'true' and '$(SkipCopyToMods)' != 'true'">
+    <MakeDir Directories="$(DuelLinksPath)\Mods" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(DuelLinksPath)\Mods\" />
     <Message Text="Copied $(TargetFileName) to Mods folder" Importance="High" />
   </Target>
 

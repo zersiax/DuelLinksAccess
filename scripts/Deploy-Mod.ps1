@@ -1,24 +1,15 @@
-# Deploy-Mod.ps1 - Copies built DLL to game Mods folder
+# Deploy-Mod.ps1 - Compatibility wrapper that builds before deployment
 param(
-    [string]$GamePath = "C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links",
+    [string]$GamePath = $env:DUEL_LINKS_PATH,
     [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
-$ProjectRoot = Split-Path -Parent $PSScriptRoot
-$Config = if ($Release) { "Release" } else { "Debug" }
-$DllPath = Join-Path $ProjectRoot "bin\$Config\net6.0\DuelLinksAccess.dll"
-$ModsFolder = Join-Path $GamePath "Mods"
+$Arguments = @{ Deploy = $true }
+if ($GamePath) { $Arguments.GamePath = $GamePath }
+if ($Release) { $Arguments.Release = $true }
 
-if (-not (Test-Path $DllPath)) {
-    Write-Host "DLL not found at $DllPath. Run Build-Mod.ps1 first." -ForegroundColor Red
-    exit 1
+& (Join-Path $PSScriptRoot "Build-Mod.ps1") @Arguments
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
 }
-
-if (-not (Test-Path $ModsFolder)) {
-    New-Item -ItemType Directory -Path $ModsFolder | Out-Null
-    Write-Host "Created Mods folder: $ModsFolder"
-}
-
-Copy-Item $DllPath $ModsFolder -Force
-Write-Host "Deployed DuelLinksAccess.dll to $ModsFolder" -ForegroundColor Green

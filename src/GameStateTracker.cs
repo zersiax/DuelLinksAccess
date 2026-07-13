@@ -14,26 +14,6 @@ namespace DuelLinksAccess
     public static class GameStateTracker
     {
         /// <summary>
-        /// Known game screens. Expand as new screens are identified.
-        /// </summary>
-        public enum GameScreen
-        {
-            Unknown,
-            Title,
-            Home,
-            Duel,
-            Deck,
-            Shop,
-            Dialog,
-            CardDetail,
-            Gate,
-            Store,
-            Notices,
-            DuelTrials,
-            Other
-        }
-
-        /// <summary>
         /// Currently active game screen.
         /// </summary>
         public static GameScreen CurrentScreen { get; private set; } = GameScreen.Unknown;
@@ -153,20 +133,8 @@ namespace DuelLinksAccess
                         MelonLogger.Msg($"  [base] = {baseName}");
                 }
 
-                var newScreen = ClassifyScreen(goName);
-
-                // Any VC from the dialog/dialogbase manager that doesn't match
-                // a known pattern should still be treated as Dialog
-                // (e.g. Mission, reward screens, etc.)
-                if (newScreen == GameScreen.Other && _pendingFromDialog)
-                    newScreen = GameScreen.Dialog;
-
-                // TutorialArrowPart in the content manager is a tutorial overlay
-                // on a content page (e.g. Duel Trials), not a real dialog.
-                // Let ScreenButtonHandler scan the page content underneath.
-                if (newScreen == GameScreen.Dialog
-                    && goName == "TutorialArrowPart" && !_pendingFromDialog)
-                    newScreen = GameScreen.Other;
+                var newScreen = ScreenClassificationPolicy.Classify(
+                    goName, _pendingFromDialog);
 
                 SetScreen(newScreen);
             }
@@ -464,55 +432,6 @@ namespace DuelLinksAccess
             }
 
             OnScreenChanged?.Invoke(oldScreen, newScreen);
-        }
-
-        /// <summary>
-        /// Maps a GameObject name to a GameScreen.
-        /// GameObject names typically match the ViewController class name or prefab path.
-        /// Enable debug mode (F12) to discover new names and add them here.
-        /// </summary>
-        private static GameScreen ClassifyScreen(string goName)
-        {
-            if (goName.Contains("Home") || goName == "Single")
-                return GameScreen.Home;
-
-            if (goName.Contains("Title"))
-                return GameScreen.Title;
-
-            // Only match the main DuelClient VC as Duel — NOT duel sub-dialogs.
-            // DuelCommonDialog, SelectEffectDialog, etc. fall through to Dialog below.
-            if (goName == "DuelClient")
-                return GameScreen.Duel;
-
-            if (goName.Contains("Deck"))
-                return GameScreen.Deck;
-
-            if (goName.Contains("Shop"))
-                return GameScreen.Shop;
-
-            if (goName.Contains("CardDetail"))
-                return GameScreen.CardDetail;
-
-            if (goName.Contains("Gate"))
-                return GameScreen.Gate;
-
-            if (goName == "Store")
-                return GameScreen.Store;
-
-            // HtjsonPage is the game's web-like content viewer used for login bonuses,
-            // notices, reward lists, and other server-driven content pages.
-            // Standby is the daily login bonus / standby screen.
-            if (goName == "HtjsonPage" || goName == "Standby")
-                return GameScreen.Notices;
-
-            if (goName.Contains("School") || goName.Contains("DuelQuest"))
-                return GameScreen.DuelTrials;
-
-            if (goName.Contains("Dialog") || goName.Contains("Confirm")
-                || goName.Contains("AgeVerification") || goName.Contains("Tutorial"))
-                return GameScreen.Dialog;
-
-            return GameScreen.Other;
         }
 
         /// <summary>

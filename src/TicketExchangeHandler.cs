@@ -276,7 +276,8 @@ namespace DuelLinksAccess
             }
 
             // Enter — select/add current card
-            if (InputManager.TryConsumeKeyDown(KeyCode.Return))
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
                 SelectCurrentCard();
                 return;
@@ -395,7 +396,10 @@ namespace DuelLinksAccess
             {
                 // Try the exchange button first
                 var exchangeBtn = _vc?.exchangeButton;
-                if (exchangeBtn != null && exchangeBtn.interactable)
+                var action = TicketExchangePolicy.ChooseAction(
+                    exchangeBtn != null,
+                    exchangeBtn?.interactable == true);
+                if (action == TicketExchangeAction.InvokeButton)
                 {
                     exchangeBtn.onClick.Invoke();
                     DebugLogger.Log(LogCategory.Handler, "TicketExchange",
@@ -404,10 +408,18 @@ namespace DuelLinksAccess
                     return;
                 }
 
-                // Fallback: DecideClicked
-                _vc?.DecideClicked();
-                DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                    "Called DecideClicked");
+                if (action == TicketExchangeAction.UseLegacyFallback)
+                {
+                    _vc?.DecideClicked();
+                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
+                        "Called DecideClicked because exchange button was absent");
+                }
+                else
+                {
+                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
+                        "Exchange button is disabled; confirmation rejected");
+                    ScreenReader.Say(Loc.Get("ticket_activate_error"));
+                }
                 _operationCooldown = OperationCooldownTime;
             }
             catch (Exception ex)

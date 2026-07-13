@@ -44,32 +44,32 @@ namespace DuelLinksAccess
             result = TryPullDownEntry(go);
             if (result != null) return result;
 
-            // 4. HtjsonNode replaceParam — Htjson pages store content in dictionaries
-            result = TryHtjsonNodeData(go);
-            if (result != null) return result;
-
-            // 5. ButtonSet → sibling TextArea association
-            result = TryButtonSetSiblingText(go);
-            if (result != null) return result;
-
-            // 6. Child YgomTextAccessor components
-            result = TryChildYgomTextAccessors(go);
-            if (result != null) return result;
-
-            // 7. Child Unity Text components
-            result = TryChildUnityText(go);
-            if (result != null) return result;
-
-            // 8. Parent/sibling text — button may have its label nearby
-            result = TryParentSiblingText(go);
-            if (result != null) return result;
-
-            // 9. ShortCutPanel BG buttons — image-only, identify via panel dictionary
+            // 4. ShortCutPanel BG buttons — image-only, identify via panel dictionary
             result = TryShortCutPanelButton(go);
             if (result != null) return result;
 
-            // 10. Duel Trials quiz banners — image-only, label from ClientWork data
+            // 5. Duel Trials quiz banners — image-only, label from ClientWork data
             result = TryDuelTrialsBanner(go);
+            if (result != null) return result;
+
+            // 6. HtjsonNode replaceParam — Htjson pages store content in dictionaries
+            result = TryHtjsonNodeData(go);
+            if (result != null) return result;
+
+            // 7. ButtonSet → sibling TextArea association
+            result = TryButtonSetSiblingText(go);
+            if (result != null) return result;
+
+            // 8. Child YgomTextAccessor components
+            result = TryChildYgomTextAccessors(go);
+            if (result != null) return result;
+
+            // 9. Child Unity Text components
+            result = TryChildUnityText(go);
+            if (result != null) return result;
+
+            // 10. Parent/sibling text — button may have its label nearby
+            result = TryParentSiblingText(go);
             if (result != null) return result;
 
             // 11. Cleaned-up GO name as last resort
@@ -132,8 +132,7 @@ namespace DuelLinksAccess
         /// </summary>
         public static string StripRichText(string text)
         {
-            if (string.IsNullOrEmpty(text)) return text;
-            return RichTextRegex.Replace(text, "").Trim();
+            return SpeechTextFormatter.StripRichText(text);
         }
 
         /// <summary>
@@ -224,7 +223,6 @@ namespace DuelLinksAccess
 
         #region Private Fields
 
-        private static readonly Regex RichTextRegex = new(@"<[^>]+>", RegexOptions.Compiled);
         private static readonly Regex CamelCaseRegex = new(@"(?<=[a-z])(?=[A-Z])", RegexOptions.Compiled);
         private static readonly Regex AcronymRegex = new(@"(?<=[A-Z])(?=[A-Z][a-z])", RegexOptions.Compiled);
 
@@ -535,7 +533,7 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Strategy 4: Search children for Unity Text components.
-        /// Includes inactive children (some entries have text on inactive sub-objects).
+        /// Inactive labels are ignored; stateful controls often retain stale text there.
         /// </summary>
         private static string TryChildUnityText(GameObject go)
         {
@@ -547,13 +545,8 @@ namespace DuelLinksAccess
                 foreach (var text in texts)
                 {
                     if (text == null) continue;
-                    // Skip inactive text unless it's a direct child of the target
-                    // (PullDown entries may have text on inactive sub-objects)
-                    if (text.gameObject != go && !text.gameObject.activeInHierarchy)
-                    {
-                        // Allow if it's a direct child (depth 1)
-                        if (text.transform.parent != go.transform) continue;
-                    }
+                    if (text.gameObject == null
+                        || !text.gameObject.activeInHierarchy) continue;
                     string t = StripRichText(text.text);
                     if (IsValidLabel(t)) return t;
                 }
@@ -1136,7 +1129,7 @@ namespace DuelLinksAccess
         /// </summary>
         private static string TryDuelTrialsBanner(GameObject go)
         {
-            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.DuelTrials)
+            if (GameStateTracker.CurrentScreen != GameScreen.DuelTrials)
                 return null;
 
             // Match BannerN pattern

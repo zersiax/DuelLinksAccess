@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\AttackFallbackPolicy.cs" Link="Source\AttackFallbackPolicy.cs" />
+    <Compile Include="..\..\src\AutomaticDrawController.cs" Link="Source\AutomaticDrawController.cs" />
+    <Compile Include="..\..\src\CardProgressionFormatter.cs" Link="Source\CardProgressionFormatter.cs" />
+    <Compile Include="..\..\src\DialogControlPolicy.cs" Link="Source\DialogControlPolicy.cs" />
+    <Compile Include="..\..\src\DeckEditPolicy.cs" Link="Source\DeckEditPolicy.cs" />
+    <Compile Include="..\..\src\DiagnosticPolicy.cs" Link="Source\DiagnosticPolicy.cs" />
+    <Compile Include="..\..\src\DialogMixComposer.cs" Link="Source\DialogMixComposer.cs" />
+    <Compile Include="..\..\src\DuelTurnTracker.cs" Link="Source\DuelTurnTracker.cs" />
+    <Compile Include="..\..\src\DuelZoneActionPolicy.cs" Link="Source\DuelZoneActionPolicy.cs" />
+    <Compile Include="..\..\src\DuelPositionTracker.cs" Link="Source\DuelPositionTracker.cs" />
+    <Compile Include="..\..\src\EventLogOverflowPolicy.cs" Link="Source\EventLogOverflowPolicy.cs" />
+    <Compile Include="..\..\src\EmotionalListState.cs" Link="Source\EmotionalListState.cs" />
+    <Compile Include="..\..\src\ExtraDeckSourcePolicy.cs" Link="Source\ExtraDeckSourcePolicy.cs" />
+    <Compile Include="..\..\src\HarmonyPatchPolicy.cs" Link="Source\HarmonyPatchPolicy.cs" />
+    <Compile Include="..\..\src\LateContentRetryPolicy.cs" Link="Source\LateContentRetryPolicy.cs" />
+    <Compile Include="..\..\src\Loc.cs" Link="Source\Loc.cs" />
+    <Compile Include="..\..\src\ScreenClassificationPolicy.cs" Link="Source\ScreenClassificationPolicy.cs" />
+    <Compile Include="..\..\src\SpeechTextFormatter.cs" Link="Source\SpeechTextFormatter.cs" />
+    <Compile Include="..\..\src\TicketExchangePolicy.cs" Link="Source\TicketExchangePolicy.cs" />
+    <Compile Include="..\..\src\TradeExecutionPolicy.cs" Link="Source\TradeExecutionPolicy.cs" />
+    <Compile Include="..\..\src\TutorialArrowPolicy.cs" Link="Source\TutorialArrowPolicy.cs" />
+    <Compile Include="..\..\src\TurnAnnouncementTracker.cs" Link="Source\TurnAnnouncementTracker.cs" />
+  </ItemGroup>
+
+</Project>

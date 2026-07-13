@@ -116,7 +116,7 @@ namespace DuelLinksAccess
             if (_operationCooldown > 0f)
                 _operationCooldown -= Time.deltaTime;
 
-            if (GameStateTracker.CurrentScreen != GameStateTracker.GameScreen.Home)
+            if (GameStateTracker.CurrentScreen != GameScreen.Home)
             {
                 if (_wasActive) Deactivate();
                 return;
@@ -144,7 +144,6 @@ namespace DuelLinksAccess
                         _items.Clear();
                         _scanDone = false;
                         _lastVcName = "";
-                        AccessStateManager.Exit(AccessStateManager.State.Home);
                         DebugLogger.Log(LogCategory.Handler, "Home",
                             "Tutorial arrow on World map — suspending curated mode");
                     }
@@ -241,7 +240,6 @@ namespace DuelLinksAccess
         {
             IsActive = true;
             _wasActive = true;
-            AccessStateManager.TryEnter(AccessStateManager.State.Home);
             AnnounceList();
             DebugLogger.Log(LogCategory.Handler, "Home",
                 $"Activated curated mode with {_items.Count} items");
@@ -258,7 +256,6 @@ namespace DuelLinksAccess
             _seriesPanel = null;
             _seriesPanelWasOpen = false;
             _quietRebuildAt = -1f;
-            AccessStateManager.Exit(AccessStateManager.State.Home);
             DebugLogger.Log(LogCategory.Handler, "Home", "Deactivated");
         }
 
@@ -268,7 +265,6 @@ namespace DuelLinksAccess
             if (_sbhFallback)
             {
                 IsActive = false;
-                AccessStateManager.Exit(AccessStateManager.State.Home);
                 ScreenReader.Say(Loc.Get("home_browse_all"));
                 DebugLogger.Log(LogCategory.Handler, "Home", "Switched to browse-all (SBH fallback)");
             }

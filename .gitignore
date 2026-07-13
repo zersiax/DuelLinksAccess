@@ -5,8 +5,8 @@ obj/
 # Decompiled game code
 decompiled/
 
-# Template/docs (not part of mod source)
-docs/
+# Private execution plans and upstream templates
+docs/superpowers/plans/
 docs-de/
 templates/
 CLAUDE.md
@@ -29,4 +29,9 @@ Desktop.ini
 
 # Local files
 *.zip
+*.log
+*.dmp
+*.dll
+*.exe
+*.pdb
 nul

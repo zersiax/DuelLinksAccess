@@ -50,11 +50,11 @@ namespace DuelLinksAccess
         /// Screens that this handler should NOT process.
         /// Dialog is handled by DialogHandler; Duel will get its own handler.
         /// </summary>
-        private static readonly HashSet<GameStateTracker.GameScreen> _excludedScreens = new()
+        private static readonly HashSet<GameScreen> _excludedScreens = new()
         {
-            GameStateTracker.GameScreen.Unknown,
-            GameStateTracker.GameScreen.Dialog,
-            GameStateTracker.GameScreen.Duel,
+            GameScreen.Unknown,
+            GameScreen.Dialog,
+            GameScreen.Duel,
         };
 
         #endregion
@@ -145,24 +145,32 @@ namespace DuelLinksAccess
                     _scanAttempts++;
                     ScanScreen();
 
-                    if (_items.Count == 0 && !_textMode
-                        && GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Title)
+                    if (LateContentRetryPolicy.ShouldRetry(
+                        _items.Count, _textMode, false))
                     {
-                        // Title buttons (initiate link, account options, ...)
-                        // activate several seconds into the LWF intro
-                        // animation — later than the normal 3-attempt scan
-                        // window, and the VC name never changes to trigger a
-                        // rescan. Keep rescanning until they appear.
-                        if (_scanAttempts == 3)
-                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                                "Title screen still empty — rescanning until buttons activate");
-                        _scanDelay = 1.0f;
-                    }
-                    else if (_items.Count == 0 && !_textMode && _scanAttempts < 3)
-                    {
-                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                            $"No items or text found, retrying (attempt {_scanAttempts})");
-                        _scanDelay = 1.0f;
+                        if (GameStateTracker.CurrentScreen
+                            == GameStateTracker.GameScreen.Title)
+                        {
+                            // Title buttons (initiate link, account options,
+                            // ...) activate several seconds into the LWF intro
+                            // animation, and the VC name never changes to
+                            // trigger a rescan. Keep the fast 1-second cadence
+                            // instead of the policy's 5-second slow retry.
+                            if (_scanAttempts == 3)
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    "Title screen still empty — rescanning until buttons activate");
+                            _scanDelay = 1.0f;
+                        }
+                        else
+                        {
+                            _scanDelay = LateContentRetryPolicy.GetDelay(
+                                _scanAttempts, 1.0f, 5.0f);
+                            if (_scanAttempts <= 3)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    $"No items or text found, retrying (attempt {_scanAttempts})");
+                            }
+                        }
                     }
                     else
                     {
@@ -289,11 +297,11 @@ namespace DuelLinksAccess
                 FilterItems();
 
                 // On the Home/Duel World screen, also scan 3D map objects (NPCs, events, etc.)
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                if (GameStateTracker.CurrentScreen == GameScreen.Home)
                     FindMapObjects();
 
                 // On the Deck screen, scan DeckSelectItem components (not standard Selectables)
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Deck)
+                if (GameStateTracker.CurrentScreen == GameScreen.Deck)
                     FindDeckItems(_screenRoot);
 
                 // Result screens: replace the generic button scan with structured text extraction
@@ -1349,7 +1357,27 @@ namespace DuelLinksAccess
                 return;
             }
 
-            if (_items.Count == 0) return;
+            if (_items.Count == 0)
+            {
+                if (InputManager.TryConsumeKeyDown(KeyCode.Space))
+                {
+                    if (IsTutorialArrowActive())
+                        DismissTutorialArrow();
+                    else
+                    {
+                        _scanned = false;
+                        _scanDelay = 0.1f;
+                        _scanAttempts = 0;
+                        ScreenReader.Say(Loc.Get("screen_rescan"));
+                    }
+                }
+                else if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
+                {
+                    GoBack();
+                }
+                return;
+            }
 
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
             {
@@ -1365,14 +1393,14 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow))
             {
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                if (GameStateTracker.CurrentScreen == GameScreen.Home)
                     CycleMapArea(-1);
                 else
                     AdjustSlider(-1);
             }
             else if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.RightArrow))
             {
-                if (GameStateTracker.CurrentScreen == GameStateTracker.GameScreen.Home)
+                if (GameStateTracker.CurrentScreen == GameScreen.Home)
                     CycleMapArea(1);
                 else
                     AdjustSlider(1);
@@ -2409,7 +2437,7 @@ namespace DuelLinksAccess
                         namedManager, out var arrowVc, out _, out _))
                     return false;
                 return Main.ClassifyArrowShape(arrowVc)
-                    == Main.ArrowShape.ClickToContinue;
+                    == TutorialArrowShape.ClickToContinue;
             }
             catch { return false; }
         }
@@ -2468,7 +2496,7 @@ namespace DuelLinksAccess
                 // Shape B (UISelectablePointer): ipclick set, physicTarget null.
                 // arrowVc.OnPointerClick at screen center is a no-op — the arrow's
                 // position check finds no target.
-                if (shape == Main.ArrowShape.UISelectablePointer)
+                if (shape == TutorialArrowShape.UISelectablePointer)
                 {
                     // If the item being activated IS the arrow's ipclick
                     // target (or a parent/child of it — dedup can keep a
@@ -2504,7 +2532,7 @@ namespace DuelLinksAccess
                     return false;
                 }
 
-                if (shape == Main.ArrowShape.WorldColliderPointer)
+                if (shape == TutorialArrowShape.WorldColliderPointer)
                 {
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                         $"WorldColliderPointer: invoking ipclick + hardware mouse " +

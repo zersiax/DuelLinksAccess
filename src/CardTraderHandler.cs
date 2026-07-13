@@ -99,26 +99,29 @@ namespace DuelLinksAccess
 
                     if (drift)
                     {
-                        // Announce the drift so the user knows the dialog about
-                        // to open is for a different card than they selected.
                         ScreenReader.Say(Loc.Get("trader_drift_warn", _pendingExpectedItemName, actualName));
                     }
 
                     var exBtn = _vc.exchangeButton;
-                    if (exBtn != null && exBtn.gameObject?.activeInHierarchy == true)
+                    bool buttonActive = exBtn != null
+                        && exBtn.gameObject?.activeInHierarchy == true;
+                    bool buttonInteractable = exBtn?.interactable == true;
+                    if (TradeExecutionPolicy.CanClick(
+                        _pendingExpectedItemId,
+                        actualId,
+                        buttonActive,
+                        buttonInteractable))
                     {
-                        // Force-enable so a non-interactable visual state doesn't
-                        // gate the click. The actual trade gate is the confirm
-                        // dialog the click opens, where the user can press NO.
-                        exBtn.interactable = true;
                         DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                            $"  delayed exchangeButton click (force-enabled): drift={drift}");
+                            "  delayed exchangeButton click verified");
                         ClickGameObject(exBtn.gameObject);
                     }
                     else
                     {
                         DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                            "  delayed exchangeButton click skipped (button missing/inactive)");
+                            "  delayed exchangeButton click aborted: selection or button unavailable");
+                        if (!drift)
+                            ScreenReader.Say(Loc.Get("trader_cannot_trade"));
                     }
 
                     _pendingExpectedItemId = 0;

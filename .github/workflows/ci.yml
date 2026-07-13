@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: tests/DuelLinksAccess.Tests/packages.lock.json
+
+      - name: Restore locked dependencies
+        run: dotnet restore tests/DuelLinksAccess.Tests/DuelLinksAccess.Tests.csproj --locked-mode
+
+      - name: Run portable tests
+        run: dotnet test tests/DuelLinksAccess.Tests/DuelLinksAccess.Tests.csproj --configuration Release --no-restore
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File): $($_.Message)" }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Check forbidden public APIs
+        shell: pwsh
+        run: ./scripts/Test-PublicSourceSafety.ps1
