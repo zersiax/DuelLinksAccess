@@ -14,6 +14,7 @@ public sealed class EmotionalListStateTests
             Count = 9,
             IsHandled = true,
             HandledUntil = 12.5f,
+            ViewOnly = true,
         };
 
         state.Reset();
@@ -23,6 +24,7 @@ public sealed class EmotionalListStateTests
         Assert.Equal(0, state.Count);
         Assert.False(state.IsHandled);
         Assert.Equal(0f, state.HandledUntil);
+        Assert.False(state.ViewOnly);
     }
 
     [Fact]

@@ -387,6 +387,8 @@ namespace DuelLinksAccess
             // ===== DUEL: EMOTIONAL LIST (card list selection) =====
             _english["duel_emo_list_single"] = "Select a card. {0} choices. Left right to navigate, Enter to select.";
             _english["duel_emo_list_multi"] = "Select cards. {0} choices, pick up to {1}. Left right to navigate, Enter to toggle, Space to confirm.";
+            _english["duel_emo_list_view"] = "Card list, {0} cards. Left right to review, Enter to continue.";
+            _english["duel_emo_list_confirmed"] = "Confirmed";
             _english["duel_emo_list_toggled"] = "{0} selected of {1}";
             _english["duel_emo_list_need_more"] = "Need at least {0} selected";
             _english["duel_action_cancelled"] = "Cancelled";

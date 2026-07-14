@@ -254,6 +254,8 @@ namespace DuelLinksAccess
         // missed because the goActive=false → reset transition never fires
         // when the game opens prompt 2 in the same frame it closes prompt 1.
         private const float EmoListHandledTimeout = 0.4f;
+        // Throttle for the "visible but not entered" diagnostic dump.
+        private float _emoSkipLogAt;
 
         /// <summary>Stores a command entry for the accessible action menu.</summary>
         private struct CommandInfo
@@ -2134,15 +2136,45 @@ namespace DuelLinksAccess
                 bool goActive = false;
                 bool isClosing = false;
                 int selectMax = 0;
+                bool decideActive = false;
 
                 try { var go = emoList.gameObject; goActive = go != null && go.activeInHierarchy; } catch { }
                 try { isClosing = emoList.isClosing; } catch { }
                 try { selectMax = emoList.selectMaxNum; } catch { }
+                try
+                {
+                    decideActive = emoList.decideButton?.gameObject?
+                        .activeInHierarchy == true;
+                }
+                catch { }
+
+                // View-style lists (e.g. Dark Magical Circle's "look at the
+                // top 3 cards of your deck", 2026-07-14 remote log) present
+                // cards with selectMaxNum == 0 and an active Confirm button.
+                // Without entering, arrow keys fall through to field
+                // navigation and the prompt is an inaccessible dead end.
+                bool viewOnly = selectMax <= 0 && decideActive;
 
                 // List inactive — reset handled flag so next activation is detected
-                if (!goActive || isClosing || selectMax <= 0)
+                if (!goActive || isClosing || (selectMax <= 0 && !viewOnly))
                 {
                     _emotionalList.IsHandled = false;
+                    // Diagnostic: a visible list we can't classify (no
+                    // selection slots AND no confirm button) — dump state so
+                    // remote logs explain the miss.
+                    if (goActive && !isClosing
+                        && UnityEngine.Time.unscaledTime > _emoSkipLogAt)
+                    {
+                        _emoSkipLogAt = UnityEngine.Time.unscaledTime + 2f;
+                        int lt = -1;
+                        int itemCount = 0;
+                        try { lt = (int)emoList.listType; } catch { }
+                        try { itemCount = emoList.itemList?.Count ?? 0; } catch { }
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            $"EmotionalList visible but not entered: " +
+                            $"listType={lt} selectMax={selectMax} " +
+                            $"decideActive={decideActive} items={itemCount}");
+                    }
                     return false;
                 }
 
@@ -2164,7 +2196,7 @@ namespace DuelLinksAccess
                 var items = emoList.itemList;
                 if (items == null || items.Count == 0) return false;
 
-                EnterEmotionalList(emoList);
+                EnterEmotionalList(emoList, viewOnly);
                 return true;
             }
             catch (Exception ex)
@@ -2175,22 +2207,27 @@ namespace DuelLinksAccess
             }
         }
 
-        private void EnterEmotionalList(Il2CppYgomGame.Duel.EmotionalList emoList)
+        private void EnterEmotionalList(
+            Il2CppYgomGame.Duel.EmotionalList emoList, bool viewOnly = false)
         {
             _emotionalList.IsActive = true;
             _emotionalList.Index = 0;
+            _emotionalList.ViewOnly = viewOnly;
 
             var items = emoList.itemList;
             _emotionalList.Count = items?.Count ?? 0;
 
             int selectMax = 0;
             int selectMin = 0;
+            int listType = -1;
             try { selectMax = emoList.selectMaxNum; } catch { }
             try { selectMin = emoList.selectMinNum; } catch { }
+            try { listType = (int)emoList.listType; } catch { }
 
             DebugLogger.Log(LogCategory.Game, "FieldNav",
                 $"EmotionalList: entered with {_emotionalList.Count} items, " +
-                $"selectMax={selectMax} selectMin={selectMin}");
+                $"selectMax={selectMax} selectMin={selectMin} " +
+                $"listType={listType} viewOnly={viewOnly}");
 
             // Diagnostic dump for material-picker debugging: log each visual
             // card's resolved itemList uniqueId so re-prompt loops (see
@@ -2224,9 +2261,13 @@ namespace DuelLinksAccess
             }
             catch { }
 
-            string prompt = selectMax > 1
-                ? Loc.Get("duel_emo_list_multi", _emotionalList.Count, selectMax)
-                : Loc.Get("duel_emo_list_single", _emotionalList.Count);
+            string prompt;
+            if (viewOnly)
+                prompt = Loc.Get("duel_emo_list_view", _emotionalList.Count);
+            else if (selectMax > 1)
+                prompt = Loc.Get("duel_emo_list_multi", _emotionalList.Count, selectMax);
+            else
+                prompt = Loc.Get("duel_emo_list_single", _emotionalList.Count);
 
             ScreenReader.Say(prompt);
 
@@ -2252,7 +2293,8 @@ namespace DuelLinksAccess
                 try { isClosing = emoList.isClosing; } catch { }
                 try { selectMax = emoList.selectMaxNum; } catch { }
 
-                if (!goActive || isClosing || selectMax <= 0)
+                if (!goActive || isClosing
+                    || (selectMax <= 0 && !_emotionalList.ViewOnly))
                 {
                     _emotionalList.IsActive = false;
                     _emotionalList.IsHandled = false;
@@ -2272,8 +2314,9 @@ namespace DuelLinksAccess
                 if (_emotionalList.Count > 0)
                 {
                     _emotionalList.Index = (_emotionalList.Index - 1 + _emotionalList.Count) % _emotionalList.Count;
-                    // Multi-select: scroll only (don't toggle). Single-select: SelectIndex moves highlight.
-                    if (selectMax > 1)
+                    // View-only / multi-select: scroll only (don't toggle).
+                    // Single-select: SelectIndex moves highlight.
+                    if (selectMax > 1 || _emotionalList.ViewOnly)
                         ScrollEmotionalList(_emotionalList.Index);
                     else
                         SelectEmotionalListCard(_emotionalList.Index);
@@ -2286,7 +2329,7 @@ namespace DuelLinksAccess
                 if (_emotionalList.Count > 0)
                 {
                     _emotionalList.Index = (_emotionalList.Index + 1) % _emotionalList.Count;
-                    if (selectMax > 1)
+                    if (selectMax > 1 || _emotionalList.ViewOnly)
                         ScrollEmotionalList(_emotionalList.Index);
                     else
                         SelectEmotionalListCard(_emotionalList.Index);
@@ -2296,7 +2339,7 @@ namespace DuelLinksAccess
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Return))
             {
-                if (selectMax > 1)
+                if (selectMax > 1 && !_emotionalList.ViewOnly)
                     ToggleEmotionalListCard();
                 else
                     ConfirmEmotionalList();
@@ -2304,7 +2347,7 @@ namespace DuelLinksAccess
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
-                if (selectMax > 1)
+                if (selectMax > 1 || _emotionalList.ViewOnly)
                     ConfirmEmotionalList();
                 return true;
             }
@@ -2549,6 +2592,32 @@ namespace DuelLinksAccess
                 {
                     ScreenReader.Say(Loc.Get("duel_action_error"));
                     _emotionalList.IsActive = false;
+                    return;
+                }
+
+                // View-only list: nothing to select — press the Confirm
+                // button the same way a physical tap would.
+                if (_emotionalList.ViewOnly)
+                {
+                    try
+                    {
+                        var viewDecideBtn = emoList.decideButton;
+                        if (viewDecideBtn != null)
+                            viewDecideBtn.onClick.Invoke();
+                        else
+                            emoList.OnDecide();
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            $"View-only decide error: {ex.Message} — falling back");
+                        emoList.OnDecide();
+                    }
+
+                    ScreenReader.Say(Loc.Get("duel_emo_list_confirmed"));
+                    _emotionalList.IsActive = false;
+                    _emotionalList.MarkHandled(
+                        UnityEngine.Time.unscaledTime, EmoListHandledTimeout);
                     return;
                 }
 
