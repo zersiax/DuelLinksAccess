@@ -49,7 +49,9 @@ namespace DuelLinksAccess
             if (text == lastText) return;
 
             lastText = text;
-            ScreenReader.Say(text);
+            // Queued: character dialogue is flavor — it must never cut off
+            // game-state announcements such as LP changes after an attack.
+            ScreenReader.SayQueued(text);
             DebugLogger.Log(LogCategory.State, "DuelSpeech", text);
         }
 

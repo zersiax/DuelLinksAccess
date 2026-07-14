@@ -153,6 +153,7 @@ namespace DuelLinksAccess
             _english["map_gift"] = "Gift";
             _english["map_card_trader"] = "Card Trader";
             _english["map_npc_trainer"] = "Trainer";
+            _english["map_character"] = "Duel World character";
 
             // ===== CARD TRADER =====
             _english["trader_entered"] = "Card Trader";

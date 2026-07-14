@@ -309,7 +309,8 @@ namespace DuelLinksAccess
             try
             {
                 _automaticDraw.Update(duelActive, localTurn, drawPhase,
-                    () => DispatchDrawCommand("automatic"));
+                    Time.unscaledTime,
+                    () => DispatchDrawCommand("fallback"));
             }
             catch (System.Exception ex)
             {
@@ -366,7 +367,7 @@ namespace DuelLinksAccess
 
             try
             {
-                _automaticDraw.CompleteGesture(ready,
+                _automaticDraw.CompleteGesture(ready, Time.unscaledTime,
                     () => SwipeDrawCard(operation));
             }
             catch (System.Exception ex)
@@ -424,14 +425,17 @@ namespace DuelLinksAccess
                 $"to ({end.x:F0},{end.y:F0})");
         }
 
-        private void OnDuelAnnouncement(string message)
+        private void OnDuelAnnouncement(string message, bool queued)
         {
             _eventLog.Add(message);
 
             // Don't interrupt log browsing with live announcements
             if (_eventLog.IsBrowsing) return;
 
-            ScreenReader.Say(message);
+            if (queued)
+                ScreenReader.SayQueued(message);
+            else
+                ScreenReader.Say(message);
         }
 
         /// <summary>

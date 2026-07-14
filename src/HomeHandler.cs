@@ -1337,16 +1337,25 @@ namespace DuelLinksAccess
                 var t = billboard.mapObjectData?.type ?? MapObjectType.None;
                 if (t == MapObjectType.None && (billboard.npcID <= 0)) return null;
 
-                return t switch
+                switch (t)
                 {
-                    MapObjectType.NPCChallenge => Loc.Get("map_npc_challenge"),
-                    MapObjectType.NPCMob       => Loc.Get("map_npc_standard"),
-                    MapObjectType.NPCOrigin    => Loc.Get("map_npc_legendary"),
-                    MapObjectType.NPCTrainer   => Loc.Get("map_npc_trainer"),
-                    MapObjectType.BonusDuelist => Loc.Get("map_npc_bonus"),
-                    MapObjectType.FoundGift    => Loc.Get("map_gift"),
-                    _                          => Loc.Get("map_npc_standard")
-                };
+                    case MapObjectType.NPCChallenge: return Loc.Get("map_npc_challenge");
+                    case MapObjectType.NPCMob:       return Loc.Get("map_npc_standard");
+                    case MapObjectType.NPCOrigin:    return Loc.Get("map_npc_legendary");
+                    case MapObjectType.NPCTrainer:   return Loc.Get("map_npc_trainer");
+                    case MapObjectType.BonusDuelist: return Loc.Get("map_npc_bonus");
+                    case MapObjectType.FoundGift:    return Loc.Get("map_gift");
+                    case MapObjectType.CardTrader:   return Loc.Get("map_card_trader");
+                }
+
+                // Unknown / event-specific type (PvP fights, seasonal event
+                // billboards, values added after game 10.8.0). Calling these
+                // "Standard Duelist" mislabels them (2026-07-14 report) —
+                // use a neutral label and log the raw type for follow-up.
+                DebugLogger.Log(LogCategory.Handler, "Home",
+                    $"Unmapped billboard type={(int)t} npcID={billboard.npcID} " +
+                    $"go={billboard.gameObject?.name}");
+                return Loc.Get("map_character");
             }
 
             return mapObj.GetType().Name switch
@@ -1401,6 +1410,13 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "Home",
                     $"getSingleMapChara fallback failed: {ex.Message}");
             }
+
+            // Tertiary: readable text on the billboard itself (event
+            // billboards like PvP fights carry a nameplate but no npcID
+            // and no getSingleMapChara entry).
+            string childText = LabelExtractor.GetChildText(billboard.gameObject);
+            if (!string.IsNullOrWhiteSpace(childText))
+                return NormalizeName(childText);
 
             return null;
         }

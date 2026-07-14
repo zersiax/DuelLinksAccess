@@ -77,6 +77,22 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Text-only label lookup for world objects (e.g. map billboards):
+        /// checks child text components but never falls back to the
+        /// GameObject name. Returns null when the hierarchy carries no
+        /// readable text, so callers can apply their own fallback.
+        /// </summary>
+        public static string GetChildText(GameObject go)
+        {
+            if (go == null) return null;
+
+            string result = TryChildYgomTextAccessors(go);
+            if (result != null) return result;
+
+            return TryChildUnityText(go);
+        }
+
+        /// <summary>
         /// Extracts a label for a slider by checking parent context for text.
         /// </summary>
         public static string GetSliderLabel(Slider slider)

@@ -12,8 +12,12 @@ namespace DuelLinksAccess
     {
         #region Fields
 
-        /// <summary>Fired when an event should be announced and logged.</summary>
-        public static event Action<string> OnAnnouncement;
+        /// <summary>
+        /// Fired when an event should be announced and logged. The bool is
+        /// true when the message must queue behind current speech instead of
+        /// interrupting it (e.g. LP changes right after an attack).
+        /// </summary>
+        public static event Action<string, bool> OnAnnouncement;
 
         /// <summary>Whether a duel is currently in progress. Backed by DuelState.</summary>
         public static bool InDuel => DuelState.InDuel;
@@ -366,7 +370,7 @@ namespace DuelLinksAccess
 
         #region Private Methods
 
-        private static void Announce(string message)
+        private static void Announce(string message, bool queued = false)
         {
             if (string.IsNullOrEmpty(message)) return;
 
@@ -377,7 +381,7 @@ namespace DuelLinksAccess
             _lastMessage = message;
             _lastMessageTime = time;
 
-            OnAnnouncement?.Invoke(message);
+            OnAnnouncement?.Invoke(message, queued);
         }
 
         /// <summary>
@@ -479,12 +483,15 @@ namespace DuelLinksAccess
                 int absDamage = Math.Abs(damageAmount);
                 int newLP = DuelState.GetLP(player);
 
+                // Queued: LP changes land right next to attack cutins and
+                // character speech — interrupting loses whichever came
+                // first, and being interrupted loses the LP value.
                 if (damageAmount < 0)
-                    Announce(Loc.Get("duel_lp_damage", who, absDamage, newLP));
+                    Announce(Loc.Get("duel_lp_damage", who, absDamage, newLP), queued: true);
                 else if (damageAmount > 0)
-                    Announce(Loc.Get("duel_lp_recover", who, absDamage, newLP));
+                    Announce(Loc.Get("duel_lp_recover", who, absDamage, newLP), queued: true);
                 else
-                    Announce(Loc.Get("duel_lp_update", who, newLP));
+                    Announce(Loc.Get("duel_lp_update", who, newLP), queued: true);
             }
             catch (Exception ex)
             {

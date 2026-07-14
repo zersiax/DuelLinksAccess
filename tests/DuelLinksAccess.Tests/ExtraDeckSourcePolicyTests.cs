@@ -5,18 +5,22 @@ namespace DuelLinksAccess.Tests;
 public sealed class ExtraDeckSourcePolicyTests
 {
     [Theory]
-    [InlineData(true, true, true, true)]
-    [InlineData(true, false, true, false)]
-    [InlineData(false, true, true, false)]
-    [InlineData(true, true, false, false)]
-    public void UseLiveStack_RequiresLoadedVisualStack(
+    [InlineData(true, true, 6, true)]
+    [InlineData(true, true, 1, true)]
+    [InlineData(true, false, 6, false)]
+    [InlineData(false, true, 6, false)]
+    // A loaded place with an empty innerCards list is NOT authoritative:
+    // game 10.9.0 reports isLoaded=true while the registered-deck array
+    // still holds the real extra deck (2026-07-14 regression).
+    [InlineData(true, true, 0, false)]
+    public void UseLiveStack_RequiresPopulatedVisualStack(
         bool placeAvailable,
         bool placeLoaded,
-        bool cardsAvailable,
+        int cardCount,
         bool expected)
     {
         Assert.Equal(expected, ExtraDeckSourcePolicy.UseLiveStack(
-            placeAvailable, placeLoaded, cardsAvailable));
+            placeAvailable, placeLoaded, cardCount));
     }
 
     [Theory]

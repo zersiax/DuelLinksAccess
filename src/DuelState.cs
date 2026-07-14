@@ -521,7 +521,7 @@ namespace DuelLinksAccess
                 if (!ExtraDeckSourcePolicy.UseLiveStack(
                     place != null,
                     place?.isLoaded == true,
-                    cards != null)) return false;
+                    cards?.Count ?? 0)) return false;
 
                 count = cards.Count;
                 return true;
@@ -541,10 +541,10 @@ namespace DuelLinksAccess
                 if (!ExtraDeckSourcePolicy.UseLiveStack(
                     place != null,
                     place?.isLoaded == true,
-                    cards != null)) return false;
+                    cards?.Count ?? 0)) return false;
 
-                // A loaded stack is authoritative for slot existence, but the
-                // opponent's Extra Deck identities remain hidden.
+                // A populated stack is authoritative for slot existence, but
+                // the opponent's Extra Deck identities remain hidden.
                 if (!ExtraDeckSourcePolicy.CanRevealIdentity(
                     player, MyPlayerNum())) return true;
 
