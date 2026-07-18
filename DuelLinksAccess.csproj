@@ -9,7 +9,7 @@
 
     <AssemblyName>DuelLinksAccess</AssemblyName>
     <RootNamespace>DuelLinksAccess</RootNamespace>
-    <Version>1.3.0</Version>
+    <Version>1.4.0</Version>
 
     <DuelLinksPath Condition="'$(DuelLinksPath)' == '' and '$(DUEL_LINKS_PATH)' != ''">$(DUEL_LINKS_PATH)</DuelLinksPath>
     <DuelLinksPath Condition="'$(DuelLinksPath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links</DuelLinksPath>
