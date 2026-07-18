@@ -139,6 +139,26 @@ namespace DuelLinksAccess
 
             _initialScanDone = true;
             ScreenReader.Say(Loc.Get("deck_edit_entered", mainCount, extraCount, collectionCount));
+            AnnounceDeckOwner();
+        }
+
+        /// <summary>
+        /// Announces which character owns the deck being edited. Deck slots
+        /// are character-bound: saving a deck whose owner differs from the
+        /// active character makes the game offer a character SWITCH
+        /// (2026-07-18 tester report — a Slifer deck built in a Joey slot
+        /// while playing Yami Yugi), so the owner must be audible.
+        /// </summary>
+        private void AnnounceDeckOwner()
+        {
+            try
+            {
+                string chara = LabelExtractor.ResolveCharaName(
+                    _vc?.currentChara ?? 0);
+                if (string.IsNullOrWhiteSpace(chara)) return;
+                ScreenReader.SayQueued(Loc.Get("deck_edit_owner", chara));
+            }
+            catch { }
         }
 
         private void Deactivate()
@@ -891,6 +911,7 @@ namespace DuelLinksAccess
             ScreenReader.Say(Loc.Get("deck_stats",
                 _mainDeckMrks.Count, mainMax,
                 _extraDeckMrks.Count, extraMax));
+            AnnounceDeckOwner();
         }
 
         #endregion

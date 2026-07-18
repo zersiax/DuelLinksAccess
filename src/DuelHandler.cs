@@ -295,6 +295,29 @@ namespace DuelLinksAccess
                 _eventLog.StartBrowsing();
                 return;
             }
+
+            // Space (no prompt claimed it above, engine input window CLOSED)
+            // = animation/resolution playback is running. Sighted players
+            // tap the screen to fast-forward these while the PvP clock
+            // drains; keyboard users had no equivalent (2026-07-17 tester
+            // report). Send one real OS-level click at screen center — the
+            // skip checks are native touch polls, so only a hardware click
+            // registers. With the input window closed a tap cannot take
+            // game actions (TapCard no-ops there, 2026-07-16 spell log),
+            // so a mistimed press is a no-op. Repeat presses = repeat taps.
+            if (InputManager.TryConsumeKeyDown(KeyCode.Space)
+                && DuelEventAnnouncer.InDuel
+                && !DuelEventAnnouncer.DuelEnded
+                && DuelState.InputType
+                    == Il2CppYgomGame.Duel.Engine.MenuActType.Null)
+            {
+                var center = new Vector2(
+                    Screen.width * 0.5f, Screen.height * 0.5f);
+                bool sent = Main.ClickViaHardwareMouse(center, "anim skip");
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"Space animation-skip click sent={sent}");
+                return;
+            }
         }
 
         private void UpdateAutomaticDraw()

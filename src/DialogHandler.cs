@@ -30,6 +30,45 @@ namespace DuelLinksAccess
         private string _lastDialogText = "";
         private GameObject _dialogRoot;
 
+        /// <summary>
+        /// Normalized copy of the most recently announced dialog text, for
+        /// cross-handler dedupe: scenario message windows mirror
+        /// TutorialDuelMessage content, and ScreenButtonHandler's scenario
+        /// poll must not re-announce a line the user just heard from here
+        /// (unlock-scene line duplication, 2026-07-16 report).
+        /// </summary>
+        internal static string LastAnnouncedTextNormalized { get; private set; } = "";
+
+        /// <summary>
+        /// Announces dialog text unless the scenario poll already spoke the
+        /// same line (scenario lines surface both in the scenario message
+        /// window and as TutorialDuelMessage popups; the poll has no scan
+        /// delay so it usually speaks first — announcing here again is the
+        /// double-speak, 2026-07-17 report). Records the normalized text for
+        /// the reverse dedupe direction either way.
+        /// </summary>
+        private void AnnounceDialogText(string dialogText)
+        {
+            string normalized = LabelExtractor.NormalizeWhitespace(dialogText);
+            bool scenarioBeneath =
+                GetTopVc("content")?.gameObject?.name?.Contains("Scenario") == true;
+
+            if (scenarioBeneath && LabelExtractor.NormalizedOverlap(
+                    normalized, ScreenButtonHandler.LastScenarioTextNormalized))
+            {
+                // Still record it so retry scans skip and Tab re-read works.
+                LastAnnouncedTextNormalized = normalized;
+                MelonLogger.Msg(
+                    $"[Dialog] Text (suppressed, scenario already spoke): " +
+                    $"{dialogText.Substring(0, Math.Min(200, dialogText.Length))}");
+                return;
+            }
+
+            ScreenReader.Say(dialogText);
+            LastAnnouncedTextNormalized = normalized;
+            MelonLogger.Msg($"[Dialog] Text: {dialogText.Substring(0, Math.Min(200, dialogText.Length))}");
+        }
+
         // Passthrough: TutorialArrowPart with no content — let other handlers run
         private bool _passthrough;
 
@@ -257,8 +296,7 @@ namespace DuelLinksAccess
                 string dialogText = ReadDialogText(dialogRoot);
                 if (!string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                 {
-                    ScreenReader.Say(dialogText);
-                    MelonLogger.Msg($"[Dialog] Text: {dialogText.Substring(0, Math.Min(200, dialogText.Length))}");
+                    AnnounceDialogText(dialogText);
                 }
 
                 // Find sliders in the dialog hierarchy (including inactive — just loaded)
@@ -308,8 +346,7 @@ namespace DuelLinksAccess
                         dialogText = ReadDialogText(dialogRoot);
                         if (!string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                         {
-                            ScreenReader.Say(dialogText);
-                            MelonLogger.Msg($"[Dialog] Text: {dialogText.Substring(0, Math.Min(200, dialogText.Length))}");
+                            AnnounceDialogText(dialogText);
                         }
 
                         FindSliders(dialogRoot);

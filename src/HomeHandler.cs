@@ -95,6 +95,12 @@ namespace DuelLinksAccess
         // async, so the curated list is rebuilt without re-announcing.
         private float _quietRebuildAt = -1f;
 
+        // Unmapped billboards already logged this session, keyed per object
+        // (GO name + no + res). Keying on type + npcID collapsed all four
+        // street event objects (type=7, npcID=0) into one log line in the
+        // 2026-07-17 mapping run.
+        private readonly HashSet<string> _loggedUnmappedBillboards = new();
+
         #endregion
 
         #region Properties
@@ -1330,12 +1336,17 @@ namespace DuelLinksAccess
                 string name = TryGetBillboardName(billboard);
                 if (!string.IsNullOrWhiteSpace(name)) return name;
 
-                // No name AND no MapObjectType data → decorative slot or
-                // unhydrated billboard. Return null so the caller filters
-                // it out instead of surfacing "Standard Duelist" for an
-                // empty MapObjectRoot.
+                // Decorative objects: the game's own MapObjectData.notTap
+                // flag marks non-interactive billboards — filter on THAT,
+                // not on missing type/name data. (2026-07-16 blanket filter
+                // of nameless type=Other billboards removed real interactive
+                // event objects — reverted 2026-07-17.)
                 var t = billboard.mapObjectData?.type ?? MapObjectType.None;
-                if (t == MapObjectType.None && (billboard.npcID <= 0)) return null;
+                bool notTap = false;
+                try { notTap = billboard.mapObjectData?.notTap == true; }
+                catch { }
+                if (notTap) return null;
+                if (t == MapObjectType.None && billboard.npcID <= 0) return null;
 
                 switch (t)
                 {
@@ -1349,13 +1360,41 @@ namespace DuelLinksAccess
                 }
 
                 // Unknown / event-specific type (PvP fights, seasonal event
-                // billboards, values added after game 10.8.0). Calling these
-                // "Standard Duelist" mislabels them (2026-07-14 report) —
-                // use a neutral label and log the raw type for follow-up.
-                DebugLogger.Log(LogCategory.Handler, "Home",
-                    $"Unmapped billboard type={(int)t} npcID={billboard.npcID} " +
-                    $"go={billboard.gameObject?.name}");
-                return Loc.Get("map_character");
+                // billboards). Type Other with no NPC = event object, not a
+                // character. These carry no text label anywhere — sighted
+                // players recognize the banner ART — so the name has to come
+                // from the object's own asset path / tap URL.
+                string res = null, url = null;
+                long viewId = -1, no = -1;
+                try
+                {
+                    res = billboard.resourcePath;
+                    var data = billboard.mapObjectData;
+                    viewId = data?.viewID ?? -1;
+                    no = data?.no ?? -1;
+                    url = data?.getUrl()?.ToString();
+                }
+                catch { }
+
+                string eventLabel = TryGetEventBillboardLabel(res, url);
+
+                // Always-on data dump (throttled per object): res / url /
+                // baseData identify the event so the next log can extend
+                // TryGetEventBillboardLabel without debug mode.
+                if (_loggedUnmappedBillboards.Add(
+                        $"{billboard.gameObject?.name}|{no}|{res}"))
+                {
+                    MelonLoader.MelonLogger.Msg(
+                        $"[Home] Unmapped billboard type={(int)t} npcID={billboard.npcID} " +
+                        $"go={billboard.gameObject?.name} viewID={viewId} no={no} " +
+                        $"label={eventLabel ?? "(generic)"} res={res} url={url} " +
+                        $"baseData={DescribeBaseData(billboard)}");
+                }
+
+                if (eventLabel != null) return eventLabel;
+                return Loc.Get(t == MapObjectType.Other && billboard.npcID <= 0
+                    ? "map_event_object"
+                    : "map_character");
             }
 
             return mapObj.GetType().Name switch
@@ -1419,6 +1458,122 @@ namespace DuelLinksAccess
                 return NormalizeName(childText);
 
             return null;
+        }
+
+        /// <summary>
+        /// Resolves a friendly label for an event billboard from its own
+        /// asset path and tap URL. Events rotate, so nothing is keyed to a
+        /// billboard slot or position: known patterns first, then the game's
+        /// generic Cp-prefixed campaign naming, else null (generic
+        /// "Event object" fallback). Extend with patterns from the
+        /// "[Home] Unmapped billboard" log lines.
+        /// </summary>
+        private static string TryGetEventBillboardLabel(string res, string url)
+        {
+            // Mark texture names identify the event family. Match only the
+            // file segment — the parent folder ("RankIcon/...") is shared
+            // across marks and would poison keyword checks.
+            string resFile = null;
+            if (!string.IsNullOrWhiteSpace(res))
+            {
+                int slash = res.LastIndexOf('/');
+                resFile = slash >= 0 ? res.Substring(slash + 1) : res;
+            }
+
+            // Verified 2026-07-17: SingleCharaMark_Pvp0001 opened the
+            // Ranked Duels quick-join dialog.
+            if (resFile != null && resFile.IndexOf(
+                    "Mark_Pvp", StringComparison.OrdinalIgnoreCase) >= 0)
+                return Loc.Get("map_event_ranked");
+
+            // Verified 2026-07-17: SingleCharaMark_CharaDeck pushes
+            // PvpMainMenu?select=… — the Character Deck Duel event menu.
+            if (resFile != null && resFile.IndexOf(
+                    "CharaDeck", StringComparison.OrdinalIgnoreCase) >= 0)
+                return Loc.Get("map_event_chara_deck");
+
+            // The Alley replay stand: pin texture ".../Pin_set_05ex/replay".
+            if (resFile != null && resFile.Equals(
+                    "replay", StringComparison.OrdinalIgnoreCase))
+                return Loc.Get("map_event_replays");
+
+            string haystack = $"{resFile}\n{url}";
+            if (string.IsNullOrWhiteSpace(haystack)) return null;
+
+            // Single.bingo (badge mission_beginner) is the beginner Bingo
+            // Missions board — a separate fixture from CpBingo campaigns,
+            // so it must win over the generic Bingo keyword below.
+            if (haystack.IndexOf("Single.bingo", StringComparison.OrdinalIgnoreCase) >= 0)
+                return Loc.Get("map_event_bingo_missions");
+
+            if (haystack.IndexOf("Bingo", StringComparison.OrdinalIgnoreCase) >= 0)
+                return Loc.Get("map_event_bingo");
+            if (haystack.IndexOf("Scramble", StringComparison.OrdinalIgnoreCase) >= 0)
+                return Loc.Get("map_event_scramble");
+
+            // Generic: campaign content is namespaced CpXxx in ClientWork
+            // (Event.CpBingo) — turn the camel-case tail into "Xxx event".
+            var cp = Regex.Match(haystack, @"Cp([A-Z][A-Za-z0-9]*)");
+            if (cp.Success)
+            {
+                string name = Regex.Replace(
+                    cp.Groups[1].Value, "(?<=[a-z0-9])(?=[A-Z])", " ");
+                return Loc.Get("map_event_named", name);
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Flattens a billboard's raw server config dictionary into
+        /// "key=value" pairs for the mapping log. Values are truncated —
+        /// this feeds label research, not gameplay.
+        /// </summary>
+        private static string DescribeBaseData(BillboardObject billboard)
+        {
+            try
+            {
+                var dict = billboard.mapObjectData?.baseData;
+                if (dict == null) return "(null)";
+
+                var parts = new List<string>();
+                int total = 0;
+                foreach (var entry in dict)
+                {
+                    string v;
+                    try
+                    {
+                        var val = entry.Value;
+                        if (val == null) v = "null";
+                        else
+                        {
+                            // Boxed numerics all stringify to one garbage
+                            // constant through interop ToString (2026-07-17
+                            // dump) — unbox by declared type instead.
+                            string it = null;
+                            try { it = val.GetIl2CppType()?.Name; } catch { }
+                            v = it switch
+                            {
+                                "Int64"  => val.Unbox<long>().ToString(),
+                                "Int32"  => val.Unbox<int>().ToString(),
+                                "Double" => val.Unbox<double>().ToString(),
+                                _        => val.ToString() ?? "null"
+                            };
+                        }
+                    }
+                    catch { v = "?"; }
+                    v = v.Replace('\n', ' ').Replace('\r', ' ');
+                    if (v.Length > 120) v = v.Substring(0, 120) + "…";
+                    parts.Add($"{entry.Key}={v}");
+                    total += v.Length;
+                    if (total > 900) { parts.Add("…"); break; }
+                }
+                return parts.Count == 0 ? "(empty)" : string.Join(", ", parts);
+            }
+            catch (Exception ex)
+            {
+                return $"(error: {ex.Message})";
+            }
         }
 
         private static string TryResolveCharacterName(int cid)

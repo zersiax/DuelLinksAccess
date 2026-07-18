@@ -92,7 +92,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. Draws happen automatically. Press Space during Draw Phase to retry a delayed draw. I status. J event log. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. A deck accessories, card sleeve and game mat. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. Draws happen automatically. Press Space during Draw Phase to retry a delayed draw. Space while animations play taps the screen to fast-forward them, like sighted players do; the PvP turn clock keeps draining during animations, so tap through them. I status. J event log. Control Q surrender the duel, then confirm Yes in the dialog. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. A deck accessories, card sleeve and game mat. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement.";
             _english["debug_mode"] = "Debug mode {0}";
             _english["tutorial_arrow_activated"] = "Tutorial arrow activated";
             _english["tutorial_arrow_no_arrow"] = "No tutorial arrow active";
@@ -120,7 +120,7 @@ namespace DuelLinksAccess
             // ===== DIALOGS =====
             _english["dialog_buttons"] = "{0} items. Up down to navigate, Enter to press, Left right for sliders.";
             _english["dialog_button_item"] = "{2}, {0} of {1}";
-            _english["dialog_slider_item"] = "{0} of {1}: Slider, value {2}, range {3} to {4}. Left right to adjust.";
+            _english["dialog_slider_item"] = "Slider, value {2}, {0} of {1}, range {3} to {4}. Left right to adjust.";
             _english["dialog_slider"] = "Slider: {0}";
             _english["dialog_no_buttons"] = "No interactive items found. Press Space to re-scan.";
             _english["dialog_click_error"] = "Could not press button";
@@ -134,7 +134,7 @@ namespace DuelLinksAccess
             // ===== SCREEN BUTTONS =====
             _english["screen_buttons"] = "{0} items. Up down to navigate, Enter to press.";
             _english["screen_button_item"] = "{2}, {0} of {1}";
-            _english["screen_slider_item"] = "{0} of {1}: {2}, value {3}, range {4} to {5}. Left right to adjust.";
+            _english["screen_slider_item"] = "{2}, value {3}, {0} of {1}, range {4} to {5}. Left right to adjust.";
             _english["screen_slider"] = "Slider: {0}";
             _english["screen_rescan"] = "Rescanning";
             _english["screen_click_error"] = "Could not press button";
@@ -154,6 +154,14 @@ namespace DuelLinksAccess
             _english["map_card_trader"] = "Card Trader";
             _english["map_npc_trainer"] = "Trainer";
             _english["map_character"] = "Duel World character";
+            _english["map_event_object"] = "Event object";
+            _english["map_event_ranked"] = "Ranked Duels";
+            _english["map_event_bingo"] = "Bingo event";
+            _english["map_event_bingo_missions"] = "Bingo Missions";
+            _english["map_event_scramble"] = "Scramble event";
+            _english["map_event_chara_deck"] = "Character Deck Duel";
+            _english["map_event_replays"] = "Replays";
+            _english["map_event_named"] = "{0} event";
 
             // ===== CARD TRADER =====
             _english["trader_entered"] = "Card Trader";
@@ -270,6 +278,13 @@ namespace DuelLinksAccess
             _english["duel_turn"] = "Turn {0}. {1}";
             _english["duel_your_turn"] = "Your turn";
             _english["duel_opponent_turn"] = "Opponent's turn";
+            _english["surrender_opening"] = "Surrender. Confirm in the dialog.";
+            _english["surrender_unavailable"] = "You cannot surrender right now.";
+            _english["surrender_error"] = "Surrender failed.";
+            _english["duel_time_low"] = "{0} seconds remaining";
+            _english["duel_abandon_warning"] = "Inactivity warning! Press Space to stay in the duel.";
+            _english["duel_abandon_warning_timed"] = "Inactivity warning! Press Space within {0} seconds to stay in the duel.";
+            _english["duel_abandon_cleared"] = "Inactivity warning cleared.";
             _english["duel_phase_draw"] = "Draw Phase";
             _english["duel_phase_standby"] = "Standby Phase";
             _english["duel_phase_main1"] = "Main Phase";
@@ -337,7 +352,7 @@ namespace DuelLinksAccess
             _english["duel_empty_slot_named"] = "Slot {0}: Empty";
             _english["duel_grid_edge_top"] = "Top of field";
             _english["duel_grid_edge_bottom"] = "Bottom of field";
-            _english["duel_card_position"] = "{0} of {1}: {2}";
+            _english["duel_card_position"] = "{2}, {0} of {1}";
             _english["duel_empty_slot"] = "Empty";
             _english["duel_face_up"] = "Face up";
             _english["duel_face_down"] = "Face down";
@@ -424,7 +439,7 @@ namespace DuelLinksAccess
             _english["deck_zone_extra_name"] = "Extra deck";
             _english["deck_zone_collection_name"] = "Collection";
             _english["deck_zone_empty"] = "No cards in this zone";
-            _english["deck_card_position"] = "{0} of {1}: {2}";
+            _english["deck_card_position"] = "{2}, {0} of {1}";
             _english["deck_card_added"] = "{0} added to deck";
             _english["deck_card_added_zone_count"] = "{0} added. {1}: {2}";
             _english["deck_card_removed"] = "{0} removed from deck";
@@ -433,6 +448,10 @@ namespace DuelLinksAccess
             _english["deck_card_not_addible_reason"] = "Cannot add {0}: {1}";
             _english["deck_card_in_deck"] = "{0} copies in deck";
             _english["deck_stats"] = "Main deck: {0} of {1}. Extra deck: {2} of {3}.";
+            _english["deck_edit_owner"] = "This deck belongs to {0}.";
+            _english["deck_chara_group"] = "{0}, deck group";
+            _english["deck_slot_owner"] = "{0}: {1}";
+            _english["deck_slot_empty"] = "Empty deck slot";
             _english["deck_saved"] = "Deck saved";
             _english["deck_operation_error"] = "Operation failed";
             _english["deck_level"] = "Level";
@@ -464,7 +483,7 @@ namespace DuelLinksAccess
             _english["accessory_confirm_nochange"] = "Don't change";
 
             // ===== DUEL: EVENT LOG =====
-            _english["duel_log_entry"] = "{0} of {1}: {2}";
+            _english["duel_log_entry"] = "{2}, {0} of {1}";
             _english["duel_log_empty"] = "Event log is empty";
             _english["duel_log_opened"] = "Event log. {0} entries. Up down to browse, Escape to close.";
             _english["duel_log_closed"] = "Event log closed";
@@ -473,7 +492,7 @@ namespace DuelLinksAccess
             _english["shop_entered"] = "Shop. {0}. {1}, {2} items. Tab to switch categories.";
             _english["shop_entered_empty"] = "Shop. {0}. Loading items.";
             _english["shop_category"] = "{0}, {1} items";
-            _english["shop_item_position"] = "{0} of {1}: {2}";
+            _english["shop_item_position"] = "{2}, {0} of {1}";
             _english["shop_gems"] = "Gems";
             _english["shop_crystals"] = "Crystals";
             _english["shop_balance_unknown"] = "Balance unknown";
@@ -518,7 +537,7 @@ namespace DuelLinksAccess
             // ===== TICKET EXCHANGE =====
             _english["screen_ticket_exchange"] = "Ticket Exchange";
             _english["ticket_entered"] = "Ticket Exchange. {0} cards available. Left right to browse, Enter to select.";
-            _english["ticket_card_position"] = "{0} of {1}: {2}";
+            _english["ticket_card_position"] = "{2}, {0} of {1}";
             _english["ticket_count"] = "{0} tickets remaining";
             _english["ticket_no_cards"] = "No cards available for exchange";
             _english["ticket_selected"] = "{0} selected";

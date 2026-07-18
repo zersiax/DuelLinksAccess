@@ -240,6 +240,16 @@ namespace DuelLinksAccess
                 return true;
             }
 
+            // Ctrl+Q = Surrender the current duel (two-step confirm inside).
+            // Global so it works during dialogs, field nav, and target
+            // selection alike; self-gates on DuelMenu.Surrenderable, so it's
+            // a no-op outside a duel.
+            if (IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.Q))
+            {
+                DuelSurrender.OnHotkey();
+                return true;
+            }
+
             // F11 (no Ctrl) = Activate the current TutorialArrow target.
             // The dependable, always-available activation path. Fires both
             // ipclick and a hardware mouse click — the F9 working-pair from
@@ -278,6 +288,11 @@ namespace DuelLinksAccess
             // Character speech bubbles — runs unconditionally because intro lines
             // fire before DuelHandler becomes active (HUD is up, DuelStart not yet fired)
             DuelSpeechWatcher.Update();
+
+            // PvP duel clock — announces the visual-only inactivity warning
+            // and low-time marks; logs clock state for the timekeeping spike.
+            // Self-gates on DuelTimer.Active, so it's inert outside PvP.
+            DuelTimerWatcher.Update();
 
             // Duel handler runs first — announces events, provides log/status.
             // Key consumption via InputManager prevents conflicts with other handlers.

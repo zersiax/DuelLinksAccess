@@ -249,9 +249,18 @@ namespace DuelLinksAccess
 
                     // PvP fallback when the registered-deck array path didn't
                     // apply (e.g. graveyard, which isn't a registered deck):
-                    // walk cardRoots gathering all matching (team, position),
-                    // order by locator.index for stable slot mapping, return
-                    // the Nth match.
+                    // the pile's own DeckCardPlace keeps every stacked
+                    // CardRoot in innerCards even after goManager.cardRoots
+                    // drops them — the grave renders as ONE pooled pile
+                    // object, so the Nth-root walk below sees only the top
+                    // card (2026-07-17 tester log: 6-card PvP grave read as
+                    // top card + Empties).
+                    var innerRoot = GetStackPlaceInnerCard(player, locate, slot);
+                    if (innerRoot != null) return MakeSnapshot(innerRoot, isFaceUp: true);
+
+                    // Last resort: walk cardRoots gathering all matching
+                    // (team, position), order by locator.index for stable
+                    // slot mapping, return the Nth match.
                     var nthRoot = FindNthStackCardRoot(player, locate, slot);
                     if (nthRoot != null) return MakeSnapshot(nthRoot, isFaceUp: true);
                     return null;
@@ -336,6 +345,18 @@ namespace DuelLinksAccess
                         isFaceUp = root.isStatusVisible;
                     else
                         isFaceUp = root.isMonsterVisible || root.isStatusVisible;
+
+                    // Known misread: a face-down SET spell can carry
+                    // isStatusVisible=true (2026-07-16 Wave Scramble log —
+                    // own set Polymerization announced "Face up"). Log the
+                    // candidate flags so the next debug log can verify
+                    // whether CardRoot's FlipTurn bool is the real face flag
+                    // before we switch to it.
+                    DebugLogger.Log(LogCategory.Game, "DuelState",
+                        $"PvP face fallback: locate={locate} slot={slot} " +
+                        $"statusVis={root.isStatusVisible} monsterVis={root.isMonsterVisible} " +
+                        $"flipFlag={root.getParamTypeOpponentIdxAct} " +
+                        $"finishFlipTurn={root.finishFlipTurn} -> isFaceUp={isFaceUp}");
                 }
                 catch { isFaceUp = true; }
             }
@@ -508,6 +529,39 @@ namespace DuelLinksAccess
             }
             catch { }
             return null;
+        }
+
+        /// <summary>
+        /// Returns the slot-th CardRoot stacked inside a half-field pile
+        /// (grave/deck/extra) via DeckCardPlace.innerCards. The pile keeps
+        /// its stacked roots here after they leave goManager.cardRoots, so
+        /// this is the hollow-PvP content source for the graveyard. Logs the
+        /// pile shape (innerCards vs localCardNum) on slot-0 reads so debug
+        /// logs prove which source carries grave contents.
+        /// </summary>
+        private static Il2CppYgomGame.Duel.CardRoot GetStackPlaceInnerCard(
+            int player, int locate, int slot)
+        {
+            try
+            {
+                var place = GetStackPlace(player, locate);
+                if (place == null) return null;
+                var inner = place.innerCards;
+                int innerCount = inner?.Count ?? 0;
+
+                if (slot == 0)
+                {
+                    int localNum = -1;
+                    try { localNum = place.localCardNum; } catch { }
+                    DebugLogger.Log(LogCategory.Game, "DuelState",
+                        $"Pile shape p={player} l={locate}: " +
+                        $"innerCards={innerCount} localCardNum={localNum}");
+                }
+
+                if (inner == null || slot < 0 || slot >= innerCount) return null;
+                return inner[slot];
+            }
+            catch { return null; }
         }
 
         private static bool TryGetLiveExtraDeckCount(

@@ -46,6 +46,18 @@ namespace DuelLinksAccess
         // Tab-aware rescan: after clicking a tab button, force rescan
         private float _tabRescanDelay = -1f;
 
+        // Resume-gap detection: while DialogHandler is active, Main returns
+        // before our Update() runs, so we never see VC changes or resets.
+        // A scenario cutscene can start playing underneath a dialog without
+        // any VC change — stale pre-dialog state then persists (no scan, no
+        // dialogue announcements; 2026-07-16 Mai Valentine unlock log).
+        private float _lastUpdateAt = -1f;
+
+        // Text-mode poll debounce: scenario dialogue renders with a
+        // typewriter effect, so only announce once the text stops changing.
+        private string _pendingPollText = "";
+        private float _pendingPollStableTime;
+
         /// <summary>
         /// Screens that this handler should NOT process.
         /// Dialog is handled by DialogHandler; Duel will get its own handler.
@@ -122,15 +134,36 @@ namespace DuelLinksAccess
 
             string currentVc = GameStateTracker.LastViewControllerName;
 
+            // Resuming after a blocked period (a dialog owned the update
+            // chain): if the underlying screen is a scenario root, force a
+            // rescan even though the VC name is unchanged — the cutscene
+            // started (or advanced) while we were blocked and our scan state
+            // is stale.
+            float now = Time.unscaledTime;
+            bool scenarioResume = _lastUpdateAt >= 0f
+                && now - _lastUpdateAt > 1f
+                && currentVc == _lastVcName
+                && currentVc.Contains("Scenario");
+            _lastUpdateAt = now;
+
             // New screen or VC changed — start scan
-            if (currentVc != _lastVcName)
+            if (currentVc != _lastVcName || scenarioResume)
             {
+                if (scenarioResume)
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        "Resumed over scenario root after blocked period — forcing rescan");
                 _lastVcName = currentVc;
                 _scanned = false;
                 _scanDelay = 0.5f;
                 _scanAttempts = 0;
                 _textMode = false;
-                _lastReadText = "";
+                // Keep _lastReadText on a scenario resume so an unchanged
+                // dialogue line is not announced a second time — the rescan
+                // exists to catch NEW content, not to repeat what was read.
+                if (!scenarioResume)
+                    _lastReadText = "";
+                _pendingPollText = "";
+                _pendingPollStableTime = 0f;
                 _items.Clear();
                 _screenRoot = null;
                 _resultRescanTimer = -1f;
@@ -221,6 +254,8 @@ namespace DuelLinksAccess
             _scanned = false;
             _textMode = false;
             _lastReadText = "";
+            _pendingPollText = "";
+            _pendingPollStableTime = 0f;
             _items.Clear();
             _screenRoot = null;
         }
@@ -337,15 +372,40 @@ namespace DuelLinksAccess
                 }
                 else
                 {
-                    // No buttons — try text mode for scenario/dialogue screens
-                    string text = ReadScreenText(_screenRoot);
+                    // No buttons — try text mode for scenario/dialogue screens.
+                    // Scenario roots: prefer the ADV message windows read via
+                    // ScenarioPlayViewController — the dialogue may live outside
+                    // the scanned subtree, and generic root text would pick up
+                    // menu labels instead of the spoken line.
+                    string text = ReadScenarioMessageText(_screenRoot);
+                    if (string.IsNullOrEmpty(text))
+                        text = ReadScreenText(_screenRoot);
                     if (!string.IsNullOrEmpty(text))
                     {
                         _textMode = true;
-                        _lastReadText = text;
-                        ScreenReader.Say(text);
-                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                            $"Text mode: {text.Substring(0, Math.Min(100, text.Length))}");
+                        // Stay silent for: unchanged text (scenario resume
+                        // rescan — already read before the interruption) and
+                        // text mirrored from a dialog DialogHandler just
+                        // announced (scenario windows mirror TutorialDuelMessage
+                        // content — re-reading it duplicates the line).
+                        if (text != _lastReadText)
+                        {
+                            _lastReadText = text;
+                            if (IsMirroredDialogText(text))
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    "Text mode: suppressed dialog-mirrored text");
+                            }
+                            else
+                            {
+                                ScreenReader.Say(text);
+                                if (_screenRoot.name.Contains("Scenario"))
+                                    LastScenarioTextNormalized =
+                                        LabelExtractor.NormalizeWhitespace(text);
+                                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                    $"Text mode: {text.Substring(0, Math.Min(100, text.Length))}");
+                            }
+                        }
                     }
                     else if (_screenRoot.name.Contains("Scenario"))
                     {
@@ -357,6 +417,11 @@ namespace DuelLinksAccess
                         ScreenReader.Say(Loc.Get("screen_cutscene"));
                         DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                             "Cutscene mode: ScenarioPlayerPart with no visible text");
+                        // Debug: dump the scenario state so remote logs show
+                        // where the dialogue text actually lives if the poll
+                        // never picks anything up.
+                        if (Main.DebugMode)
+                            DumpScenarioState(_screenRoot);
                     }
                 }
             }
@@ -918,16 +983,61 @@ namespace DuelLinksAccess
 
             try
             {
-                string currentText = ReadScreenText(_screenRoot);
+                string currentText = ReadScenarioMessageText(_screenRoot);
+                if (string.IsNullOrEmpty(currentText))
+                    currentText = ReadScreenText(_screenRoot);
                 if (string.IsNullOrEmpty(currentText)) return;
 
-                if (currentText != _lastReadText)
+                if (currentText == _lastReadText) return;
+
+                // Scenario dialogue renders with a typewriter effect — wait
+                // until the text stops changing before announcing, so whole
+                // lines are read instead of per-frame fragments.
+                if (currentText != _pendingPollText)
+                {
+                    _pendingPollText = currentText;
+                    _pendingPollStableTime = 0f;
+                    return;
+                }
+
+                _pendingPollStableTime += Time.unscaledDeltaTime;
+                if (_pendingPollStableTime < 0.2f) return;
+
+                // Scenario windows mirror TutorialDuelMessage content — skip
+                // text DialogHandler just announced, or the user hears the
+                // same line twice (unlock scenes, 2026-07-16 report).
+                if (IsMirroredDialogText(currentText))
                 {
                     _lastReadText = currentText;
-                    ScreenReader.Say(currentText);
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                        $"Text changed: {currentText.Substring(0, Math.Min(100, currentText.Length))}");
+                        "Poll: suppressed dialog-mirrored text");
+                    return;
                 }
+
+                // If a new part was appended to already-read text (speaker
+                // name window fills first, dialogue line arrives after),
+                // announce only the appended part — re-reading the combined
+                // string sounds like the line repeating. Queued so it follows
+                // the part already being spoken. Any other change (new line,
+                // typewriter continuation) replaces the old text entirely.
+                string speak = currentText;
+                bool appended = !string.IsNullOrEmpty(_lastReadText)
+                    && currentText.StartsWith(_lastReadText + ". ",
+                        StringComparison.Ordinal);
+                if (appended)
+                    speak = currentText.Substring(_lastReadText.Length + 2);
+
+                _lastReadText = currentText;
+                if (appended)
+                    ScreenReader.SayQueued(speak);
+                else
+                    ScreenReader.Say(speak);
+                if (_screenRoot.name.Contains("Scenario"))
+                    LastScenarioTextNormalized =
+                        LabelExtractor.NormalizeWhitespace(currentText);
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"Text changed{(appended ? " (append)" : "")}: " +
+                    $"{speak.Substring(0, Math.Min(100, speak.Length))}");
             }
             catch { }
         }
@@ -939,8 +1049,22 @@ namespace DuelLinksAccess
         private string ReadScreenText(GameObject root)
         {
             var parts = new List<string>();
+            CollectTextParts(root, parts);
+            return string.Join(". ", parts);
+        }
 
-            // Try YgomTextAccessor first
+        /// <summary>
+        /// Collects the visible text parts under <paramref name="root"/> into
+        /// <paramref name="parts"/>, skipping parts already in the list.
+        /// The shared list matters: overlapping windows (scenario npcMessage
+        /// contains messageText) must contribute each part only once.
+        /// YgomTextAccessor is preferred; Unity Text is the fallback when
+        /// this root has no YTA text at all.
+        /// </summary>
+        private void CollectTextParts(GameObject root, List<string> parts)
+        {
+            bool anyYta = false;
+
             try
             {
                 var ytas = root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
@@ -953,6 +1077,7 @@ namespace DuelLinksAccess
                         string t = LabelExtractor.StripRichText(yta.text);
                         if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                         if (t.All(char.IsDigit)) continue;
+                        anyYta = true;
                         if (!parts.Contains(t))
                             parts.Add(t);
                     }
@@ -960,8 +1085,8 @@ namespace DuelLinksAccess
             }
             catch { }
 
-            // Fall back to Unity Text if no YTA text found
-            if (parts.Count == 0)
+            // Fall back to Unity Text if this root had no YTA text
+            if (!anyYta)
             {
                 try
                 {
@@ -982,8 +1107,76 @@ namespace DuelLinksAccess
                 }
                 catch { }
             }
+        }
 
-            return string.Join(". ", parts);
+        /// <summary>
+        /// True when the current screen is a scenario root and the given text
+        /// matches (or contains / is contained in) the dialog text
+        /// DialogHandler most recently announced. Scenario message windows
+        /// mirror TutorialDuelMessage content, so announcing it again from
+        /// the text poll duplicates the line the user just heard.
+        /// </summary>
+        private bool IsMirroredDialogText(string text)
+        {
+            if (_screenRoot == null || !_screenRoot.name.Contains("Scenario"))
+                return false;
+
+            return LabelExtractor.NormalizedOverlap(
+                LabelExtractor.NormalizeWhitespace(text),
+                DialogHandler.LastAnnouncedTextNormalized);
+        }
+
+        /// <summary>
+        /// Normalized copy of the most recently announced scenario text, for
+        /// the reverse dedupe direction: the scenario poll can speak a line
+        /// BEFORE DialogHandler's delayed scan announces the same line from
+        /// a TutorialDuelMessage popup — DialogHandler checks this to skip
+        /// the second read (double-speak, 2026-07-17 report).
+        /// </summary>
+        internal static string LastScenarioTextNormalized { get; private set; } = "";
+
+        /// <summary>
+        /// Reads the current ADV dialogue (speaker name + spoken line) from a
+        /// scenario root's ScenarioPlayViewController message windows.
+        /// Returns null when the root is not a scenario root or no dialogue
+        /// is currently displayed.
+        /// </summary>
+        private string ReadScenarioMessageText(GameObject root)
+        {
+            if (root == null || !root.name.Contains("Scenario")) return null;
+
+            try
+            {
+                var vc = root.GetComponent<Il2CppYgomGame.Scenario.ScenarioPlayViewController>();
+                if (vc == null)
+                    vc = root.GetComponentInChildren<Il2CppYgomGame.Scenario.ScenarioPlayViewController>(true);
+                if (vc == null) return null;
+
+                var parts = new List<string>();
+                AppendWindowText(vc.npcMessage, parts);   // speaker name window
+                AppendWindowText(vc.messageText, parts);  // dialogue text window
+                return parts.Count > 0 ? string.Join(". ", parts) : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Appends the visible text under a scenario message window GameObject
+        /// to <paramref name="parts"/>, skipping inactive windows. Collects
+        /// individual parts (not the joined window string): npcMessage
+        /// CONTAINS messageText in the scenario prefab, so window-level
+        /// strings overlap without being equal — comparing whole windows
+        /// spoke the dialogue line twice ("Emma. [line]. [line]",
+        /// 2026-07-17 tester log).
+        /// </summary>
+        private void AppendWindowText(GameObject window, List<string> parts)
+        {
+            if (window == null || !window.activeInHierarchy) return;
+
+            CollectTextParts(window, parts);
         }
 
         /// <summary>
@@ -1192,54 +1385,107 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Finds DeckSelectItem components on deck screens.
-        /// These are MonoBehaviours (not Selectables), so FindButtons() won't find them.
-        /// Each has a deckNameText (Text) for the label and OnClicked() for activation.
+        /// Finds deck slots on deck screens. Deck slots are grouped under
+        /// per-character DeckListCharaNode headers, and a slot BELONGS to
+        /// that character — building a deck in another character's slot
+        /// silently binds it to them, and saving asks to SWITCH characters
+        /// (2026-07-18 tester: Slifer deck landed in a Joey slot while
+        /// playing Yami Yugi). So the walk goes node by node: one header
+        /// item per character (activation taps the chara icon like a
+        /// sighted tap), then that character's slots labeled
+        /// "character: deck". DeckSelectItem is a MonoBehaviour (not a
+        /// Selectable) activated via OnClicked().
         /// </summary>
         private void FindDeckItems(GameObject root)
         {
             try
             {
-                var deckItems = root.GetComponentsInChildren<
-                    Il2CppYgomGame.Deck.DeckSelectItem>(true);
-                if (deckItems == null) return;
+                var seen = new HashSet<int>();
 
-                foreach (var deckItem in deckItems)
+                var nodes = root.GetComponentsInChildren<
+                    Il2CppYgomGame.Deck.DeckListCharaNode>(true);
+                if (nodes != null)
                 {
-                    if (deckItem == null) continue;
-                    var go = deckItem.gameObject;
-                    if (go == null || !go.activeInHierarchy) continue;
-
-                    string label = "";
-                    try
+                    foreach (var node in nodes)
                     {
-                        var nameText = deckItem.deckNameText;
-                        if (nameText != null)
-                            label = LabelExtractor.StripRichText(nameText.text);
+                        if (node == null) continue;
+                        var nodeGo = node.gameObject;
+                        if (nodeGo == null || !nodeGo.activeInHierarchy) continue;
+
+                        string chara = null;
+                        try
+                        {
+                            chara = LabelExtractor.ResolveCharaName(node.GetChara());
+                        }
+                        catch { }
+
+                        if (!string.IsNullOrWhiteSpace(chara))
+                        {
+                            _items.Add(new ScreenItem
+                            {
+                                Go = nodeGo,
+                                Label = Loc.Get("deck_chara_group", chara),
+                                Type = ItemType.Button
+                            });
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"DeckCharaNode: \"{chara}\" GO={nodeGo.name}");
+                        }
+
+                        AddDeckItemsUnder(nodeGo, chara, seen);
                     }
-                    catch { }
-
-                    if (string.IsNullOrWhiteSpace(label))
-                    {
-                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                            $"DeckItem: skipping (no name text) GO={go.name}");
-                        continue;
-                    }
-
-                    _items.Add(new ScreenItem
-                    {
-                        Go = go,
-                        Label = label,
-                        Type = ItemType.Button
-                    });
-
-                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                        $"DeckItem: \"{label}\" GO={go.name}");
                 }
+
+                // Deck items outside any chara node (other deck screens).
+                AddDeckItemsUnder(root, null, seen);
             }
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[ScreenBtn] FindDeckItems error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Adds every active DeckSelectItem under scope, prefixed with the
+        /// owning character when known. Blank slots have empty name text —
+        /// they are the "new deck" targets, not junk, so they get an
+        /// "Empty deck slot" label instead of being skipped.
+        /// </summary>
+        private void AddDeckItemsUnder(GameObject scope, string chara, HashSet<int> seen)
+        {
+            var deckItems = scope.GetComponentsInChildren<
+                Il2CppYgomGame.Deck.DeckSelectItem>(true);
+            if (deckItems == null) return;
+
+            foreach (var deckItem in deckItems)
+            {
+                if (deckItem == null) continue;
+                var go = deckItem.gameObject;
+                if (go == null || !go.activeInHierarchy) continue;
+                if (!seen.Add(go.GetInstanceID())) continue;
+
+                string label = "";
+                try
+                {
+                    var nameText = deckItem.deckNameText;
+                    if (nameText != null)
+                        label = LabelExtractor.StripRichText(nameText.text);
+                }
+                catch { }
+
+                if (string.IsNullOrWhiteSpace(label))
+                    label = Loc.Get("deck_slot_empty");
+                if (!string.IsNullOrWhiteSpace(chara))
+                    label = Loc.Get("deck_slot_owner", chara, label);
+
+                _items.Add(new ScreenItem
+                {
+                    Go = go,
+                    Label = label,
+                    Type = ItemType.Button
+                });
+
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                    $"DeckItem: \"{label}\" GO={go.name}");
             }
         }
 
@@ -1670,6 +1916,26 @@ namespace DuelLinksAccess
                         $"Activating deck item: {item.Label}");
                     deckItem.OnClicked();
                     ScreenReader.Say(item.Label);
+                    return;
+                }
+            }
+            catch { }
+
+            // Deck character group header: tap the chara icon the way a
+            // sighted tap does (expands/selects that character's group).
+            try
+            {
+                var charaNode = item.Go.GetComponent<
+                    Il2CppYgomGame.Deck.DeckListCharaNode>();
+                if (charaNode != null)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Activating deck chara group: {item.Label}");
+                    charaNode.CharaIconClicked();
+                    ScreenReader.Say(item.Label);
+                    // Group expand/collapse changes which slots exist —
+                    // reuse the tab-rescan delay for a full content rescan.
+                    _tabRescanDelay = 0.8f;
                     return;
                 }
             }

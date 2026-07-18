@@ -234,6 +234,11 @@ namespace DuelLinksAccess
         // OnCommand directly instead of re-tapping (which would close it).
         private Il2CppYgomGame.Duel.CardCommand _pendingCardCom;
 
+        // Set by ReadPopupAndPresentCommands when the CardCommand popup never
+        // yielded commands — lets the field flow fire its hollow-engine
+        // fallback instead of dead-ending on "No actions available".
+        private bool _popupReadFailed;
+
         // Target selection state (attack targeting)
         private bool _awaitingTarget;
         private bool _useDirectCommand; // true = skip drag, use OnDoCardCommand(Attack)
@@ -1376,13 +1381,41 @@ namespace DuelLinksAccess
                     // and we must NOT inject Attack there.
                     if (isLocalMonster && DuelState.IsEngineHollow)
                     {
-                        int atkMask = 0;
+                        // Face-down monsters can't attack, but the engine's
+                        // attackTargetMask is computed per zone, not per card
+                        // state — it stays nonzero (0x80) on a SET monster,
+                        // and injecting Attack hijacks Enter into a bogus
+                        // direct attack ("Proceed to the Battle Phase?"
+                        // prompt, flip summon never offered — 2026-07-18 PvP
+                        // log). Set monsters must fall through to the popup
+                        // route below, where the game's own Flip Summon
+                        // button lives.
+                        bool faceDown = false;
                         try
                         {
-                            atkMask = Il2CppYgomGame.Duel.Engine
-                                .DLL_DuelGetAttackTargetMask(player, locate);
+                            var snap = DuelState.GetFieldCard(
+                                player, locate, slotIndex);
+                            faceDown = snap.HasValue && !snap.Value.IsFaceUp;
                         }
                         catch { }
+
+                        int atkMask = 0;
+                        if (!faceDown)
+                        {
+                            try
+                            {
+                                atkMask = Il2CppYgomGame.Duel.Engine
+                                    .DLL_DuelGetAttackTargetMask(player, locate);
+                            }
+                            catch { }
+                        }
+                        else
+                        {
+                            DebugLogger.Log(LogCategory.Game, "FieldNav",
+                                "PvP attack injection skipped: card is face-down " +
+                                "— using popup route for Flip Summon");
+                        }
+
                         if (atkMask != 0)
                         {
                             DebugLogger.Log(LogCategory.Game, "FieldNav",
@@ -3345,8 +3378,65 @@ namespace DuelLinksAccess
             }
 
             int slotIndex = _zoneSlots[_navIndex];
+
+            // Enter often lands while the engine is mid-transition (chain
+            // resolving, opponent quick effect, phase change): the card's
+            // highlight flag is off, curInputType reads Null/DrawPhase, and
+            // TapCard silently no-ops — the user hears "No actions available"
+            // for a card that is playable a moment later (2026-07-16 PvP log:
+            // highlight=False on every failed attempt, True on every success).
+            // Wait for the state to settle before tapping. When input is open
+            // and the card simply has no actions, this exits immediately.
+            yield return WaitForHandActionable(client, slotIndex);
+
             TapHandCard(client, slotIndex);
             yield return ReadPopupAndPresentCommands();
+        }
+
+        /// <summary>
+        /// Waits (up to ~1s) while the duel engine is in a transient state —
+        /// input closed (Null/DrawPhase) or the hand busy — giving the tapped
+        /// card a chance to become actionable (m_IsHighlight). Exits early as
+        /// soon as the card highlights or input opens without it.
+        /// </summary>
+        private IEnumerator WaitForHandActionable(
+            Il2CppYgomGame.Duel.DuelClient client, int slotIndex)
+        {
+            for (int frame = 0; frame < 60; frame++)
+            {
+                bool actionable = false;
+                bool transient = false;
+                try
+                {
+                    var handCards = client.duelHUD?.nearHandCard;
+                    var infoList = handCards?.m_InfoList;
+                    if (infoList != null && slotIndex < infoList.Count)
+                        actionable = infoList[slotIndex]?.m_IsHighlight == true;
+
+                    string inputType =
+                        client.worker2d?.curInputType.ToString() ?? "";
+                    transient = inputType == "Null"
+                        || inputType == "DrawPhase"
+                        || handCards?.m_IsBusy == true;
+                }
+                catch { }
+
+                if (actionable || !transient)
+                {
+                    // Always-on: remote logs usually arrive without debug
+                    // mode, and settle behavior is the evidence needed to
+                    // diagnose "card won't activate" reports.
+                    if (frame > 0)
+                        MelonLoader.MelonLogger.Msg(
+                            $"[FieldNav] Hand settle wait: actionable={actionable} after {frame} frames");
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            MelonLoader.MelonLogger.Msg(
+                "[FieldNav] Hand settle wait: state never settled — tapping anyway");
         }
 
         /// <summary>
@@ -3393,8 +3483,76 @@ namespace DuelLinksAccess
                 yield break;
             }
 
+            // Same transient-state guard as the hand path: tapping a field
+            // card while input is closed (chain resolving, opponent quick
+            // effect, phase change) silently no-ops.
+            yield return WaitForInputOpen(client);
+
             TapFieldCard(client, player, locate, slotIndex);
-            yield return ReadPopupAndPresentCommands();
+            yield return ReadPopupAndPresentCommands(announceFailure: false);
+
+            if (!_popupReadFailed)
+                yield break;
+
+            // Hollow-engine duels (2026-07-16 Wave Scramble log): OnTapLocator
+            // is engine-addressed and no-ops when the engine has no card data
+            // — the popup never opens for the player's own set spell/trap.
+            // The engine-live path activates the same card state via a direct
+            // OnDoCardCommand(Action) (verified working on an identical set
+            // Polymerization in the same session), so fire that as fallback.
+            // An illegal Action is ignored by the game — same net result as
+            // the old dead end.
+            if (_currentZone == Zone.MySpell && DuelState.IsEngineHollow)
+            {
+                var worker = client.worker2d;
+                if (worker != null)
+                {
+                    MelonLoader.MelonLogger.Msg(
+                        $"[FieldNav] Popup no-show on own S/T with hollow engine — " +
+                        $"direct OnDoCardCommand(Action) for ({player}, {locate}, {slotIndex})");
+                    ScreenReader.Say(Loc.Get("duel_cmd_activate"));
+                    DuelEventAnnouncer.ArmLocalSeatCapture();
+                    worker.OnDoCardCommand(player, locate, slotIndex,
+                        Il2CppYgomGame.Duel.Engine.CommandType.Action);
+                    yield break;
+                }
+            }
+
+            ScreenReader.Say(Loc.Get("duel_no_actions"));
+        }
+
+        /// <summary>
+        /// Waits (up to ~1s) while the duel engine has input closed
+        /// (curInputType Null/DrawPhase). Field-card variant of
+        /// WaitForHandActionable — field cards have no per-card highlight
+        /// flag to watch, so only the input gate is polled.
+        /// </summary>
+        private IEnumerator WaitForInputOpen(Il2CppYgomGame.Duel.DuelClient client)
+        {
+            for (int frame = 0; frame < 60; frame++)
+            {
+                bool transient = false;
+                try
+                {
+                    string inputType =
+                        client.worker2d?.curInputType.ToString() ?? "";
+                    transient = inputType == "Null" || inputType == "DrawPhase";
+                }
+                catch { }
+
+                if (!transient)
+                {
+                    if (frame > 0)
+                        MelonLoader.MelonLogger.Msg(
+                            $"[FieldNav] Field settle wait: input opened after {frame} frames");
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            MelonLoader.MelonLogger.Msg(
+                "[FieldNav] Field settle wait: input never opened — tapping anyway");
         }
 
         /// <summary>
@@ -3405,8 +3563,9 @@ namespace DuelLinksAccess
         /// ArmLocalSeatCapture before the final OnCommand so the seat is
         /// captured from the resulting Cutin event.
         /// </summary>
-        private IEnumerator ReadPopupAndPresentCommands()
+        private IEnumerator ReadPopupAndPresentCommands(bool announceFailure = true)
         {
+            _popupReadFailed = false;
             var client = Il2CppYgomGame.Duel.DuelClient.instance;
             if (client == null) yield break;
 
@@ -3443,8 +3602,10 @@ namespace DuelLinksAccess
 
             if (cardCom == null)
             {
-                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    "PvP popup: CardCommand never appeared with active buttons");
+                // Always-on: this is the "No actions available" failure path —
+                // remote logs need it without debug mode.
+                MelonLoader.MelonLogger.Msg(
+                    "[FieldNav] PvP popup: CardCommand never appeared with active buttons");
 
                 // Diagnostic for the "Enter on no-action card leaves the duel
                 // wedged" symptom: dump the input/selection state we *exit* in
@@ -3473,12 +3634,14 @@ namespace DuelLinksAccess
                         catch { }
                     }
                     bool pendingCardCom = _pendingCardCom != null;
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        $"PvP popup bail: curInputType={inputType} pendingCardCom={pendingCardCom} hand=[{handState}]");
+                    MelonLoader.MelonLogger.Msg(
+                        $"[FieldNav] PvP popup bail: curInputType={inputType} pendingCardCom={pendingCardCom} hand=[{handState}]");
                 }
                 catch { }
 
-                ScreenReader.Say(Loc.Get("duel_no_actions"));
+                _popupReadFailed = true;
+                if (announceFailure)
+                    ScreenReader.Say(Loc.Get("duel_no_actions"));
                 yield break;
             }
 
@@ -3502,7 +3665,9 @@ namespace DuelLinksAccess
             if (_commands.Count == 0)
             {
                 try { cardCom.Close(); } catch { }
-                ScreenReader.Say(Loc.Get("duel_no_actions"));
+                _popupReadFailed = true;
+                if (announceFailure)
+                    ScreenReader.Say(Loc.Get("duel_no_actions"));
                 yield break;
             }
 

@@ -144,11 +144,62 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Resolves a character id to a display name via the CharaUtil
+        /// resolver chain (series-qualified name preferred). Null when the
+        /// id is unset or no resolver knows it.
+        /// </summary>
+        public static string ResolveCharaName(int cid)
+        {
+            if (cid <= 0) return null;
+            foreach (var resolver in new System.Func<int, string>[]
+            {
+                Il2CppYgomGame.Utility.CharaUtil.GetNameWithSeries,
+                Il2CppYgomGame.Utility.CharaUtil.GetNameAndSeries,
+                Il2CppYgomGame.Utility.CharaUtil.GetName
+            })
+            {
+                try
+                {
+                    string v = resolver(cid);
+                    if (!string.IsNullOrWhiteSpace(v)) return v;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Strips Unity rich text tags from a string.
         /// </summary>
         public static string StripRichText(string text)
         {
             return SpeechTextFormatter.StripRichText(text);
+        }
+
+        /// <summary>
+        /// Collapses all whitespace runs (spaces, newlines) to single spaces
+        /// and trims. Used to compare text that different UI elements render
+        /// with different line breaks (e.g. dialog vs scenario message window).
+        /// </summary>
+        public static string NormalizeWhitespace(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            return string.Join(" ", text.Split(
+                (char[])null, System.StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        /// <summary>
+        /// True when two already-normalized texts are the same line rendered
+        /// by different UI surfaces: equal, or one contains the other. Both
+        /// must be at least 8 chars so short labels can't false-positive.
+        /// </summary>
+        public static bool NormalizedOverlap(string normA, string normB)
+        {
+            if (string.IsNullOrEmpty(normA) || normA.Length < 8) return false;
+            if (string.IsNullOrEmpty(normB) || normB.Length < 8) return false;
+            return normA == normB
+                || normA.Contains(normB)
+                || normB.Contains(normA);
         }
 
         /// <summary>
