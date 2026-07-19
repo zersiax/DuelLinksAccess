@@ -178,8 +178,19 @@ namespace DuelLinksAccess
                     _scanAttempts++;
                     ScanScreen();
 
+                    // Shop pack lineup (ShopLineup) is an Htjson page whose
+                    // pack cells load asynchronously — the scan on entry often
+                    // catches only the static Back button, so ShouldRetry
+                    // (itemCount==0) stops too early and the packs never
+                    // surface. Keep rescanning (fast cadence, capped) while
+                    // only trivial nav items are present (2026-07-19 tester
+                    // log: Found 1 item = Back, tutorial "select Main Box"
+                    // step unreachable).
+                    bool awaitingLineup = IsAsyncLineupScreen()
+                        && HasOnlyTrivialItems() && _scanAttempts < 12;
+
                     if (LateContentRetryPolicy.ShouldRetry(
-                        _items.Count, _textMode, false))
+                        _items.Count, _textMode, false) || awaitingLineup)
                     {
                         if (GameStateTracker.CurrentScreen == GameScreen.Title)
                         {
@@ -192,6 +203,15 @@ namespace DuelLinksAccess
                                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                                     "Title screen still empty — rescanning until buttons activate");
                             _scanDelay = 1.0f;
+                        }
+                        else if (awaitingLineup)
+                        {
+                            // Always-on: the next tester log should show the
+                            // packs arriving (or not) over these retries.
+                            MelonLogger.Msg(
+                                $"[ScreenBtn] ShopLineup awaiting async packs " +
+                                $"(attempt {_scanAttempts}, items={_items.Count})");
+                            _scanDelay = 0.5f;
                         }
                         else
                         {
@@ -258,6 +278,34 @@ namespace DuelLinksAccess
             _pendingPollStableTime = 0f;
             _items.Clear();
             _screenRoot = null;
+        }
+
+        /// <summary>
+        /// True when the screen being scanned is the shop pack lineup — an
+        /// Htjson page whose pack cells load asynchronously after the VC
+        /// appears, so the scan on entry often catches only the Back button.
+        /// </summary>
+        private bool IsAsyncLineupScreen()
+        {
+            return _screenRoot != null && _screenRoot.name == "ShopLineup";
+        }
+
+        /// <summary>
+        /// True when the current item list holds nothing but trivial
+        /// navigation (a lone Back / Home button) — i.e. real content has not
+        /// populated yet.
+        /// </summary>
+        private bool HasOnlyTrivialItems()
+        {
+            if (_items.Count == 0) return true;
+            foreach (var it in _items)
+            {
+                string goName = it.Go != null ? it.Go.name : "";
+                bool trivial = goName == "BackButton" || goName == "HomeButton"
+                    || it.Label == "Back";
+                if (!trivial) return false;
+            }
+            return true;
         }
 
         private void ScanScreen()
@@ -347,7 +395,26 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Found {_items.Count} items");
 
-                if (_items.Count > 0 && !isResultScreen)
+                // Always-on shop-lineup instrumentation: dump the label list
+                // so the next tester log shows exactly what the pack scan
+                // yields (only Back, or the packs once they load async).
+                if (IsAsyncLineupScreen())
+                {
+                    var lineupLabels = new List<string>();
+                    foreach (var it in _items) lineupLabels.Add(it.Label);
+                    MelonLogger.Msg(
+                        $"[ScreenBtn] ShopLineup scan: {_items.Count} items: " +
+                        string.Join(" | ", lineupLabels));
+                }
+
+                // While the shop lineup's async packs are still loading (only
+                // the Back button present), stay silent — the retry loop
+                // re-scans and announces once the packs populate, so we don't
+                // repeat "1 item" every half second.
+                bool suppressLineupAnnounce = IsAsyncLineupScreen()
+                    && HasOnlyTrivialItems() && _scanAttempts < 12;
+
+                if (_items.Count > 0 && !isResultScreen && !suppressLineupAnnounce)
                 {
                     // Result screens handle their own announcement in ScanResultScreen
                     ScreenReader.SayQueued(
@@ -1677,9 +1744,16 @@ namespace DuelLinksAccess
                 // the normal rescan.
                 if (IsTutorialArrowActive() && IsArrowClickToContinue())
                 {
+                    MelonLogger.Msg(
+                        "[ScreenBtn] Space consumed to dismiss click-to-continue arrow");
                     DismissTutorialArrow();
                     return;
                 }
+                // Always-on: diagnoses "pressed Space, nothing happened" —
+                // shows Space reached SBH, on which screen, with the arrow state.
+                MelonLogger.Msg(
+                    $"[ScreenBtn] Space rescan on '{_screenRoot?.name}' " +
+                    $"(items were {_items.Count}, arrowActive={IsTutorialArrowActive()})");
                 _scanned = false;
                 _scanDelay = 0.3f;
                 _scanAttempts = 0;

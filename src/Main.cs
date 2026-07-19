@@ -457,12 +457,22 @@ namespace DuelLinksAccess
                             string msg;
                             if (sbhActiveNoTarget)
                             {
-                                // SBH active but no item matches the target — user is on a
-                                // different screen (e.g. Home VC after series change).
+                                // SBH is active but the arrow's target isn't
+                                // among the scanned items. This was assumed to
+                                // mean "user is on a different screen" and told
+                                // them to press Escape to go back — but it also
+                                // fires when the target's screen is still
+                                // loading its content async (the shop
+                                // ShopLineup packs, 2026-07-19 tester log:
+                                // only "Back" scanned on entry). Telling the
+                                // user to press Escape there strands them off
+                                // the shop. F11 activates the arrow target
+                                // directly in both cases, so guide to F11 and
+                                // never to "go back".
                                 string fallback = GetIpclickTargetLabel(arrowVc);
                                 msg = !string.IsNullOrEmpty(fallback)
-                                    ? Loc.Get("tutorial_arrow_back_named", fallback)
-                                    : Loc.Get("tutorial_arrow_back");
+                                    ? Loc.Get("tutorial_arrow_target_named", fallback)
+                                    : Loc.Get("duel_tutorial_arrow_pointing");
                             }
                             else
                             {
@@ -483,6 +493,11 @@ namespace DuelLinksAccess
                                     ? Loc.Get("tutorial_arrow_target_named", label)
                                     : Loc.Get("duel_tutorial_arrow_pointing");
                             }
+                            // Always-on: records which guidance the arrow logic
+                            // chose, for the shop-tutorial diagnosis.
+                            MelonLogger.Msg(
+                                $"[Main] Orphan arrow announce: " +
+                                $"sbhActiveNoTarget={sbhActiveNoTarget}, msg='{msg}'");
                             ScreenReader.SayQueued(msg);
                         }
                     }
