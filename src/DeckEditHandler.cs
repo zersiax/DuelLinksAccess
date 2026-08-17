@@ -138,8 +138,87 @@ namespace DuelLinksAccess
             }
 
             _initialScanDone = true;
+            LogTrunkDiagnostics();
             ScreenReader.Say(Loc.Get("deck_edit_entered", mainCount, extraCount, collectionCount));
             AnnounceDeckOwner();
+        }
+
+        // Temporary diagnostic (2026-08-13): a card traded from the Card Trader
+        // (Beast Gear Buggy Dog, mrk 15420) was confirmed received by the game's
+        // own "Receive Rewards" modal, yet did not appear in the deck editor's
+        // 181-card collection view. Our collection uses trunkFiltered (the game's
+        // filtered view) when present, so this logs the full trunk (trunkSorted)
+        // vs the filtered view counts and whether the traded card is in either.
+        // That tells "our filtered view hides owned cards" (inSorted=true,
+        // inFiltered=false) from "the card isn't in the client trunk at all —
+        // stale or not added" (inSorted=false). Remove once resolved.
+        private const int TrunkProbeMrk = 15420;
+        // Known real card that is NOT owned (Disturbance Strategy). If it's in
+        // trunkSorted, trunkSorted is the all-cards master list; if not, it's an
+        // owned-only list. Disambiguates what "sorted=10537" means.
+        private const int KnownRealCardMrk = 5546;
+
+        private void LogTrunkDiagnostics()
+        {
+            try
+            {
+                if (_vc == null) return;
+                var filtered = _vc.trunkFiltered;
+                var sorted = _vc.trunkSorted;
+                int fc = filtered?.Count ?? -1;
+                int sc = sorted?.Count ?? -1;
+
+                bool inFiltered = false, inSorted = false, knownInSorted = false;
+                if (filtered != null)
+                    for (int i = 0; i < filtered.Count; i++)
+                        if (filtered[i] == TrunkProbeMrk) { inFiltered = true; break; }
+                if (sorted != null)
+                    for (int i = 0; i < sorted.Count; i++)
+                    {
+                        if (sorted[i] == TrunkProbeMrk) inSorted = true;
+                        if (sorted[i] == KnownRealCardMrk) knownInSorted = true;
+                    }
+
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"[trunk] filtered={fc} sorted={sc} "
+                    + $"usingFiltered={DeckEditPolicy.UseFilteredCollection(filtered != null)} | "
+                    + $"probe mrk={TrunkProbeMrk} inFiltered={inFiltered} inSorted={inSorted}");
+
+                // Identify what the probe id actually is and whether the game
+                // thinks the card is owned. Content.GetName tells us if 15420 is
+                // even a card mrk (does it resolve to "Beast Gear Buggy Dog"?);
+                // CardPoss is the authoritative owned-count for that mrk. The
+                // known-real-but-unowned control (5546 Disturbance Strategy) in
+                // trunkSorted proves whether trunkSorted is the all-cards master
+                // (control present) or an owned-only list (control absent).
+                string probeName = "?";
+                try { probeName = Il2CppYgomGame.Card.Content.Instance?.GetName(TrunkProbeMrk) ?? "(null)"; }
+                catch (Exception e) { probeName = "err:" + e.Message; }
+
+                int probePoss = -1;
+                try { probePoss = Il2CppYgomGame.Single.CardTraderInfoBase.CardPoss(TrunkProbeMrk, 0); }
+                catch { }
+
+                // trunkData.GetNum(mrk) is the raw inventory count for this card,
+                // ignoring rarity (deck-legality is only a display filter on top),
+                // so it's authoritative for "do you own it" even for a card the
+                // deck pool excludes. Closes the CardPoss(mrk,0) single-kirarity
+                // caveat.
+                int trunkNum = -1;
+                try { trunkNum = _vc.trunkData != null ? _vc.trunkData.GetNum(TrunkProbeMrk) : -1; }
+                catch { }
+                bool remain = false;
+                try { remain = _vc.IsRemainInTrunk(TrunkProbeMrk); } catch { }
+
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"[trunk] probe mrk={TrunkProbeMrk} name='{probeName}' CardPoss={probePoss} "
+                    + $"trunkData.GetNum={trunkNum} IsRemainInTrunk={remain} | "
+                    + $"control mrk={KnownRealCardMrk} inSorted={knownInSorted}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"[trunk] error: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -436,6 +515,13 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.A))
             {
                 OpenAccessories();
+                return;
+            }
+
+            // B — open auto deck build
+            if (InputManager.TryConsumeKeyDown(KeyCode.B))
+            {
+                OpenAutoBuild();
                 return;
             }
 
@@ -746,6 +832,36 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Handler, "DeckEdit",
                     $"OpenAccessories error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        /// <summary>
+        /// Opens the Auto Deck Build dialog via DeckEdit2ViewController.AutoClicked()
+        /// — the same entry point the on-screen "Auto" button uses. The dialog
+        /// (AutoDeckDialogViewController) lands on the dialog stack where
+        /// DialogHandler takes over; its auto-deck-aware relabel pass names the
+        /// All/Rest/skill toggles with their current state.
+        /// </summary>
+        private void OpenAutoBuild()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+
+                ScreenReader.Say(Loc.Get("deck_auto_opening"));
+                _vc.AutoClicked();
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    "AutoClicked() invoked");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit",
+                    $"OpenAutoBuild error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("deck_operation_error"));
             }
         }

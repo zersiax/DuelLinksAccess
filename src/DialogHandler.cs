@@ -317,6 +317,11 @@ namespace DuelLinksAccess
                 // image-only grid cells and preview buttons from the VC data
                 ApplyAccessoryLabels(dialogRoot);
 
+                // Auto Deck Build dialog: name the All/Rest/skill toggles with
+                // their current selected state and the deck-size/advanced
+                // controls from the VC's own live data
+                ApplyAutoDeckLabels(dialogRoot);
+
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
                 // dismiss it or pass through so other handlers can run
                 if (_items.Count == 0 && string.IsNullOrEmpty(dialogText))
@@ -1152,6 +1157,120 @@ namespace DuelLinksAccess
             DebugLogger.Log(LogCategory.Handler, "Dialog",
                 $"Accessory confirm: sleeveToggle={protectorOn} " +
                 $"matToggle={duelFieldOn}");
+        }
+
+        /// <summary>
+        /// Auto Deck Build dialog (AutoDeckDialogViewController, pushed from
+        /// DeckEdit2ViewController.AutoClicked()): the All/Rest, "no card",
+        /// and skill options are YgomToggle checkboxes. The generic scan
+        /// yields only their static row text, with no indication of which is
+        /// currently selected and no explanation when a choice is greyed
+        /// out (isXSelectable=false). Also labels the advanced-options
+        /// accordion toggle and the main-deck-size control from the VC's
+        /// own live data. The confirm/cancel buttons at the bottom are the
+        /// base CommonDialogViewController Button1-4 and are already reached
+        /// by the plain generic Button scan — no special-casing needed there.
+        /// </summary>
+        private void ApplyAutoDeckLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<
+                    Il2CppYgomGame.Deck.AutoDeckDialogViewController>();
+                if (vc == null) return;
+
+                LabelAutoDeckToggle(vc.allButton, vc.allText,
+                    vc.isAllOrRestSelectable, vc.allInvalidAlert);
+                LabelAutoDeckToggle(vc.restButton, vc.restText,
+                    vc.isAllOrRestSelectable, vc.restInvalidAlert);
+                LabelAutoDeckToggle(vc.noCardButton, vc.noCardText,
+                    vc.isNoCardSelectable, null);
+                LabelAutoDeckToggle(vc.skillButton, vc.skillText,
+                    vc.isSkillSelectable, null);
+
+                // Advanced-options accordion header
+                try
+                {
+                    var accTitleTf = vc.accordionTitle?.transform;
+                    var item = accTitleTf == null ? null : _items.Find(it =>
+                        it.Go != null && IsSameOrRelated(it.Go.transform, accTitleTf));
+                    if (item != null)
+                    {
+                        string title = LabelExtractor.StripRichText(
+                            vc.accordionTitle?.text ?? "").Trim();
+                        if (string.IsNullOrWhiteSpace(title))
+                            title = Loc.Get("deck_auto_advanced");
+                        item.Label = Loc.Get(
+                            vc.accOpened ? "deck_auto_expanded" : "deck_auto_collapsed",
+                            title);
+                    }
+                }
+                catch { }
+
+                // Main-deck-size control
+                try
+                {
+                    var deckNumTf = vc.deckNumText?.transform;
+                    var item = deckNumTf == null ? null : _items.Find(it =>
+                        it.Go != null && IsSameOrRelated(it.Go.transform, deckNumTf));
+                    if (item != null)
+                    {
+                        string current = vc.deckNumText?.text;
+                        item.Label = Loc.Get("deck_auto_size",
+                            string.IsNullOrWhiteSpace(current) ? "?" : current.Trim(),
+                            vc.deckNumMin, vc.deckNumMax);
+                    }
+                }
+                catch { }
+
+                DebugLogger.Log(LogCategory.Handler, "Dialog",
+                    $"AutoDeck dialog: allOrRest={vc.allOrRest} noCard={vc.noCard} " +
+                    $"skill={vc.skillChecked} deckNum={vc.curDeckNum} " +
+                    $"accOpened={vc.accOpened}");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyAutoDeckLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Labels a single Auto Deck Build toggle row with its live text plus
+        /// selected/not-selected state, and the game's own invalid-alert text
+        /// when the option is currently greyed out (isXSelectable=false).
+        /// </summary>
+        private void LabelAutoDeckToggle(Il2CppYgomSystem.UI.YgomToggle toggle,
+            Text text, bool selectable, Text invalidAlert)
+        {
+            if (toggle == null) return;
+            try
+            {
+                var tf = toggle.transform;
+                var item = _items.Find(it =>
+                    it.Go != null && IsSameOrRelated(it.Go.transform, tf));
+                if (item == null) return;
+
+                string baseText = LabelExtractor.StripRichText(text?.text ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(baseText)) baseText = item.Label;
+
+                bool isOn = toggle.isOn;
+                string label = Loc.Get(
+                    isOn ? "deck_auto_selected" : "deck_auto_not_selected", baseText);
+
+                if (!selectable)
+                {
+                    string reason = LabelExtractor.StripRichText(
+                        invalidAlert?.text ?? "").Trim();
+                    if (!string.IsNullOrEmpty(reason))
+                        label = Loc.Get("deck_auto_unavailable", label, reason);
+                }
+
+                item.Label = label;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] LabelAutoDeckToggle error: {ex.Message}");
+            }
         }
 
         /// <summary>

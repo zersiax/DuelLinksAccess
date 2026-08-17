@@ -51,6 +51,14 @@ namespace DuelLinksAccess
         // Battle position dialog — ATK or DEF position choice
         private bool _bpDialogAnnounced;
 
+        // Select-effect dialog (SelectEffectDialog) — the tabbed picker shown when
+        // a card has multiple effects to choose from. Each effect is a tab; the OK
+        // button confirms the selected one. Not a VC/Htjson-stack dialog — it's a
+        // MonoBehaviour on the duel worker (worker2d.selEffDialog), same as yes/no.
+        private bool _selEffAnnounced;
+        private int _selEffIndex;
+        private float _selEffCooldown; // Grace period after confirm/cancel
+
         #endregion
 
         #region Properties
@@ -108,6 +116,9 @@ namespace DuelLinksAccess
                 _yesNoDialogAnnounced = false;
                 _lastYesNoText = "";
                 _yesNoCooldown = 0f;
+                _selEffAnnounced = false;
+                _selEffIndex = 0;
+                _selEffCooldown = 0f;
                 _eventLog.Clear();
                 _fieldNav.Reset();
                 _automaticDraw.Reset();
@@ -182,6 +193,10 @@ namespace DuelLinksAccess
 
             // Battle position dialog — ATK or DEF position choice during normal summon.
             if (HandleBattlePositionDialog()) return;
+
+            // Multi-effect picker (SelectEffectDialog) — choose which of a card's
+            // effects to activate. Tabbed dialog with its own OK/confirm button.
+            if (HandleSelectEffectDialog()) return;
 
             // Field navigation — most keys suppressed when a dialog overlay is active
             // so DialogHandler can handle duel dialogs (Yes/No, card selection).
@@ -746,6 +761,270 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"BattlePosition error: {ex.Message}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Handles the multi-effect picker (SelectEffectDialog) — shown when a card
+        /// has more than one effect and the player must choose which to activate
+        /// (e.g. a monster with two optional effects). It's a tabbed MonoBehaviour
+        /// on worker2d.selEffDialog, not a VC/Htjson-stack dialog: each effect is a
+        /// tab under tabParent, effectText shows the selected effect's description,
+        /// and okButton confirms. Up/Down move between effects (firing each tab's
+        /// own toggle so the game updates selectedIdx + effectText), Enter/Space
+        /// confirm via OnClickOk, Escape cancels via OnClickCancel. Returns true
+        /// when the dialog is active and input was consumed.
+        /// </summary>
+        private bool HandleSelectEffectDialog()
+        {
+            if (!IsActive) return false;
+
+            // Grace period after confirm/cancel — the game doesn't tear the
+            // dialog down instantly, so skip checks briefly to avoid re-entry.
+            if (_selEffCooldown > 0f)
+            {
+                _selEffCooldown -= Time.deltaTime;
+                return false;
+            }
+
+            try
+            {
+                var client = Il2CppYgomGame.Duel.DuelClient.instance;
+                var worker = client?.worker2d;
+                var dlg = worker?.selEffDialog;
+
+                var content = dlg?.content;
+                if (dlg == null || content == null || !content.activeInHierarchy)
+                {
+                    if (_selEffAnnounced)
+                    {
+                        _selEffAnnounced = false;
+                        _selEffIndex = 0;
+                    }
+                    return false;
+                }
+
+                var tabs = GetEffectTabs(dlg);
+                int count = tabs.Count;
+
+                // First detection — announce and dump the structure so the first
+                // live encounter either works or reveals the exact tab layout.
+                if (!_selEffAnnounced)
+                {
+                    _selEffAnnounced = true;
+                    int sel = SafeSelectedIdx(dlg);
+                    _selEffIndex = (count > 0 && sel >= 0 && sel < count) ? sel : 0;
+
+                    DumpSelectEffectState(dlg, tabs);
+
+                    string info = StripText(dlg.infoText);
+                    string eff = StripText(dlg.effectText);
+                    if (count > 1)
+                        ScreenReader.Say(Loc.Get("duel_effect_intro",
+                            info, _selEffIndex + 1, count, eff));
+                    else
+                        ScreenReader.Say(Loc.Get("duel_effect_single", info, eff));
+                }
+
+                // Up = previous effect
+                if (count > 1
+                    && InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
+                {
+                    _selEffIndex = (_selEffIndex - 1 + count) % count;
+                    SelectEffectTab(tabs, _selEffIndex);
+                    AnnounceEffect(dlg, tabs);
+                    return true;
+                }
+
+                // Down = next effect
+                if (count > 1
+                    && InputManager.TryConsumeKeyDownOrRepeat(KeyCode.DownArrow))
+                {
+                    _selEffIndex = (_selEffIndex + 1) % count;
+                    SelectEffectTab(tabs, _selEffIndex);
+                    AnnounceEffect(dlg, tabs);
+                    return true;
+                }
+
+                // Enter/Space = confirm the selected effect
+                if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                    || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Space))
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                        $"SelectEffectDialog: OnClickOk() selectedIdx={SafeSelectedIdx(dlg)}");
+                    dlg.OnClickOk();
+                    ScreenReader.Say(Loc.Get("duel_effect_confirmed"));
+                    _selEffAnnounced = false;
+                    _selEffIndex = 0;
+                    _selEffCooldown = 0.5f;
+                    return true;
+                }
+
+                // Escape = cancel (game ignores it when the choice is mandatory)
+                if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                        "SelectEffectDialog: OnClickCancel()");
+                    dlg.OnClickCancel();
+                    ScreenReader.Say(Loc.Get("duel_effect_cancelled"));
+                    _selEffAnnounced = false;
+                    _selEffIndex = 0;
+                    _selEffCooldown = 0.5f;
+                    return true;
+                }
+
+                // V = re-read the current effect
+                if (InputManager.TryConsumeKeyDown(KeyCode.V))
+                {
+                    AnnounceEffect(dlg, tabs);
+                    return true;
+                }
+
+                // Consume other keys while the dialog is up.
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"SelectEffectDialog error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>Announces the currently focused effect (number + description).</summary>
+        private void AnnounceEffect(Il2CppYgomGame.Duel.SelectEffectDialog dlg,
+            System.Collections.Generic.List<GameObject> tabs)
+        {
+            string eff = StripText(dlg.effectText);
+            // Fall back to the tab's own label when effectText is empty.
+            if (string.IsNullOrWhiteSpace(eff)
+                && _selEffIndex >= 0 && _selEffIndex < tabs.Count)
+                eff = LabelExtractor.GetLabel(tabs[_selEffIndex]);
+            ScreenReader.Say(Loc.Get("duel_effect_item",
+                _selEffIndex + 1, tabs.Count, eff));
+        }
+
+        /// <summary>
+        /// Collects the effect tabs — active direct children of tabParent that
+        /// carry an interactive control. Order matches on-screen tab order.
+        /// </summary>
+        private static System.Collections.Generic.List<GameObject> GetEffectTabs(
+            Il2CppYgomGame.Duel.SelectEffectDialog dlg)
+        {
+            var list = new System.Collections.Generic.List<GameObject>();
+            try
+            {
+                var parent = dlg.tabParent;
+                if (parent == null) return list;
+                int n = parent.childCount;
+                for (int i = 0; i < n; i++)
+                {
+                    var child = parent.GetChild(i);
+                    if (child == null) continue;
+                    var go = child.gameObject;
+                    if (go == null || !go.activeSelf) continue;
+                    if (HasInteractive(go)) list.Add(go);
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>True if the GO (or a descendant) has a Toggle or Button.</summary>
+        private static bool HasInteractive(GameObject go)
+        {
+            try { if (go.GetComponentInChildren<UnityEngine.UI.Toggle>(true) != null) return true; } catch { }
+            try { if (go.GetComponentInChildren<UnityEngine.UI.Button>(true) != null) return true; } catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// Selects effect tab <paramref name="index"/> by firing its own control,
+        /// so the game runs its native selection path (updates selectedIdx +
+        /// effectText). Toggles are preferred (tabs are usually radio toggles);
+        /// a Button click is the fallback.
+        /// </summary>
+        private static void SelectEffectTab(
+            System.Collections.Generic.List<GameObject> tabs, int index)
+        {
+            if (index < 0 || index >= tabs.Count) return;
+            var go = tabs[index];
+            if (go == null) return;
+            try
+            {
+                var toggle = go.GetComponentInChildren<UnityEngine.UI.Toggle>(true);
+                if (toggle != null) { toggle.isOn = true; return; }
+
+                var btn = go.GetComponentInChildren<UnityEngine.UI.Button>(true);
+                if (btn != null) { btn.onClick.Invoke(); return; }
+
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"SelectEffectTab: no interactive on tab {index} ('{go.name}')");
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"SelectEffectTab error: {ex.Message}");
+            }
+        }
+
+        /// <summary>Reads dlg.selectedIdx defensively (-1 on failure).</summary>
+        private static int SafeSelectedIdx(Il2CppYgomGame.Duel.SelectEffectDialog dlg)
+        {
+            try { return dlg.selectedIdx; } catch { return -1; }
+        }
+
+        /// <summary>Strips rich text from a Unity Text, empty string on failure.</summary>
+        private static string StripText(UnityEngine.UI.Text t)
+        {
+            try { return SpeechTextFormatter.StripRichText(t?.text ?? ""); }
+            catch { return ""; }
+        }
+
+        /// <summary>
+        /// Diagnostic dump of the SelectEffectDialog structure on first detection.
+        /// Debug-log only (no TTS). Reveals the tab layout so the handler can be
+        /// corrected if the tab→effect mapping turns out different in-game.
+        /// </summary>
+        private static void DumpSelectEffectState(
+            Il2CppYgomGame.Duel.SelectEffectDialog dlg,
+            System.Collections.Generic.List<GameObject> tabs)
+        {
+            try
+            {
+                string info = StripText(dlg.infoText);
+                string eff = StripText(dlg.effectText);
+                int sel = SafeSelectedIdx(dlg);
+                int cancel = -1; try { cancel = dlg.cancelIdx; } catch { }
+                bool ok1 = false, ok2 = false;
+                try { ok1 = dlg.okButton != null && dlg.okButton.interactable; } catch { }
+                try { ok2 = dlg.okButton2 != null && dlg.okButton2.interactable; } catch { }
+                int tabParentChildren = -1;
+                try { tabParentChildren = dlg.tabParent != null ? dlg.tabParent.childCount : -1; } catch { }
+
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"[SelEff] info='{info}' effect='{eff}' selectedIdx={sel} "
+                    + $"cancelIdx={cancel} tabParentChildren={tabParentChildren} "
+                    + $"tabs={tabs.Count} ok1i={ok1} ok2i={ok2}");
+
+                for (int i = 0; i < tabs.Count; i++)
+                {
+                    var go = tabs[i];
+                    string label = "?";
+                    try { label = LabelExtractor.GetLabel(go); } catch { }
+                    bool hasToggle = false, hasButton = false;
+                    try { hasToggle = go.GetComponentInChildren<UnityEngine.UI.Toggle>(true) != null; } catch { }
+                    try { hasButton = go.GetComponentInChildren<UnityEngine.UI.Button>(true) != null; } catch { }
+                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                        $"[SelEff]   tab[{i}] name='{go.name}' label='{label}' "
+                        + $"toggle={hasToggle} button={hasButton}");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"[SelEff] dump error: {ex.Message}");
             }
         }
 

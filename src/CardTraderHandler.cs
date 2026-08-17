@@ -20,6 +20,14 @@ namespace DuelLinksAccess
         private string _lastVcGoName = "";
 
         private readonly List<CardTraderInfoBase> _items = new();
+
+        /// <summary>
+        /// The ChangeCard trade item most recently opened via gotoChangeCardList.
+        /// CardCatalogHandler passes it to OpenCardConfirmDialog so the exchange
+        /// confirm binds to this trade — a null item builds a generic dialog
+        /// whose TRADE button doesn't execute the exchange (2026-08-11 log).
+        /// </summary>
+        internal static CardTraderInfoBase LastChangeCardItem { get; private set; }
         private int _focusIndex;
 
         private float _operationCooldown;
@@ -29,24 +37,43 @@ namespace DuelLinksAccess
         private bool _scanDone;
         private int _scanAttempts;
 
-        // Two-press confirmation for resource-spending trades.
-        private int _pendingTradeIndex = -1;
-        private float _pendingTradeCooldown;
-        private const float PendingTradeWindow = 5.0f;
+        // Footer tab labels captured at scan (GetFooterButtonLabel probe). The
+        // footer is where the trader keeps its secondary flows — card
+        // conversion catalog and (per Florian) a "special processing" menu we
+        // couldn't identify from static analysis. Exposing every footer index
+        // as a numbered, speakable tab makes that menu reachable whatever its
+        // index turns out to be, without hardcoding a guess.
+        private bool _footerDumped;
+        // Real footer tabs only: (game index, label). GetFooterButtonLabel
+        // returns null for non-existent indices, so we keep just the populated
+        // ones — the trader has a single real footer tab (conversion catalog).
+        private readonly List<(int index, string label)> _footerTabs = new();
 
-        private bool _cellsDumped;
+        // Diagnostic: ~1s after a trade attempt, log the top content VC and, if
+        // a confirm dialog is up, whether its clickYesAction is wired — the
+        // decisive signal for whether the game's own OnClickedYes will execute
+        // the trade. A trade that opens an unhandled sub-screen also shows up
+        // here instead of silently going unnoticed.
+        private float _postTradeVcCheckDelay;
 
-        // Delayed exchangeButton click: cell click sets _currentItem and enables
-        // the button, but the button isn't interactable in the same frame, so we
-        // defer the click by a short delay (game ticks several frames first).
-        private float _pendingExchangeClickDelay;
-        // The (mrk, rare) we expected the trader to be selecting when scheduling
-        // the exchangeButton click. If currentItem drifts to something else
-        // before the click fires, we re-assert by calling OnClickCard again so
-        // the trade fires for the intended card, not whatever drifted in.
-        private int _pendingExpectedItemId;
-        private long _pendingExpectedRareId;
-        private string _pendingExpectedItemName = "";
+        // Trade selection poll. The trade always executes for the trader's
+        // CURRENTLY-CENTERED carousel item (getCurrentItem), NOT for any item
+        // we name to OnClickCard — calling OnClickCard(mrk,rare) directly does
+        // not move the selection (2026-07-30 tester log: intended Meteor
+        // Dragon's Nails 19693, but getCurrentItem stayed Night Sword Serpent
+        // 16936 and the trade executed for the wrong card). So we steer the
+        // carousel to the focused item (SetCurrent + cell click), then poll
+        // getCurrentItem each frame and only open the confirm once it actually
+        // matches the intended item — and abort rather than ever trade the
+        // wrong one. The carousel snap can drift for a few frames, so we watch
+        // for the match instead of confirming after a fixed delay.
+        private bool _tradePollActive;
+        private float _tradePollTimer;
+        private const float TradePollTimeout = 1.0f;
+        private CardTraderInfoBase _tradeIntendedItem;
+        private int _tradeIntendedId;
+        private string _tradeIntendedName = "";
+        private bool _tradePollLoggedFirst;
 
         #endregion
 
@@ -64,71 +91,16 @@ namespace DuelLinksAccess
         {
             if (_operationCooldown > 0f)
                 _operationCooldown -= Time.deltaTime;
-            if (_pendingTradeCooldown > 0f)
+
+            if (_postTradeVcCheckDelay > 0f)
             {
-                _pendingTradeCooldown -= Time.deltaTime;
-                if (_pendingTradeCooldown <= 0f) _pendingTradeIndex = -1;
+                _postTradeVcCheckDelay -= Time.deltaTime;
+                if (_postTradeVcCheckDelay <= 0f)
+                    LogPostTradeVcState();
             }
-            if (_pendingExchangeClickDelay > 0f)
-            {
-                _pendingExchangeClickDelay -= Time.deltaTime;
-                if (_pendingExchangeClickDelay <= 0f && _vc != null)
-                {
-                    // Verify the trader still has our intended item selected. The
-                    // scroll-snap can replace currentItem between our cell click
-                    // and the exchangeButton click — aborting prevents trading
-                    // for the wrong card.
-                    bool drift = true;
-                    int actualId = -1;
-                    string actualName = "?";
-                    try
-                    {
-                        var nowItem = _vc.getCurrentItem();
-                        if (nowItem != null)
-                        {
-                            actualId = nowItem.itemId;
-                            actualName = GetItemName(nowItem);
-                            drift = (actualId != _pendingExpectedItemId);
-                        }
-                    }
-                    catch { }
 
-                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                        $"  pre-exchange: expected itemId={_pendingExpectedItemId} ({_pendingExpectedItemName}), "
-                        + $"actual itemId={actualId} ({actualName}), drift={drift}");
-
-                    if (drift)
-                    {
-                        ScreenReader.Say(Loc.Get("trader_drift_warn", _pendingExpectedItemName, actualName));
-                    }
-
-                    var exBtn = _vc.exchangeButton;
-                    bool buttonActive = exBtn != null
-                        && exBtn.gameObject?.activeInHierarchy == true;
-                    bool buttonInteractable = exBtn?.interactable == true;
-                    if (TradeExecutionPolicy.CanClick(
-                        _pendingExpectedItemId,
-                        actualId,
-                        buttonActive,
-                        buttonInteractable))
-                    {
-                        DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                            "  delayed exchangeButton click verified");
-                        ClickGameObject(exBtn.gameObject);
-                    }
-                    else
-                    {
-                        DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                            "  delayed exchangeButton click aborted: selection or button unavailable");
-                        if (!drift)
-                            ScreenReader.Say(Loc.Get("trader_cannot_trade"));
-                    }
-
-                    _pendingExpectedItemId = 0;
-                    _pendingExpectedRareId = 0;
-                    _pendingExpectedItemName = "";
-                }
-            }
+            if (_tradePollActive)
+                PollTradeSelection();
 
             var vc = TryGetTraderVC();
             if (vc == null)
@@ -166,6 +138,10 @@ namespace DuelLinksAccess
             _scanDone = false;
             _scanDelay = 1.0f;
             _scanAttempts = 0;
+            _footerDumped = false;
+            _footerTabs.Clear();
+            _postTradeVcCheckDelay = 0f;
+            CancelTradePoll();
 
             ScreenReader.Say(Loc.Get("trader_entered"));
             DebugLogger.Log(LogCategory.Handler, "CardTrader", $"Activated GO={goName}");
@@ -178,13 +154,10 @@ namespace DuelLinksAccess
             _vc = null;
             _items.Clear();
             _lastVcGoName = "";
-            _pendingTradeIndex = -1;
-            _pendingTradeCooldown = 0f;
-            _cellsDumped = false;
-            _pendingExchangeClickDelay = 0f;
-            _pendingExpectedItemId = 0;
-            _pendingExpectedRareId = 0;
-            _pendingExpectedItemName = "";
+            _footerDumped = false;
+            _footerTabs.Clear();
+            _postTradeVcCheckDelay = 0f;
+            CancelTradePoll();
 
             DebugLogger.Log(LogCategory.Handler, "CardTrader", "Deactivated");
         }
@@ -281,6 +254,8 @@ namespace DuelLinksAccess
             }
 
             RefreshItems();
+            DumpFooterButtons();
+            DumpSpecialItems();
 
             DebugLogger.Log(LogCategory.Handler, "CardTrader",
                 $"Scan {_scanAttempts}: mode={mode}, {_items.Count} items");
@@ -325,6 +300,127 @@ namespace DuelLinksAccess
             catch (Exception ex)
             {
                 DebugLogger.Log(LogCategory.Handler, "CardTrader", $"RefreshItems error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Probes the game's own GetFooterButtonLabel(int) for each footer tab,
+        /// caches the labels (for F / number-key navigation) and always-on logs
+        /// them once per activation. Enumeration stops at the first index that
+        /// throws, which signals the real footer-button count.
+        /// </summary>
+        private void DumpFooterButtons()
+        {
+            if (_footerDumped || _vc == null) return;
+            _footerDumped = true;
+            _footerTabs.Clear();
+
+            for (int i = 0; i < 8; i++)
+            {
+                string label;
+                try
+                {
+                    label = _vc.GetFooterButtonLabel(i);
+                }
+                catch (Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                        $"GetFooterButtonLabel({i}) threw ({ex.Message}) — stopping, {i} index(es) probed");
+                    break;
+                }
+
+                // Non-existent footer indices return null; only keep real tabs
+                // so we don't offer the user phantom numbers that do nothing.
+                if (!string.IsNullOrWhiteSpace(label))
+                    _footerTabs.Add((i, label));
+
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"Footer button {i}: \"{label ?? "(null)"}\"");
+            }
+
+            DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                $"{_footerTabs.Count} real footer tab(s)");
+        }
+
+        /// <summary>
+        /// Always-on logs any non-standard trade entries (Process, ChangeCard,
+        /// Chroniclizer, ChangeSkill, RespectOrb, ExItem, BoxChip) with their
+        /// index/type/name, so the "special processing" flow shows up in the log
+        /// whether it lives in a footer tab or as a list item.
+        /// </summary>
+        private void DumpSpecialItems()
+        {
+            try
+            {
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    var it = _items[i];
+                    if (it == null) continue;
+                    var t = it.itemType;
+                    bool special = t == CardTraderInfoBase.Type.Process
+                        || t == CardTraderInfoBase.Type.ChangeCard
+                        || t == CardTraderInfoBase.Type.Chroniclizer
+                        || t == CardTraderInfoBase.Type.ChangeSkill
+                        || t == CardTraderInfoBase.Type.RespectOrb
+                        || t == CardTraderInfoBase.Type.ExItem
+                        || t == CardTraderInfoBase.Type.BoxChip;
+                    if (!special) continue;
+
+                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                        $"Special item [{i}]: type={t}, name={GetItemName(it)}, "
+                        + $"itemId={it.itemId}, gId={it.gId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"DumpSpecialItems error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Diagnostic: logs the top content VC ~1s after any trade/tab attempt.
+        /// If a confirm dialog is on top, logs whether its clickYesAction is
+        /// wired — the decisive signal for whether OnClickedYes (driven by
+        /// DialogHandler when the user picks TRADE) will actually execute the
+        /// trade, versus opening a decorative dialog that does nothing.
+        /// </summary>
+        private void LogPostTradeVcState()
+        {
+            try
+            {
+                var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                string topName = "(unknown)";
+                if (namedMgr != null && namedMgr.TryGetValue("content", out var contentMgr) && contentMgr != null)
+                {
+                    var top = contentMgr.GetStackTopViewController();
+                    topName = top?.gameObject?.name ?? "(null)";
+                }
+
+                string dialogInfo = "no confirm dialog";
+                if (namedMgr != null && namedMgr.TryGetValue("dialog", out var dialogMgr) && dialogMgr != null)
+                {
+                    var dTop = dialogMgr.GetStackTopViewController();
+                    var confirm = dTop?.TryCast<Il2CppYgomGame.Menu.ConfirmDialogViewController>();
+                    if (confirm != null)
+                    {
+                        bool yesWired = false, noWired = false;
+                        try { yesWired = confirm.clickYesAction != null; } catch { }
+                        try { noWired = confirm.clickNoAction != null; } catch { }
+                        dialogInfo = $"ConfirmDialog up: clickYesAction wired={yesWired}, clickNoAction wired={noWired}";
+                    }
+                    else if (dTop != null)
+                    {
+                        dialogInfo = $"dialog top = {dTop.gameObject?.name ?? "(null)"}";
+                    }
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"Post-trade check: top content VC = {topName}, screen = {GameStateTracker.CurrentScreen}; {dialogInfo}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"LogPostTradeVcState error: {ex.Message}");
             }
         }
 
@@ -379,9 +475,29 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // F — list the trader's footer tabs (e.g. conversion catalog).
+            if (InputManager.TryConsumeKeyDown(KeyCode.F))
+            {
+                AnnounceFooterTabs();
+                return;
+            }
+
+            // Number keys — activate the Nth listed footer tab (1-based over the
+            // real tabs only, not raw game indices).
+            for (int d = 0; d < 6; d++)
+            {
+                if (InputManager.TryConsumeKeyDown(KeyCode.Alpha1 + d)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Keypad1 + d))
+                {
+                    ActivateFooterTab(d);
+                    return;
+                }
+            }
+
+            // B — shortcut for the first footer tab (conversion catalog).
             if (InputManager.TryConsumeKeyDown(KeyCode.B))
             {
-                GotoConversionCatalog();
+                ActivateFooterTab(0);
                 return;
             }
 
@@ -423,9 +539,9 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // Moving the focus cancels a pending trade — no surprise purchases.
-            _pendingTradeIndex = -1;
-            _pendingTradeCooldown = 0f;
+            // Moving the focus cancels any in-flight trade selection, so a
+            // pending confirm can't fire for a card the user has navigated off.
+            if (_tradePollActive) CancelTradePoll();
 
             _focusIndex = Math.Max(0, Math.Min(_items.Count - 1, _focusIndex + delta));
             AnnounceCurrentItem();
@@ -438,6 +554,7 @@ namespace DuelLinksAccess
         private void SelectCurrentItem()
         {
             if (_operationCooldown > 0f || _vc == null || _items.Count == 0) return;
+            if (_tradePollActive) return; // a selection is already resolving
 
             var item = _items[_focusIndex];
             string name = GetItemName(item);
@@ -445,119 +562,116 @@ namespace DuelLinksAccess
 
             DebugLogger.Log(LogCategory.Handler, "CardTrader",
                 $"SelectItem: type={type}, name={name}, itemId={item.itemId}, "
-                + $"gId={item.gId}, rareId={item.rareId}");
+                + $"gId={item.gId}, rareId={item.rareId}, focusIndex={_focusIndex}");
 
             try
             {
-                string verb;
                 switch (type)
                 {
-                    // Two-press confirmation flow for resource-spending trades:
-                    // 1st Enter: arm (set _currentItem, announce confirm prompt)
-                    // 2nd Enter (within window): commit (call OnCardExchange — the
-                    //   actual trade execution). The game's OpenCardConfirmDialog
-                    //   path appears decorative — OnClickedYes does NOT execute
-                    //   the trade when the dialog was opened directly, so we
-                    //   bypass it entirely.
-                    case CardTraderInfoBase.Type.Card:
-                    case CardTraderInfoBase.Type.Item:
-                    case CardTraderInfoBase.Type.BoxChip:
-                    case CardTraderInfoBase.Type.RespectOrb:
-                    case CardTraderInfoBase.Type.SkillTicket:
-                    case CardTraderInfoBase.Type.ExItem:
-                    case CardTraderInfoBase.Type.Pack:
-                    case CardTraderInfoBase.Type.Skill:
-                    case CardTraderInfoBase.Type.Chroniclizer:
-                    case CardTraderInfoBase.Type.Process:
-                    case CardTraderInfoBase.Type.ChangeSkill:
-                        if (_pendingTradeIndex == _focusIndex && _pendingTradeCooldown > 0f)
-                        {
-                            // Second press within window — commit.
-                            // SetCurrent first to position cells so the cell at sibling
-                            // _focusIndex actually holds our intended item's (mrk, rare).
-                            var mgr = _vc.CardTrader2DMgr;
-                            if (mgr != null)
-                                mgr.SetCurrent(_focusIndex);
-
-                            GameObject cellGo = FindCellGameObject(_focusIndex);
-                            DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                                $"  intended itemId={item.itemId} ({name}); clicking cell GO at index {_focusIndex}: {cellGo?.name ?? "(null)"}");
-
-                            if (cellGo != null)
-                            {
-                                ClickGameObject(cellGo);
-
-                                // Read back what the trader actually selected — useful
-                                // diagnostic in case cell click ever misses again.
-                                try
-                                {
-                                    var actual = _vc.getCurrentItem();
-                                    if (actual != null)
-                                    {
-                                        string actualName = GetItemName(actual);
-                                        DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                                            $"  trader currentItem after click: itemId={actual.itemId} ({actualName})");
-                                        if (actual.itemId != item.itemId)
-                                            ScreenReader.SayQueued(Loc.Get("trader_actual_selected", actualName));
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    DebugLogger.Log(LogCategory.Handler, "CardTrader", $"getCurrentItem error: {ex.Message}");
-                                }
-
-                                // Schedule the exchangeButton click a few frames later.
-                                // Same-frame click fails because the button hasn't
-                                // become interactable yet, but too long a delay lets
-                                // the trader's scroll-snap drift the selection.
-                                _pendingExchangeClickDelay = 0.1f;
-                                _pendingExpectedItemId = item.itemId;
-                                _pendingExpectedRareId = item.rareId;
-                                _pendingExpectedItemName = name;
-                                verb = "cell click; exchangeButton click scheduled";
-                            }
-                            else
-                            {
-                                _vc.OnClickCard(item.itemId, item.rareId);
-                                verb = "OnClickCard (no cell GO)";
-                            }
-
-                            _pendingTradeIndex = -1;
-                            _pendingTradeCooldown = 0f;
-                            ScreenReader.Say(Loc.Get("trader_trading", name));
-                        }
-                        else
-                        {
-                            // First press — arm
-                            _vc.OnClickCard(item.itemId, item.rareId);
-                            _pendingTradeIndex = _focusIndex;
-                            _pendingTradeCooldown = PendingTradeWindow;
-                            ScreenReader.Say(Loc.Get("trader_confirm_prompt", name));
-                            _operationCooldown = OperationCooldownTime;
-                            DebugLogger.Log(LogCategory.Handler, "CardTrader", "  -> armed trade (press Enter again)");
-                            return;
-                        }
-                        break;
-
+                    // ChangeCard opens its own reward sub-screen (CardList_PC),
+                    // driven by CardCatalogHandler once it appears. Enter it the
+                    // way a real tap does: center the carousel on THIS offer
+                    // first (SetCurrent), then replay the genuine cell tap
+                    // (OnClickCard dispatches by the centered item's type).
+                    // Calling gotoChangeCardList directly left the carousel
+                    // centered on the previously-shown offer, so the trader's
+                    // current-item stayed wrong (e.g. a regular purchase card)
+                    // and the whole exchange ran in a phantom layer the trade
+                    // could never complete from — getCurrentItem returned the
+                    // wrong card and the exchange screen never built visually.
                     case CardTraderInfoBase.Type.ChangeCard:
+                        LastChangeCardItem = item;
+                        LogChangeCardBreakdown(item);
+                        var ccMgr = _vc.CardTrader2DMgr;
+                        if (ccMgr != null)
+                        {
+                            try { ccMgr.SetCurrent(_focusIndex); }
+                            catch (Exception exCc)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                                    $"ChangeCard SetCurrent error: {exCc.Message}");
+                            }
+                        }
+                        int ccCurId = -1;
+                        try { var cc = _vc.getCurrentItem(); if (cc != null) ccCurId = cc.itemId; } catch { }
+                        // gotoChangeCardList opens the reward list; OnClickCard is
+                        // a no-op for ChangeCard offers (verified 2026-08-13 log).
+                        // With SetCurrent above, the list now opens against the
+                        // correct current-item (getCurrentItem == this offer),
+                        // so the downstream exchange dispatches in the right
+                        // context instead of the previous phantom layer.
                         _vc.gotoChangeCardList(item);
-                        verb = "gotoChangeCardList";
-                        break;
+                        _operationCooldown = OperationCooldownTime;
+                        _postTradeVcCheckDelay = 1.0f;
+                        ScreenReader.Say(Loc.Get("trader_selected", name));
+                        DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                            $"  -> SetCurrent({_focusIndex}) [getCurrentItem={ccCurId}] "
+                            + $"+ gotoChangeCardList({item.itemId})");
+                        return;
 
+                    // Rarity-list header — drills into the R/SR/UR sub-list.
                     case CardTraderInfoBase.Type.List:
                         _vc.OnClickOpenList();
-                        verb = "OnClickOpenList";
-                        break;
+                        _operationCooldown = OperationCooldownTime;
+                        ScreenReader.Say(Loc.Get("trader_selected", name));
+                        DebugLogger.Log(LogCategory.Handler, "CardTrader", "  -> OnClickOpenList");
+                        return;
 
-                    default:
-                        _vc.OnClickCard(item.itemId, item.rareId);
-                        verb = "OnClickCard (fallback)";
-                        break;
+                    case CardTraderInfoBase.Type.SoldOut:
+                        ScreenReader.Say(Loc.Get("trader_sold_out"));
+                        return;
                 }
 
+                // Steer the carousel to this item. SetCurrent(index) maps 1:1 to
+                // the carousel (2026-07-30 log: SetCurrent(44) → currIdx=44,
+                // getCurrentItem=116) and is what actually sets the trader's
+                // selection — OnClickCard(mrk) does not. The old scroll-snap
+                // "drift" no longer occurs; getCurrentItem matches immediately.
+                var mgr = _vc.CardTrader2DMgr;
+                if (mgr != null)
+                {
+                    try { mgr.SetCurrent(_focusIndex); }
+                    catch (Exception ex2)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "CardTrader", $"SetCurrent error: {ex2.Message}");
+                    }
+                }
+
+                int curIdAfter = -1;
+                try { var c = _vc.getCurrentItem(); if (c != null) curIdAfter = c.itemId; } catch { }
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"  -> SetCurrent({_focusIndex}); currIdx={SafeCurrIdx()}, getCurrentItem itemId={curIdAfter}");
+
+                // Special-processing cells (itemId<=0: Process/Chroniclizer/
+                // ChangeSkill) open their own sub-screen. They route through the
+                // carousel's real tap callback: CardTrader2DManager.StartCardList
+                // wires every cell to the VC's OnClickCard(mrk, rare), which then
+                // dispatches by the *centered* item's type. The cell's own
+                // Button.onClick is NOT the tap path — invoking it silently
+                // no-ops (2026-08-02 log: invoked onClick, no sub-screen opened).
+                // Since we just centered the carousel with SetCurrent, calling
+                // OnClickCard replays a genuine tap on this cell.
+                if (item.itemId <= 0)
+                {
+                    _vc.OnClickCard(item.itemId, item.rareId);
+                    _operationCooldown = OperationCooldownTime;
+                    _postTradeVcCheckDelay = 1.0f;
+                    ScreenReader.Say(Loc.Get("trader_selected", name));
+                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                        $"  -> OnClickCard({item.itemId}, {item.rareId}) for special type={type}");
+                    return;
+                }
+
+                // Begin verifying the carousel actually settled on our item
+                // before opening the trade confirm.
+                _tradePollActive = true;
+                _tradePollTimer = 0f;
+                _tradePollLoggedFirst = false;
+                _tradeIntendedItem = item;
+                _tradeIntendedId = item.itemId;
+                _tradeIntendedName = name;
                 _operationCooldown = OperationCooldownTime;
-                ScreenReader.Say(Loc.Get("trader_selected", name));
-                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"  -> called {verb}");
+                ScreenReader.Say(Loc.Get("trader_trading", name));
             }
             catch (Exception ex)
             {
@@ -566,87 +680,110 @@ namespace DuelLinksAccess
             }
         }
 
-        private GameObject FindCellGameObject(int index)
+        /// <summary>
+        /// Each frame after a purchase selection: watches getCurrentItem until
+        /// the carousel actually centers our intended item, then opens the trade
+        /// confirm. If it never matches within the timeout we abort — the trade
+        /// executes for getCurrentItem, so confirming on a mismatch would trade
+        /// the wrong card.
+        /// </summary>
+        private void PollTradeSelection()
+        {
+            if (_vc == null) { CancelTradePoll(); return; }
+
+            _tradePollTimer += Time.deltaTime;
+
+            int curId = -1;
+            string curName = "?";
+            try
+            {
+                var cur = _vc.getCurrentItem();
+                if (cur != null) { curId = cur.itemId; curName = GetItemName(cur); }
+            }
+            catch { }
+
+            if (!_tradePollLoggedFirst)
+            {
+                _tradePollLoggedFirst = true;
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"PollTrade start: intended={_tradeIntendedId} ({_tradeIntendedName}), "
+                    + $"currIdx={SafeCurrIdx()}, getCurrentItem={curId} ({curName})");
+            }
+
+            if (curId == _tradeIntendedId)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"PollTrade matched after {_tradePollTimer:F2}s — opening confirm");
+                var intendedItem = _tradeIntendedItem;
+                var intendedName = _tradeIntendedName;
+                CancelTradePoll();
+                OpenTradeConfirm(intendedItem, intendedName);
+                return;
+            }
+
+            if (_tradePollTimer >= TradePollTimeout)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"PollTrade timed out after {_tradePollTimer:F2}s — intended={_tradeIntendedId}, "
+                    + $"getCurrentItem={curId} ({curName}), currIdx={SafeCurrIdx()}; aborting to avoid wrong trade");
+                ScreenReader.Say(Loc.Get("trader_select_failed", _tradeIntendedName));
+                CancelTradePoll();
+            }
+        }
+
+        private void CancelTradePoll()
+        {
+            _tradePollActive = false;
+            _tradePollTimer = 0f;
+            _tradePollLoggedFirst = false;
+            _tradeIntendedItem = null;
+            _tradeIntendedId = 0;
+            _tradeIntendedName = "";
+        }
+
+        private int SafeCurrIdx()
+        {
+            try { return _vc?.CardTrader2DMgr?.currIdx ?? -1; }
+            catch { return -1; }
+        }
+
+        /// <summary>
+        /// Opens the trade confirmation, now that getCurrentItem is verified to
+        /// be the intended item. Uses OpenExchangeConfirmDialog, which opens the
+        /// game's own TRADE/NO dialog for the current item (proven 2026-07-30 to
+        /// execute the trade via DialogHandler's OnClickedYes). exchangeButton
+        /// stays non-interactable from keyboard, so its onClick isn't a usable
+        /// path here.
+        /// </summary>
+        private void OpenTradeConfirm(CardTraderInfoBase item, string name)
         {
             try
             {
-                var mgr = _vc?.CardTrader2DMgr;
-                var scrollRect = mgr?.itemScrollRect;
-                var content = scrollRect?.content;
-                if (content == null) return null;
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"OpenTradeConfirm via OpenExchangeConfirmDialog: intended={item?.itemId} ({name})");
 
-                int count = content.childCount;
-
-                // First time: dump everything so we can map our items[] to children[].
-                if (!_cellsDumped)
-                {
-                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                        $"Cell dump: content has {count} children");
-                    for (int i = 0; i < count; i++)
-                    {
-                        var c = content.GetChild(i);
-                        if (c == null) continue;
-                        var go = c.gameObject;
-                        string firstText = "";
-                        try
-                        {
-                            var texts = go.GetComponentsInChildren<UnityEngine.UI.Text>(true);
-                            foreach (var t in texts)
-                            {
-                                if (t != null && !string.IsNullOrWhiteSpace(t.text))
-                                {
-                                    firstText = t.text.Replace("\n", " ");
-                                    if (firstText.Length > 40) firstText = firstText.Substring(0, 40);
-                                    break;
-                                }
-                            }
-                        }
-                        catch { }
-                        DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                            $"  Cell[{i}] name={go.name} text='{firstText}' siblingIdx={c.GetSiblingIndex()}");
-                    }
-                    _cellsDumped = true;
-                }
-
-                if (index < 0 || index >= count)
-                {
-                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                        $"  cell index {index} out of range (content has {count} children)");
-                    return null;
-                }
-                var child = content.GetChild(index);
-                return child?.gameObject;
+                _vc.OpenExchangeConfirmDialog(item);
+                _postTradeVcCheckDelay = 1.0f;
             }
             catch (Exception ex)
             {
-                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"FindCellGameObject error: {ex.Message}");
-                return null;
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"OpenTradeConfirm error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("trader_cannot_trade"));
             }
         }
 
-        private static void ClickGameObject(GameObject go)
-        {
-            if (go == null) return;
-            var ed = new UnityEngine.EventSystems.PointerEventData(
-                UnityEngine.EventSystems.EventSystem.current);
-            UnityEngine.EventSystems.ExecuteEvents.Execute(
-                go, ed, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
-            UnityEngine.EventSystems.ExecuteEvents.Execute(
-                go, ed, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
-            UnityEngine.EventSystems.ExecuteEvents.Execute(
-                go, ed, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
-        }
-
+        /// <summary>
+        /// Space — confirms the trader's own confirm-list (the ChangeCard flow,
+        /// where you pick which cards to give up and then commit the list).
+        /// Regular purchases go through the game TRADE/NO dialog opened by
+        /// SelectCurrentItem and don't need this.
+        /// </summary>
         private void ConfirmTrade()
         {
             if (_operationCooldown > 0f || _vc == null) return;
 
             try
             {
-                // confirmListButton is the trader's Exchange button. Clicking it goes
-                // through the trader's own handler, which sets clickYesAction on the
-                // confirm dialog before showing it — so OnClickedYes will actually
-                // execute the trade.
                 var btn = _vc.confirmListButton;
                 bool active = btn != null && btn.gameObject?.activeInHierarchy == true;
                 bool interactable = btn != null && btn.interactable;
@@ -657,12 +794,12 @@ namespace DuelLinksAccess
                 if (btn != null && active && interactable)
                 {
                     btn.onClick.Invoke();
+                    _postTradeVcCheckDelay = 1.0f;
                     DebugLogger.Log(LogCategory.Handler, "CardTrader", "  -> invoked confirmListButton.onClick");
                 }
                 else
                 {
-                    _vc.OnClickExchange();
-                    DebugLogger.Log(LogCategory.Handler, "CardTrader", "  -> fallback OnClickExchange");
+                    DebugLogger.Log(LogCategory.Handler, "CardTrader", "  -> confirmListButton unavailable, no-op");
                 }
 
                 _operationCooldown = OperationCooldownTime;
@@ -674,19 +811,50 @@ namespace DuelLinksAccess
             }
         }
 
-        private void GotoConversionCatalog()
+        #endregion
+
+        #region Footer tabs
+
+        private void AnnounceFooterTabs()
+        {
+            if (_footerTabs.Count == 0)
+            {
+                ScreenReader.Say(Loc.Get("trader_footer_none"));
+                return;
+            }
+
+            var parts = new List<string>();
+            for (int i = 0; i < _footerTabs.Count; i++)
+                parts.Add($"{i + 1} {StripMarkup(_footerTabs[i].label.Trim())}");
+            ScreenReader.Say(Loc.Get("trader_footer_tabs", string.Join(", ", parts)));
+        }
+
+        /// <summary>Activates the position-th listed footer tab (0-based over real tabs).</summary>
+        private void ActivateFooterTab(int position)
         {
             if (_operationCooldown > 0f || _vc == null) return;
+
+            if (position < 0 || position >= _footerTabs.Count)
+            {
+                ScreenReader.Say(Loc.Get("trader_footer_invalid"));
+                return;
+            }
+
             try
             {
-                _vc.OnFooterButton(0);
+                var tab = _footerTabs[position];
+                string label = StripMarkup(tab.label.Trim());
+
+                _vc.OnFooterButton(tab.index);
                 _operationCooldown = OperationCooldownTime;
-                ScreenReader.Say(Loc.Get("trader_goto_catalog"));
-                DebugLogger.Log(LogCategory.Handler, "CardTrader", "OnFooterButton(0) — to conversion catalog");
+                _postTradeVcCheckDelay = 1.0f;
+                ScreenReader.Say(Loc.Get("trader_footer_activated", label));
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"OnFooterButton({tab.index}) — \"{tab.label}\"");
             }
             catch (Exception ex)
             {
-                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"GotoConversionCatalog error: {ex.Message}");
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"ActivateFooterTab(pos {position}) error: {ex.Message}");
             }
         }
 
@@ -758,13 +926,57 @@ namespace DuelLinksAccess
         {
             var parts = new List<string> { GetItemName(item) };
 
-            // Affordability — drives the user's first decision when browsing
-            bool goldShort = false, itemShort = false, cardShort = false;
-            try { goldShort = item.IsGoldShort(); } catch { }
-            try { itemShort = item.IsItemShort(); } catch { }
-            try { cardShort = item.IsCardShort() == CardTraderInfoBase.CardShortage.Shortage; } catch { }
-            bool canTrade = !goldShort && !itemShort && !cardShort;
-            parts.Add(canTrade ? Loc.Get("trader_can_trade") : Loc.Get("trader_cannot_trade"));
+            // Rush Duel cards appear in the trader's normal card lists but a
+            // sighted player recognizes them by their distinct card frame; a
+            // blind user has no such cue and can spend gold/jewels on a card
+            // that can't go in a normal deck (confirmed 2026-08-13: Beast Gear
+            // Buggy Dog). Speak the cue the frame conveys, right after the name.
+            if (IsRushCardItem(item))
+                parts.Add(Loc.Get("card_rush_tag"));
+
+            // Affordability — drives the user's first decision when browsing.
+            // ChangeCard items are the exception: you trade a card you own for
+            // this one, so IsCardShort() always reports a shortage of the
+            // *target* card (which you're trying to obtain). That made every
+            // ChangeCard read "cannot trade" even though the picker opens fine
+            // (2026-08-02 log). The real gate is choosing an eligible card in
+            // the sub-picker, so announce that instead of a bogus verdict.
+            if (item.itemType == CardTraderInfoBase.Type.ChangeCard)
+            {
+                // A ChangeCard trade spends copies of the cost card (costCardMrk)
+                // you already OWN; the reward is one of destCards. The exchange
+                // screen's grid is literally your owned copies of that cost card
+                // (disasm 2026-08-13), so owning fewer than costCardUse means the
+                // trade can't complete — the screen would show an empty grid.
+                // IsCardShort() reports on the reward card here, not the cost, so
+                // read possession directly. Announcing real affordability is also
+                // how the user finds a ChangeCard offer they can actually finish
+                // (own the cost card), since most cost cards you may not have.
+                int ccNeed = 0, ccOwned = 0, ccMrk = 0;
+                try { ccNeed = item.costCardUse; } catch { }
+                try { ccMrk = item.costCardMrk; } catch { }
+                try { ccOwned = item.CardPossAll(); } catch { }
+                if (ccMrk > 0 && ccNeed > 0)
+                {
+                    string ccName = GetCardName(ccMrk);
+                    parts.Add(ccOwned >= ccNeed
+                        ? Loc.Get("trader_changecard_ok", ccNeed, ccName, ccOwned)
+                        : Loc.Get("trader_changecard_short", ccNeed, ccName, ccOwned));
+                }
+                else
+                {
+                    parts.Add(Loc.Get("trader_opens_picker"));
+                }
+            }
+            else
+            {
+                bool goldShort = false, itemShort = false, cardShort = false;
+                try { goldShort = item.IsGoldShort(); } catch { }
+                try { itemShort = item.IsItemShort(); } catch { }
+                try { cardShort = item.IsCardShort() == CardTraderInfoBase.CardShortage.Shortage; } catch { }
+                bool canTrade = !goldShort && !itemShort && !cardShort;
+                parts.Add(canTrade ? Loc.Get("trader_can_trade") : Loc.Get("trader_cannot_trade"));
+            }
 
             // Gold cost
             if (item.goldUse > 0)
@@ -953,18 +1165,73 @@ namespace DuelLinksAccess
             return $"Card {mrk}";
         }
 
-        private static List<int> GetDestCardList(CardTraderInfoBase item)
+        /// <summary>
+        /// True when this trade item's card is a Rush Duel card. Only card-type
+        /// offers carry a card mrk in itemId (Card and ChangeCard); other item
+        /// types (packs, chips, tickets, gold) aren't cards. Uses the game's own
+        /// DeckUtil.IsRushCard so the verdict matches the card frame the game
+        /// draws for sighted players.
+        /// </summary>
+        private static bool IsRushCardItem(CardTraderInfoBase item)
         {
-            var result = new List<int>();
             try
             {
-                var dest = item.destCards;
-                if (dest != null)
-                    for (int i = 0; i < dest.Count; i++)
-                        result.Add(dest[i]);
+                var t = item.itemType;
+                if (t != CardTraderInfoBase.Type.Card && t != CardTraderInfoBase.Type.ChangeCard)
+                    return false;
+                int mrk = item.itemId;
+                if (mrk <= 0) return false;
+                return Il2CppYgomGame.Deck.DeckUtil.IsRushCard(mrk);
             }
-            catch { }
-            return result;
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Diagnostic: logs a ChangeCard trade's two sides so a tester log makes
+        /// the exchange mechanic explicit — the cost side (the card + count you
+        /// pay, plus any gold) and the destination side (destCards: the cards you
+        /// can receive). This resolves whether the CardTransfer "one of the
+        /// following cards" screen is choosing what you give or what you get.
+        /// </summary>
+        private static void LogChangeCardBreakdown(CardTraderInfoBase item)
+        {
+            try
+            {
+                int costMrk = 0, costUse = 0, gold = 0, itemId = 0, num = 0, stock = 0;
+                try { costMrk = item.costCardMrk; } catch { }
+                try { costUse = item.costCardUse; } catch { }
+                try { gold = item.goldUse; } catch { }
+                try { itemId = item.itemId; } catch { }
+                try { num = item.num; } catch { }
+                try { stock = item.stock; } catch { }
+
+                // The game's own tile strings — what a sighted player actually
+                // reads for this offer (vs. our itemId-derived card name).
+                string gName = "", gNotice = "";
+                try { gName = item.name ?? ""; } catch { }
+                try { gNotice = item.notice ?? ""; } catch { }
+
+                var dest = item.destCards;
+                int destCount = 0; try { destCount = dest?.Count ?? 0; } catch { }
+                string destNames = "";
+                try
+                {
+                    int limit = Math.Min(destCount, 20);
+                    for (int i = 0; i < limit; i++)
+                        destNames += $"{dest[i]}({GetCardName(dest[i])}) ";
+                }
+                catch { }
+
+                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                    $"[ChangeCard breakdown] itemId={itemId}({GetCardName(itemId)}) "
+                    + $"gameName='{gName}' notice='{gNotice}' num={num} stock={stock} "
+                    + $"costCardMrk={costMrk}({GetCardName(costMrk)}) costCardUse={costUse} goldUse={gold} "
+                    + $"destCards[{destCount}]: {destNames.Trim()}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"LogChangeCardBreakdown error: {ex.Message}");
+            }
         }
 
         #endregion

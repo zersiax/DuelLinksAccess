@@ -47,6 +47,12 @@
       <HintPath>$(GameAssembliesPath)\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Il2CppSystem.Core provides the interop HashSet&lt;T&gt; used by
+         CardTransferViewController.selected (the exchange-selection set). -->
+    <Reference Include="Il2CppSystem.Core">
+      <HintPath>$(GameAssembliesPath)\Il2CppSystem.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- Unity Interop Assemblies (from MelonLoader Il2CppAssemblies) -->

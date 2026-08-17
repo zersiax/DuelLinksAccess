@@ -83,12 +83,17 @@ namespace DuelLinksAccess
         private bool _sbhFallback;
         private bool _wasActive;
 
-        // Series-change panel overlay (SerieseChangePanel — game's own
-        // spelling). It opens and closes without a VC change, so its active
-        // state is polled and the curated list rebuilt on flips.
-        private Il2CppYgomGame.Single.SerieseChangePanel _seriesPanel;
+        // Series-change (world switch) panel. The game moved this to the newer
+        // SingleOverLap system: the live panel is Il2CppYgomGame.Single.OverLap
+        // .SeriesChangePanel (object "SeriesChangePanel(Clone)"), NOT the old
+        // Il2CppYgomGame.Single.SerieseChangePanel the mod used to look for —
+        // which is why the switch stopped working (2026-08-13 log). The new
+        // class exposes a static `panel` singleton and static Close(). It opens
+        // and closes without a VC change, so its active state is polled and the
+        // curated list rebuilt on flips.
         private bool _seriesPanelWasOpen;
         private float _seriesPanelPollAt;
+        private bool _seriesPanelDumped;
 
         // Quiet rebuild after a Left/Right character change — the panel's
         // per-character widgets (deck, exp-up, style switcher) repopulate
@@ -259,8 +264,8 @@ namespace DuelLinksAccess
             _items.Clear();
             _lastVcName = "";
             _scanDone = false;
-            _seriesPanel = null;
             _seriesPanelWasOpen = false;
+            _seriesPanelDumped = false;
             _quietRebuildAt = -1f;
             DebugLogger.Log(LogCategory.Handler, "Home", "Deactivated");
         }
@@ -496,7 +501,7 @@ namespace DuelLinksAccess
             // that screen exposes its controls properly").
             if (IsSeriesPanelOpen())
             {
-                BuildSeriesPanelItems(_seriesPanel);
+                BuildSeriesPanelItems();
                 if (_items.Count > 0) return;
                 // Panel yielded nothing usable — fall through to the map list.
             }
@@ -591,19 +596,18 @@ namespace DuelLinksAccess
                 "Layer4/SingleFooter/MenuRoot/MenuRightBase/EditDeck",
                 "EditDeck", Loc.Get("home_deck_edit"));
 
-            // Series / world switcher (DM / GX / 5Ds / Zexal / Arc-V /
-            // VRAINS). Renders the active world's name as the label when
-            // possible, otherwise falls back to "Change duel world".
-            // Activation must be a real hardware click:
-            // SingleViewController.OnOpenSeriesChangePanel() silently
-            // no-ops for this footer button (v10.9.0 user log 2026-07-10),
-            // while a hardware click at the button — the same thing F11
-            // does for the Series-unlock tutorial arrow — is confirmed to
-            // open the panel.
+            // Series / world switcher (DM / GX / 5Ds / Zexal / Arc-V / VRAINS /
+            // SEVENS / GO RUSH). The old approach — a hardware click on the
+            // SeriesLogo footer button — STOPPED opening the panel (2026-08-13
+            // log: click sent at the "ステージ"/Stage button, panel never opens),
+            // and because the click "succeeded" the game's own open method was
+            // never reached as the fallback. Call OnOpenSeriesChangePanel()
+            // directly instead, and dump what world-switch UI is actually
+            // present so we can tell whether the panel or the newer SingleOverLap
+            // overlay handles it now.
             AddButtonByName(view.gameObject, "SeriesLogo",
                 Loc.Get("home_series"),
-                () => HardwareClickByName(view.gameObject, "SeriesLogo",
-                    () => { try { view.OnOpenSeriesChangePanel(); } catch { } }));
+                () => OpenSeriesChangePanel(view));
 
             // Footer left — missions, with live stage label when available
             AddButton(view.gameObject,
@@ -613,92 +617,104 @@ namespace DuelLinksAccess
             NumberDuplicateLabels();
         }
 
-        // ── Series-change panel (SerieseChangePanel) ─────────────────────────
+        // ── Series-change (world switch) panel — OverLap.SeriesChangePanel ────
 
         /// <summary>
-        /// Finds the series-change panel (lazily, cached) and reports whether
-        /// it is currently shown. The panel lives inside the Single subtree
-        /// and toggles without any ViewController change.
+        /// Returns the live world-switch panel via the new OverLap system's
+        /// static `panel` singleton, or null when it isn't shown. Replaces the
+        /// old subtree search for the retired SerieseChangePanel type.
         /// </summary>
-        private bool IsSeriesPanelOpen()
+        private static Il2CppYgomGame.Single.OverLap.SeriesChangePanel GetSeriesPanel()
         {
             try
             {
-                if (_seriesPanel == null)
-                {
-                    var singleVc = FindActiveViewController<SingleViewController>();
-                    if (singleVc?.gameObject != null)
-                    {
-                        _seriesPanel = singleVc.gameObject
-                            .GetComponentInChildren<
-                                Il2CppYgomGame.Single.SerieseChangePanel>(true);
-                    }
-                }
-                return _seriesPanel != null
-                    && _seriesPanel.gameObject.activeInHierarchy;
+                var p = Il2CppYgomGame.Single.OverLap.SeriesChangePanel.panel;
+                if (p != null && p.gameObject != null && p.gameObject.activeInHierarchy)
+                    return p;
             }
-            catch
-            {
-                _seriesPanel = null;
-                return false;
-            }
+            catch { }
+            return null;
         }
 
+        private bool IsSeriesPanelOpen() => GetSeriesPanel() != null;
+
         /// <summary>
-        /// Curates the open series-change panel: one item per selectable
-        /// world (SerieseChangePanelChild) plus a cancel item. Activation
-        /// uses a hardware click on the child's button — the same path the
-        /// F11 arrow activation confirmed working for the GX logo.
+        /// Curates the open world-switch panel. The new OverLap panel builds a
+        /// logo per series (CreateSeriesLogo) instead of exposing a child list,
+        /// so we walk its subtree for the clickable series entries. A one-time
+        /// hierarchy dump records the real layout so entry labels/targets can be
+        /// tightened next pass. Cancel uses the panel's own static Close().
         /// </summary>
-        private void BuildSeriesPanelItems(Il2CppYgomGame.Single.SerieseChangePanel panel)
+        private void BuildSeriesPanelItems()
         {
+            var panel = GetSeriesPanel();
+            if (panel == null) return;
             try
             {
-                var children = panel.children;
-                if (children == null) return;
-
-                foreach (var child in children)
+                if (!_seriesPanelDumped)
                 {
-                    if (child?.gameObject == null) continue;
-                    if (!child.gameObject.activeInHierarchy) continue;
-
-                    string series = null;
-                    try { series = child.series; } catch { }
-                    string label = string.IsNullOrWhiteSpace(series)
-                        ? LabelExtractor.CleanGoName(child.gameObject.name)
-                        : series.ToUpperInvariant();
-
-                    DebugLogger.Log(LogCategory.Handler, "Home",
-                        $"SeriesPanel child: series='{series}' " +
-                        $"go={child.gameObject.name}");
-
-                    var captured = child;
-                    _items.Add(new HomeItem
-                    {
-                        Label = Loc.Get("home_series_option", label),
-                        Go = child.gameObject,
-                        Activate = () => ActivateSeriesPanelChild(captured)
-                    });
+                    _seriesPanelDumped = true;
+                    DumpSeriesPanelHierarchy(panel.gameObject);
                 }
 
-                if (_items.Count > 0)
+                // Each world is a named node (DM / DSOD / GX / 5DS / ZEXAL /
+                // ARCV / VRAINS / SEVENS / GORUSH) with a single "LogoButton"
+                // child that selects it, a "Select" child that is active on the
+                // current world, and a Characters group whose per-character "BG"
+                // buttons START A DUEL — so we surface ONLY the LogoButtons and
+                // label each by its parent world node's name (2026-08-13 dump).
+                var all = panel.gameObject.GetComponentsInChildren<Transform>(true);
+                if (all != null)
                 {
-                    var capturedPanel = panel;
-                    _items.Add(new HomeItem
+                    foreach (var t in all)
                     {
-                        Label = Loc.Get("home_series_cancel"),
-                        Go = panel.gameObject,
-                        Activate = () =>
+                        if (t == null) continue;
+                        GameObject go = t.gameObject;
+                        if (go == null || go.name != "LogoButton") continue;
+                        if (!go.activeInHierarchy) continue;
+
+                        var node = go.transform.parent != null
+                            ? go.transform.parent.gameObject : go;
+                        string raw = node.name;
+                        string label = FriendlySeriesName(raw);
+                        bool rush = IsRushSeriesName(raw);
+                        bool current = SeriesNodeIsCurrent(node);
+                        bool locked = !SeriesLogoInteractable(go);
+
+                        if (rush) label += ", " + Loc.Get("home_series_rush");
+                        if (current) label += ", " + Loc.Get("home_series_current");
+                        if (locked) label += ", " + Loc.Get("home_series_locked");
+
+                        DebugLogger.Log(LogCategory.Handler, "Home",
+                            $"SeriesPanel option: node='{raw}' rush={rush} current={current} locked={locked}");
+
+                        var target = go;
+                        _items.Add(new HomeItem
                         {
-                            try { capturedPanel.selectFinish(""); }
-                            catch (Exception ex)
-                            {
-                                DebugLogger.Log(LogCategory.Handler, "Home",
-                                    $"selectFinish failed: {ex.Message}");
-                            }
-                        }
-                    });
+                            Label = Loc.Get("home_series_option", label),
+                            Go = target,
+                            Activate = () => HardwareClickGo(target, "Home-SeriesPanel")
+                        });
+                    }
                 }
+
+                _items.Add(new HomeItem
+                {
+                    Label = Loc.Get("home_series_cancel"),
+                    Go = panel.gameObject,
+                    Activate = () =>
+                    {
+                        try { Il2CppYgomGame.Single.OverLap.SeriesChangePanel.Close(); }
+                        catch (Exception ex)
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "Home",
+                                $"SeriesChangePanel.Close() failed: {ex.Message}");
+                        }
+                    }
+                });
+
+                DebugLogger.Log(LogCategory.Handler, "Home",
+                    $"SeriesPanel curated: {_items.Count} item(s)");
             }
             catch (Exception ex)
             {
@@ -707,29 +723,150 @@ namespace DuelLinksAccess
             }
         }
 
-        private static void ActivateSeriesPanelChild(
-            Il2CppYgomGame.Single.SerieseChangePanelChild child)
+        /// <summary>Maps the world node's raw name to a spoken series name.</summary>
+        private static string FriendlySeriesName(string raw)
+        {
+            switch ((raw ?? "").ToUpperInvariant())
+            {
+                case "DM": return "Duel Monsters";
+                case "GX": return "GX";
+                case "5DS": return "5D's";
+                case "ZEXAL": return "Zexal";
+                case "ARCV": return "Arc-V";
+                case "VRAINS": return "VRAINS";
+                case "DSOD": return "Dark Side of Dimensions";
+                case "SEVENS": return "Sevens";
+                case "GORUSH":
+                case "GORUSH!!":
+                case "GO RUSH": return "Go Rush";
+                default: return string.IsNullOrWhiteSpace(raw) ? "world" : raw;
+            }
+        }
+
+        /// <summary>The Rush-Duel worlds (Sevens, Go Rush) live in the same panel
+        /// but use Rush rules and a separate card pool.</summary>
+        private static bool IsRushSeriesName(string raw)
+        {
+            string u = (raw ?? "").ToUpperInvariant();
+            return u == "SEVENS" || u.StartsWith("GORUSH") || u.StartsWith("GO RUSH");
+        }
+
+        /// <summary>True when this world is the one currently active — its node
+        /// carries a "Select" highlight child that is on.</summary>
+        private static bool SeriesNodeIsCurrent(GameObject node)
         {
             try
             {
-                // Prefer the real input pipeline — the GX-unlock arrow's F11
-                // hardware click on this exact button family is confirmed
-                // working (v10.9.0 log, LogoButton).
-                var go = child.gameObject;
-                var btn = go.GetComponentInChildren<Button>(true);
-                var target = btn != null && btn.gameObject.activeInHierarchy
-                    ? btn.gameObject : go;
-                if (Main.TryGetUiScreenPos(target, out Vector2 pos)
-                    && Main.ClickViaHardwareMouse(pos, "Home-SeriesPanel"))
+                if (node == null) return false;
+                var sel = node.transform.Find("Select");
+                return sel != null && sel.gameObject.activeInHierarchy;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Best-effort locked check: a progress-locked world's logo
+        /// button is non-interactable. Assumes usable when it can't be read.</summary>
+        private static bool SeriesLogoInteractable(GameObject logo)
+        {
+            try
+            {
+                var s = logo.GetComponent<UnityEngine.UI.Selectable>();
+                if (s != null) return s.interactable;
+            }
+            catch { }
+            return true;
+        }
+
+        private static void HardwareClickGo(GameObject go, string tag)
+        {
+            try
+            {
+                if (go != null && Main.TryGetUiScreenPos(go, out Vector2 pos))
+                    Main.ClickViaHardwareMouse(pos, tag);
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Home", $"HardwareClickGo error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// One-time diagnostic: logs the world-switch panel's subtree
+        /// (names + component types + any text) so the real series-entry layout
+        /// is visible and the navigation can be tightened.
+        /// </summary>
+        private static void DumpSeriesPanelHierarchy(GameObject root)
+        {
+            try
+            {
+                if (root == null) return;
+                var all = root.GetComponentsInChildren<Transform>(true);
+                if (all == null) return;
+                int n = 0;
+                foreach (var t in all)
                 {
-                    return;
+                    if (t == null) continue;
+                    GameObject go = t.gameObject;
+                    string comps = "";
+                    try
+                    {
+                        var cs = go.GetComponents<Component>();
+                        if (cs != null)
+                            foreach (var c in cs)
+                            {
+                                if (c == null) continue;
+                                try { comps += c.GetIl2CppType().Name + " "; } catch { }
+                            }
+                    }
+                    catch { }
+                    string text = "";
+                    try
+                    {
+                        var tx = go.GetComponent<UnityEngine.UI.Text>();
+                        if (tx != null) text = " text='" + tx.text + "'";
+                    }
+                    catch { }
+                    DebugLogger.Log(LogCategory.Handler, "Home",
+                        $"[seriespanel] {go.name} active={go.activeInHierarchy} [{comps.Trim()}]{text}");
+                    if (++n >= 80) break;
                 }
-                child.OnPanelButton();
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Home", $"[seriespanel] dump error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Opens the series/world change panel by calling the game's own
+        /// OnOpenSeriesChangePanel() directly (the prior hardware-click path
+        /// no longer opens it). Dumps the world-switch UI objects present in the
+        /// Single subtree first, so if the method also fails to open the panel
+        /// the next log reveals what actually handles world switching now (e.g.
+        /// a SingleOverLap overlay). The existing scan detects and curates the
+        /// panel once it becomes active.
+        /// </summary>
+        private void OpenSeriesChangePanel(SingleViewController view)
+        {
+            // Already open (its static singleton is live) — don't call the open
+            // method again; that stacks duplicate SeriesChangePanel(Clone)s
+            // (2026-08-13 log). The poll will curate the open panel's worlds.
+            if (GetSeriesPanel() != null)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Home",
+                    "OpenSeriesChangePanel: panel already open — not re-opening");
+                return;
+            }
+            try
+            {
+                view.OnOpenSeriesChangePanel();
+                DebugLogger.Log(LogCategory.Handler, "Home",
+                    "OpenSeriesChangePanel: OnOpenSeriesChangePanel() called");
             }
             catch (Exception ex)
             {
                 DebugLogger.Log(LogCategory.Handler, "Home",
-                    $"ActivateSeriesPanelChild error: {ex.Message}");
+                    $"OpenSeriesChangePanel: OnOpenSeriesChangePanel() threw {ex.Message}");
             }
         }
 

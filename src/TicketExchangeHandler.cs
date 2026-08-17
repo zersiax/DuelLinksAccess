@@ -24,6 +24,16 @@ namespace DuelLinksAccess
         // Card list from the exchange — stored as card IDs (mrk values)
         private readonly List<int> _cardIds = new();
 
+        // Parallel to _cardIds: the Kirarity (rarity + kira treatment) of each
+        // card, kept strictly in lockstep. Selecting a card MUST feed the game
+        // the exact CardAndRarity it handed us — both Mrk AND Kirarity.
+        // Reconstructing from the mrk alone leaves Kirarity=0; the exchange then
+        // submits a malformed card and the game hard-resets to the title screen
+        // ("An error has occurred") right after TRADE is confirmed.
+        // cardExchangeList carries only mrk (no rarity), so entries from that
+        // source store 0.
+        private readonly List<long> _cardKirarities = new();
+
         // Cooldown
         private float _operationCooldown;
         private const float OperationCooldownTime = 0.5f;
@@ -32,6 +42,17 @@ namespace DuelLinksAccess
         private float _initialScanDelay;
         private bool _initialScanDone;
         private int _initialScanAttempts;
+
+        // Post-exchange stale-list guard. DecideClicked()/exchangeButton open
+        // a confirm dialog that DialogHandler drives entirely on its own —
+        // this handler has no callback for when it resolves. Without this,
+        // a just-traded card stays in _cardIds at its old index; selecting
+        // it again feeds an already-consumed card into native game calls.
+        // (2026-07-22 tester log: traded Needle Sunfish, the list still
+        // showed it at the same position afterward, re-selecting it
+        // preceded the app resetting to the Logo/Title screens.)
+        private bool _awaitingExchangeResult;
+        private bool _exchangeDialogSeen;
 
         #endregion
 
@@ -77,6 +98,9 @@ namespace DuelLinksAccess
                 return;
             }
 
+            if (_awaitingExchangeResult)
+                CheckPostExchangeRefresh();
+
             ProcessInput();
         }
 
@@ -94,9 +118,56 @@ namespace DuelLinksAccess
             _initialScanDone = false;
             _initialScanDelay = 1.0f;
             _initialScanAttempts = 0;
+            _awaitingExchangeResult = false;
+            _exchangeDialogSeen = false;
 
             DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                 $"Activated (mode={GetModeName()}), waiting for initial scan...");
+        }
+
+        /// <summary>
+        /// Watches for the confirm dialog opened by ConfirmExchange() to
+        /// appear and then close, then forces a fresh read of the exchange
+        /// list. A card successfully traded away must never remain
+        /// selectable at its old cached index.
+        /// </summary>
+        private void CheckPostExchangeRefresh()
+        {
+            if (GameStateTracker.CurrentScreen == GameScreen.Dialog)
+            {
+                _exchangeDialogSeen = true;
+                return;
+            }
+
+            // Dialog hasn't appeared yet (still opening) — keep waiting
+            // rather than refreshing prematurely and missing the real close.
+            if (!_exchangeDialogSeen) return;
+
+            _awaitingExchangeResult = false;
+            _exchangeDialogSeen = false;
+
+            int previousMrk = (_cardIds.Count > 0 && _focusIndex >= 0 && _focusIndex < _cardIds.Count)
+                ? _cardIds[_focusIndex] : -1;
+
+            RefreshCardList();
+
+            if (_cardIds.Count == 0)
+            {
+                _focusIndex = 0;
+                ScreenReader.Say(Loc.Get("ticket_no_cards"));
+                return;
+            }
+
+            if (_focusIndex >= _cardIds.Count)
+                _focusIndex = _cardIds.Count - 1;
+
+            bool sameCard = previousMrk >= 0 && _cardIds[_focusIndex] == previousMrk;
+            if (!sameCard)
+                AnnounceCurrentCard(queued: true);
+
+            DebugLogger.Log(LogCategory.Handler, "TicketExchange",
+                $"Post-exchange refresh: {_cardIds.Count} cards, focus now " +
+                $"{CardFormatter.GetName(_cardIds[_focusIndex])}");
         }
 
         private void DoInitialScan()
@@ -133,6 +204,9 @@ namespace DuelLinksAccess
             IsActive = false;
             _vc = null;
             _cardIds.Clear();
+            _cardKirarities.Clear();
+            _awaitingExchangeResult = false;
+            _exchangeDialogSeen = false;
 
             DebugLogger.Log(LogCategory.Handler, "TicketExchange", "Deactivated");
         }
@@ -178,41 +252,56 @@ namespace DuelLinksAccess
         private void RefreshCardList()
         {
             _cardIds.Clear();
+            _cardKirarities.Clear();
 
             try
             {
                 if (_vc == null) return;
 
-                // Try cardExchangeList first (List<int> of card IDs for ticket exchange)
+                // Try cardExchangeList first (List<int> of card IDs for ticket
+                // exchange). This source carries only the mrk — no rarity — so
+                // stored Kirarity is 0 for these entries.
                 var exchangeList = _vc.cardExchangeList;
                 if (exchangeList != null && exchangeList.Count > 0)
                 {
                     for (int i = 0; i < exchangeList.Count; i++)
+                    {
                         _cardIds.Add(exchangeList[i]);
+                        _cardKirarities.Add(0L);
+                    }
 
                     DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                         $"Loaded {_cardIds.Count} cards from cardExchangeList");
                     return;
                 }
 
-                // Fallback: try exchangeList (List<CardAndRarity>)
+                // Fallback: try exchangeList (List<CardAndRarity>) — keep the
+                // real Kirarity so the exchange submits the exact card.
                 var carList = _vc.exchangeList;
                 if (carList != null && carList.Count > 0)
                 {
                     for (int i = 0; i < carList.Count; i++)
-                        _cardIds.Add(carList[i].Mrk);
+                    {
+                        var car = carList[i];
+                        _cardIds.Add(car.Mrk);
+                        _cardKirarities.Add(car.Kirarity);
+                    }
 
                     DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                         $"Loaded {_cardIds.Count} cards from exchangeList");
                     return;
                 }
 
-                // Another fallback: try choiceList (List<CardAndRarity>)
+                // Another fallback: try choiceList (List<CardAndRarity>).
                 var choiceList = _vc.choiceList;
                 if (choiceList != null && choiceList.Count > 0)
                 {
                     for (int i = 0; i < choiceList.Count; i++)
-                        _cardIds.Add(choiceList[i].Mrk);
+                    {
+                        var car = choiceList[i];
+                        _cardIds.Add(car.Mrk);
+                        _cardKirarities.Add(car.Kirarity);
+                    }
 
                     DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                         $"Loaded {_cardIds.Count} cards from choiceList");
@@ -352,11 +441,15 @@ namespace DuelLinksAccess
             if (_cardIds.Count == 0 || _focusIndex < 0 || _focusIndex >= _cardIds.Count) return;
 
             int mrk = _cardIds[_focusIndex];
+            long kirarity = (_focusIndex < _cardKirarities.Count) ? _cardKirarities[_focusIndex] : 0L;
             string name = CardFormatter.GetName(mrk);
 
             try
             {
-                var car = new CardAndRarity(mrk);
+                // Feed the game the exact card it gave us, Kirarity included.
+                // A card built from the mrk alone has Kirarity=0, which the
+                // exchange later rejects and the game hard-resets to title.
+                var car = new CardAndRarity(mrk, kirarity);
 
                 // Check if addible
                 if (_vc.isAddible(car))
@@ -366,7 +459,7 @@ namespace DuelLinksAccess
                     {
                         ScreenReader.Say(Loc.Get("ticket_selected", name));
                         DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                            $"Selected card mrk={mrk} ({name})");
+                            $"Selected card mrk={mrk} kirarity={kirarity} ({name})");
                     }
                     else
                     {
@@ -394,32 +487,48 @@ namespace DuelLinksAccess
 
             try
             {
-                // Try the exchange button first
+                // The CardGetter has two possible confirm controls. The ticket /
+                // dream-ticket / choice flow confirms through decideButton (driven
+                // by the game's setDecideButton()); card-trader-style modes use
+                // exchangeButton. Whichever the active mode uses, its interactable
+                // flag is the game's own "a valid selection can be submitted now"
+                // gate. Never bypass it: DecideClicked() with an empty or already-
+                // consumed selection hard-errors the game to the title screen.
+                var decideBtn = _vc?.decideButton;
                 var exchangeBtn = _vc?.exchangeButton;
+
                 var action = TicketExchangePolicy.ChooseAction(
-                    exchangeBtn != null,
-                    exchangeBtn?.interactable == true);
-                if (action == TicketExchangeAction.InvokeButton)
+                    decideBtn != null, decideBtn?.interactable == true,
+                    exchangeBtn != null, exchangeBtn?.interactable == true);
+
+                switch (action)
                 {
-                    exchangeBtn.onClick.Invoke();
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        "Clicked exchange button");
-                    _operationCooldown = OperationCooldownTime;
-                    return;
+                    case TicketExchangeAction.ConfirmViaDecide:
+                        _vc.DecideClicked();
+                        DebugLogger.Log(LogCategory.Handler, "TicketExchange",
+                            "Confirmed via decideButton (DecideClicked)");
+                        _awaitingExchangeResult = true;
+                        _exchangeDialogSeen = false;
+                        break;
+
+                    case TicketExchangeAction.InvokeExchangeButton:
+                        exchangeBtn.onClick.Invoke();
+                        DebugLogger.Log(LogCategory.Handler, "TicketExchange",
+                            "Confirmed via exchangeButton");
+                        _awaitingExchangeResult = true;
+                        _exchangeDialogSeen = false;
+                        break;
+
+                    default: // Reject
+                        DebugLogger.Log(LogCategory.Handler, "TicketExchange",
+                            $"Confirm rejected: decide(present={decideBtn != null}, " +
+                            $"interactable={decideBtn?.interactable == true}) " +
+                            $"exchange(present={exchangeBtn != null}, " +
+                            $"interactable={exchangeBtn?.interactable == true})");
+                        ScreenReader.Say(Loc.Get("ticket_nothing_to_exchange"));
+                        break;
                 }
 
-                if (action == TicketExchangeAction.UseLegacyFallback)
-                {
-                    _vc?.DecideClicked();
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        "Called DecideClicked because exchange button was absent");
-                }
-                else
-                {
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        "Exchange button is disabled; confirmation rejected");
-                    ScreenReader.Say(Loc.Get("ticket_activate_error"));
-                }
                 _operationCooldown = OperationCooldownTime;
             }
             catch (Exception ex)

@@ -4,7 +4,12 @@ param(
     [string]$Version,
 
     [string]$GamePath = $env:DUEL_LINKS_PATH,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+
+    # Optional pre-downloaded Tolk release archive. When omitted the script
+    # downloads it from the URL pinned in THIRD_PARTY_NOTICES.md. Either way
+    # its SHA-256 must match the pinned value before anything is extracted.
+    [string]$TolkArchive
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,6 +93,68 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot "LICENSE") -Destination $StageRoo
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.md") -Destination $StageRoot
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "release\README.txt") -Destination $StageRoot
 
+# Screen reader libraries (Tolk + NVDA controller client). Both are LGPL and
+# are bundled so speech works on a clean install. The binaries come from the
+# Tolk release archive pinned in THIRD_PARTY_NOTICES.md, which is the single
+# source of truth for the URL and expected hash; the archive SHA-256 is
+# verified before anything is extracted.
+$NoticesText = Get-Content -LiteralPath (
+    Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.md") -Raw
+$TolkUrlMatch = [regex]::Match($NoticesText, 'Binary archive:\s*(\S+)')
+$TolkHashMatch = [regex]::Match(
+    $NoticesText, 'Binary archive SHA-256:\s*`?([0-9A-Fa-f]{64})`?')
+if (-not $TolkUrlMatch.Success -or -not $TolkHashMatch.Success) {
+    throw "Could not read the Tolk archive URL and SHA-256 from THIRD_PARTY_NOTICES.md"
+}
+$TolkUrl = $TolkUrlMatch.Groups[1].Value
+$TolkExpectedHash = $TolkHashMatch.Groups[1].Value.ToUpperInvariant()
+
+$TolkWork = Join-Path $AllowedStageRoot "tolk"
+if (Test-Path -LiteralPath $TolkWork) {
+    Remove-Item -LiteralPath $TolkWork -Recurse -Force
+}
+New-Item -ItemType Directory -Path $TolkWork -Force | Out-Null
+$TolkZip = Join-Path $TolkWork "tolk.zip"
+
+if ($TolkArchive) {
+    if (-not (Test-Path -LiteralPath $TolkArchive -PathType Leaf)) {
+        throw "Tolk archive not found at '$TolkArchive'"
+    }
+    Copy-Item -LiteralPath $TolkArchive -Destination $TolkZip
+}
+else {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $PreviousProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+        Invoke-WebRequest -Uri $TolkUrl -OutFile $TolkZip -UseBasicParsing
+    }
+    finally {
+        $ProgressPreference = $PreviousProgress
+    }
+}
+
+$TolkActualHash = (Get-FileHash -LiteralPath $TolkZip -Algorithm SHA256).Hash.ToUpperInvariant()
+if ($TolkActualHash -ne $TolkExpectedHash) {
+    throw "Tolk archive SHA-256 $TolkActualHash does not match pinned $TolkExpectedHash"
+}
+
+$TolkExtract = Join-Path $TolkWork "extract"
+Expand-Archive -LiteralPath $TolkZip -DestinationPath $TolkExtract -Force
+$TolkFiles = [ordered]@{
+    "x64\Tolk.dll"                   = "Tolk.dll"
+    "x64\nvdaControllerClient64.dll" = "nvdaControllerClient64.dll"
+    "LICENSE.txt"                    = "Tolk-LICENSE.txt"
+    "LICENSE-NVDA.txt"               = "nvdaControllerClient-LICENSE.txt"
+}
+foreach ($Entry in $TolkFiles.GetEnumerator()) {
+    $Source = Join-Path $TolkExtract $Entry.Key
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Expected '$($Entry.Key)' in the Tolk archive"
+    }
+    Copy-Item -LiteralPath $Source -Destination (Join-Path $StageRoot $Entry.Value)
+}
+
 $LogPath = Join-Path $GamePath "MelonLoader\Latest.log"
 if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
     throw "MelonLoader log not found at '$LogPath'; release provenance is incomplete"
@@ -144,6 +211,10 @@ $BuildInfo = @(
     "HarmonyX: $([Diagnostics.FileVersionInfo]::GetVersionInfo($HarmonyDll).ProductVersion)"
     "Il2CppInterop: $([Diagnostics.FileVersionInfo]::GetVersionInfo($InteropDll).ProductVersion)"
     "DuelLinksAccess.dll SHA-256: $DllHash"
+    "Tolk.dll SHA-256: $((Get-FileHash -LiteralPath (Join-Path $StageRoot 'Tolk.dll') -Algorithm SHA256).Hash)"
+    "nvdaControllerClient64.dll SHA-256: $((Get-FileHash -LiteralPath (Join-Path $StageRoot 'nvdaControllerClient64.dll') -Algorithm SHA256).Hash)"
+    "Tolk archive: $TolkUrl"
+    "Tolk archive SHA-256: $TolkExpectedHash"
     "Build input SHA-256:"
 )
 foreach ($InputPath in $BuildInputs) {

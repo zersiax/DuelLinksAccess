@@ -53,6 +53,7 @@ namespace DuelLinksAccess
         private TicketExchangeHandler _ticketExchangeHandler;
         private CardTraderHandler _cardTraderHandler;
         private CardCatalogHandler _cardCatalogHandler;
+        private CardTransferHandler _cardTransferHandler;
         private HomeHandler _homeHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
@@ -113,6 +114,10 @@ namespace DuelLinksAccess
             _ticketExchangeHandler = new TicketExchangeHandler();
             _cardTraderHandler = new CardTraderHandler();
             _cardCatalogHandler = new CardCatalogHandler();
+            _cardTransferHandler = new CardTransferHandler();
+            // Lets the catalog hand the shared header/menu (filters, sort,
+            // search) back to ScreenButtonHandler via a Tab zone-toggle.
+            _cardCatalogHandler.SetScreenButtonHandler(_screenButtonHandler);
             _homeHandler = new HomeHandler();
         }
 
@@ -326,6 +331,11 @@ namespace DuelLinksAccess
             // (conversion catalog opened from Card Trader when eligible cards exist)
             _cardCatalogHandler?.Update();
             if (_cardCatalogHandler?.IsActive == true) return;
+
+            // The ChangeCard trade's final "Select the card to exchange" screen
+            // (CardTransfer) — its Trade button isn't a scannable Selectable.
+            _cardTransferHandler?.Update();
+            if (_cardTransferHandler?.IsActive == true) return;
 
             // Curated Home/Duel-World handler — replaces SBH's noisy 40+ item
             // scan on the world map with a named-destination list. Always

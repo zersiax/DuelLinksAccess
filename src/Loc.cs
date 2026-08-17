@@ -92,7 +92,7 @@ namespace DuelLinksAccess
         {
             // ===== GENERAL =====
             _english["mod_loaded"] = "Duel Links Access loaded. F1 for help.";
-            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. Draws happen automatically. Press Space during Draw Phase to retry a delayed draw. Space while animations play taps the screen to fast-forward them, like sighted players do; the PvP turn clock keeps draining during animations, so tap through them. I status. J event log. Control Q surrender the duel, then confirm Yes in the dialog. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. A deck accessories, card sleeve and game mat. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement.";
+            _english["help_text"] = "Key bindings: Up down arrows navigate items. Enter activate. Escape or Backspace go back. Space rescan screen. Tab re-read current item. During duel: Up down move between field rows. Left right move between columns. Zone hotkeys: C hand, M monsters, S spells, T field spell, G graveyard, B banished, D extra deck. Hold Shift for opponent zones. 1 2 3 monster slots. 4 5 left and right extra monster zones (shared row between players, no shift; also reachable via Up arrow from your monster row). L read life points. Enter open actions. V re-read card. F field summary. P advance phase. Draws happen automatically. Press Space during Draw Phase to retry a delayed draw. Space while animations play taps the screen to fast-forward them, like sighted players do; the PvP turn clock keeps draining during animations, so tap through them. I status. J event log. Control Q surrender the duel, then confirm Yes in the dialog. Deck editor: Tab switch zones. Left right browse cards. Enter add or remove card. V read card details. I deck stats. S current skill. K change skill. U set as active deck. A deck accessories, card sleeve and game mat. Control S save. Shop: Tab switch categories. Left right browse items. Enter purchase. G gem balance. C or I item details. Ticket Exchange: Left right browse cards. Enter select card. Space confirm exchange. G ticket count. Card Trader: Left right browse trades. Enter select and open the trade confirmation, then confirm in the dialog. C or I trade details. G gold balance. F list trader tabs, then a number key opens one, for example conversion or special processing. Space confirm a card-conversion list. Home / Duel World: Up down navigate destinations. Left right change area (or character on the character panel). Enter activate. G gem balance. B toggle browse-all mode if a button isn't in the curated list. F1 Help. F11 Activate tutorial arrow target (use only when the target isn't reachable via arrow keys; otherwise navigate to it and press Enter). F12 Toggle debug mode. Control R Repeat last announcement.";
             _english["debug_mode"] = "Debug mode {0}";
             _english["tutorial_arrow_activated"] = "Tutorial arrow activated";
             _english["tutorial_arrow_no_arrow"] = "No tutorial arrow active";
@@ -139,6 +139,20 @@ namespace DuelLinksAccess
             _english["screen_rescan"] = "Rescanning";
             _english["screen_click_error"] = "Could not press button";
             _english["screen_back"] = "Back";
+            _english["transfer_entered"] = "Select the card to exchange. Left and Right to browse, Enter to choose a card, T to trade, Escape to cancel.";
+            _english["transfer_entered_info"] = "{0}. Left and Right to browse, Enter to choose a card, T to trade, Escape to cancel.";
+            _english["transfer_trading"] = "Trading.";
+            _english["transfer_pos"] = "{0}, {1} of {2}";
+            _english["transfer_state_selected"] = "chosen";
+            _english["transfer_state_unavailable"] = "not available";
+            _english["transfer_chose"] = "Chosen. {0} selected.";
+            _english["transfer_removed"] = "Removed. {0} selected.";
+            _english["transfer_not_selectable"] = "This card can't be exchanged.";
+            _english["transfer_need_selection"] = "Choose at least one card to exchange first.";
+            _english["transfer_empty"] = "No cards available to exchange.";
+            _english["transfer_loading"] = "Loading exchange cards, please wait.";
+            _english["transfer_load_failed"] = "The exchange list didn't load. Press Escape and try again.";
+            _english["transfer_cost_shortage"] = "You own {1} of {0}, but this exchange needs {2}. You can't make this trade. Press Escape to go back.";
             _english["screen_cutscene"] = "Cutscene. Press Enter or Space to advance.";
             _english["screen_no_text"] = "No page text";
 
@@ -170,6 +184,10 @@ namespace DuelLinksAccess
             _english["trader_selected"] = "Selected: {0}";
             _english["trader_can_trade"] = "can trade";
             _english["trader_cannot_trade"] = "cannot trade";
+            _english["trader_opens_picker"] = "trade a card for this";
+            _english["trader_changecard_ok"] = "give {0} {1}, you own {2}";
+            _english["trader_changecard_short"] = "needs {0} {1}, you own {2}, cannot trade";
+            _english["card_rush_tag"] = "Rush Duel card";
             _english["trader_cost_gold"] = "{0} gold";
             _english["trader_cost_gold_poss"] = "{0} gold (have {1})";
             _english["trader_cost_card"] = "{1} Ã—{0}";
@@ -197,6 +215,12 @@ namespace DuelLinksAccess
             _english["trader_actual_selected"] = "Trader selected: {0}";
             _english["trader_drift_abort"] = "Trade aborted: trader switched from {0} to {1}. Try again.";
             _english["trader_drift_warn"] = "Warning: trader switched from {0} to {1}. Read the dialog before confirming.";
+            _english["trader_footer_tabs"] = "Trader tabs: {0}. Press the number to open one.";
+            _english["trader_footer_none"] = "No trader tabs available";
+            _english["trader_footer_activated"] = "Opening {0}";
+            _english["trader_footer_invalid"] = "No tab there";
+            _english["trader_footer_unnamed"] = "Tab {0}";
+            _english["trader_select_failed"] = "Could not select {0}. Try again.";
             _english["map_npc_bonus"] = "Bonus Duelist";
             _english["map_school"] = "Duel Trials";
 
@@ -243,6 +267,9 @@ namespace DuelLinksAccess
             _english["home_series"] = "Change duel world";
             _english["home_series_option"] = "World: {0}";
             _english["home_series_cancel"] = "Cancel world change";
+            _english["home_series_rush"] = "Rush Duel";
+            _english["home_series_current"] = "current";
+            _english["home_series_locked"] = "locked";
             _english["map_card_portal"] = "Card Portal";
             _english["map_alley_gomibako"] = "Trash";
             _english["map_event_panel"] = "Event";
@@ -402,7 +429,7 @@ namespace DuelLinksAccess
             // ===== DUEL: EMOTIONAL LIST (card list selection) =====
             _english["duel_emo_list_single"] = "Select a card. {0} choices. Left right to navigate, Enter to select.";
             _english["duel_emo_list_multi"] = "Select cards. {0} choices, pick up to {1}. Left right to navigate, Enter to toggle, Space to confirm.";
-            _english["duel_emo_list_view"] = "Card list, {0} cards. Left right to review, Enter to continue.";
+            _english["duel_emo_list_view"] = "Card list, {0} cards. Left right to review, Enter to choose a card to add, Space to continue.";
             _english["duel_emo_list_confirmed"] = "Confirmed";
             _english["duel_emo_list_toggled"] = "{0} selected of {1}";
             _english["duel_emo_list_need_more"] = "Need at least {0} selected";
@@ -419,6 +446,13 @@ namespace DuelLinksAccess
             _english["duel_yesno_generic"] = "Confirm? Enter for Yes, Escape for No.";
             _english["duel_yes"] = "Yes";
             _english["duel_no"] = "No";
+
+            // ===== DUEL: SELECT-EFFECT DIALOG (multi-effect picker) =====
+            _english["duel_effect_intro"] = "{0} Effect {1} of {2}. {3} Up and down to choose, Enter to confirm, Escape to cancel.";
+            _english["duel_effect_item"] = "Effect {0} of {1}. {2}";
+            _english["duel_effect_single"] = "{0} {1} Enter to confirm, Escape to cancel.";
+            _english["duel_effect_confirmed"] = "Effect confirmed";
+            _english["duel_effect_cancelled"] = "Cancelled";
 
             // ===== DUEL: PHASE ADVANCEMENT =====
             _english["duel_advancing_phase"] = "Moving to {0}";
@@ -465,6 +499,16 @@ namespace DuelLinksAccess
             _english["deck_reason_limit"] = "already have {0} copies";
             _english["deck_reason_no_copies"] = "no more copies available";
             _english["deck_reason_unknown"] = "not allowed";
+
+            // ===== AUTO DECK BUILD =====
+            _english["deck_auto_opening"] = "Opening auto deck build";
+            _english["deck_auto_selected"] = "{0}, selected";
+            _english["deck_auto_not_selected"] = "{0}, not selected";
+            _english["deck_auto_unavailable"] = "{0}. {1}";
+            _english["deck_auto_expanded"] = "{0}, expanded";
+            _english["deck_auto_collapsed"] = "{0}, collapsed";
+            _english["deck_auto_advanced"] = "Advanced options";
+            _english["deck_auto_size"] = "Deck size: {0} cards, range {1} to {2}";
 
             // ===== DECK ACCESSORIES (sleeve / mat / ace card) =====
             _english["deck_edit_accessories_opening"] = "Opening deck accessories";
@@ -518,7 +562,8 @@ namespace DuelLinksAccess
             _english["shop_category_homebg"] = "Home Backgrounds";
 
             // ===== CARD CATALOG (CONVERSION) =====
-            _english["catalog_entered"] = "Card catalog. Left right to browse, C for description, B to open batch conversion.";
+            _english["catalog_entered"] = "Card catalog. Left right to browse, C for description, Tab for filters and menu, B to open batch conversion.";
+            _english["catalog_zone_menu"] = "Menu. Filters, sort and search. Tab to return to cards.";
             _english["catalog_card_count"] = "{0} cards in catalog";
             _english["catalog_no_cards"] = "No cards in catalog";
             _english["catalog_own_count"] = "you have {0}";
@@ -531,6 +576,14 @@ namespace DuelLinksAccess
             _english["catalog_converting"] = "Converting card";
             _english["catalog_converting_not_ready"] = "Conversion not ready yet, try again in a moment.";
             _english["catalog_not_convertible_card"] = "This card cannot be converted.";
+            _english["catalog_changecard_pending"] = "Selecting a card here isn't supported yet.";
+            _english["catalog_selectable"] = "can be used";
+            _english["catalog_not_selectable"] = "cannot be used";
+            _english["catalog_card_selected"] = "Selected {0}";
+            _english["catalog_card_not_selectable"] = "This card can't be used here.";
+            _english["catalog_process_selected"] = "Selected {0}. Press Enter again to confirm.";
+            _english["catalog_process_confirming"] = "Confirming.";
+            _english["catalog_trade_confirm_opening"] = "Opening exchange confirmation for {0}.";
             _english["catalog_batch_convert"] = "Opening batch conversion";
             _english["catalog_batch_not_available"] = "Batch convert not available";
 
@@ -544,6 +597,7 @@ namespace DuelLinksAccess
             _english["ticket_deselected"] = "{0} deselected";
             _english["ticket_exchange_confirm"] = "Exchange confirmed";
             _english["ticket_activate_error"] = "Could not complete exchange";
+            _english["ticket_nothing_to_exchange"] = "Nothing to confirm yet. Select a card first.";
         }
 
         #endregion

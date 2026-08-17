@@ -43,8 +43,19 @@ namespace DuelLinksAccess
         // Result screen delayed rescan (after NEXT button press)
         private float _resultRescanTimer = -1f;
 
+        // Debounce for the scenario hardware-click advance fallback.
+        private float _scenarioFallbackUntil;
+
         // Tab-aware rescan: after clicking a tab button, force rescan
         private float _tabRescanDelay = -1f;
+
+        // True while the current HtjsonPage is the Chronicle "Special
+        // Processing" customization page. Its category tabs (Card Selection,
+        // Rim Color, Name Color, Stamp, Set) are Htjson btn widgets — not
+        // YgomTabButtons — and swap the option list in place with no VC change,
+        // so activating one must schedule a rescan to surface the new options
+        // without a manual Space (2026-08-10 tester note).
+        private bool _isChroniclePage;
 
         // Resume-gap detection: while DialogHandler is active, Main returns
         // before our Update() runs, so we never see VC changes or resets.
@@ -146,12 +157,30 @@ namespace DuelLinksAccess
                 && currentVc.Contains("Scenario");
             _lastUpdateAt = now;
 
+            // Stale-root recovery: the underlying screen GameObject can be
+            // destroyed and rebuilt while the content VC name stays the same
+            // — e.g. a reward dialog closes and the campaign HtjsonPage
+            // rebuilds beneath it (2026-08-10 log: a campaign advance froze
+            // all input). Our cached _screenRoot then wraps a destroyed
+            // IL2CPP object, so every .name access throws a
+            // NullReferenceException out of OnUpdate and blocks input. Probe
+            // the root with ReferenceEquals (a pure managed null check that
+            // bypasses Unity's overloaded == so a destroyed wrapper is still
+            // seen as non-null) plus IsAlive, and force a fresh scan when the
+            // native object is gone.
+            bool rootDestroyed = !ReferenceEquals(_screenRoot, null)
+                && !LabelExtractor.IsAlive(_screenRoot);
+
             // New screen or VC changed — start scan
-            if (currentVc != _lastVcName || scenarioResume)
+            if (currentVc != _lastVcName || scenarioResume || rootDestroyed)
             {
                 if (scenarioResume)
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                         "Resumed over scenario root after blocked period — forcing rescan");
+                else if (rootDestroyed)
+                    MelonLogger.Msg(
+                        "[ScreenBtn] Screen root destroyed while VC name unchanged " +
+                        $"('{currentVc}') — forcing rescan to recover input");
                 _lastVcName = currentVc;
                 _scanned = false;
                 _scanDelay = 0.5f;
@@ -268,6 +297,15 @@ namespace DuelLinksAccess
 
         #region Scanning
 
+        /// <summary>
+        /// Forces a fresh scan + re-announcement on the next Update, even if the
+        /// content VC hasn't changed. Used when another handler (CardCatalog)
+        /// hands control back to the shared header/menu on a screen this handler
+        /// had previously scanned — without this, the unchanged VC name would
+        /// suppress the rescan and leave the menu silent and stale.
+        /// </summary>
+        public void ForceRescan() => Reset();
+
         private void Reset()
         {
             _lastVcName = "";
@@ -313,6 +351,7 @@ namespace DuelLinksAccess
             _items.Clear();
             _focusIndex = 0;
             _textMode = false;
+            _isChroniclePage = false;
 
             try
             {
@@ -341,6 +380,23 @@ namespace DuelLinksAccess
                             {
                                 MelonLoader.MelonLogger.Msg(
                                     $"[ScreenBtn][Type] {_screenRoot.name} -> VC type: {vc.GetType()?.Name}");
+
+                                // Identify the Chronicle "Special Processing"
+                                // page so its Htjson category tabs can trigger a
+                                // content rescan on activation (see _isChroniclePage).
+                                if (_screenRoot.name == "HtjsonPage" && vc.Args != null)
+                                {
+                                    try
+                                    {
+                                        Il2CppSystem.Object tObj;
+                                        if (vc.Args.TryGetValue("target", out tObj) && tObj != null
+                                            && tObj.ToString().Contains("Chronicle"))
+                                        {
+                                            _isChroniclePage = true;
+                                        }
+                                    }
+                                    catch { }
+                                }
 
                                 // Dump VC Args for Htjson screens in debug mode
                                 if (Main.DebugMode && vc.Args != null)
@@ -2045,6 +2101,26 @@ namespace DuelLinksAccess
                 }
                 catch { }
 
+                // Chronicle "Special Processing" category tabs (Card Selection,
+                // Rim Color, …) are Htjson btn widgets, not YgomTabButtons, so
+                // they miss the detection above. Activating one swaps the option
+                // list in place with no VC change — schedule a rescan so the new
+                // options are announced without a manual Space.
+                if (_isChroniclePage && _tabRescanDelay < 0f && item.Go.name == "btn")
+                {
+                    try
+                    {
+                        var bw = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>();
+                        if (bw != null)
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                "Chronicle category tab activated, scheduling content rescan");
+                            _tabRescanDelay = 0.8f;
+                        }
+                    }
+                    catch { }
+                }
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Activating: {item.Label} ({item.Go.name})");
 
@@ -2338,6 +2414,39 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Resolves a managed ViewController Type by its exact runtime type
+        /// name (from GetIl2CppType().Name), rather than guessing it from the
+        /// GameObject name. Needed when the GO name differs from the class —
+        /// e.g. GO "CardCenterMainMenu" is class CardCenterViewController, so
+        /// the {GoName}ViewController guess mis-resolves and back navigation
+        /// dead-ends (2026-07-19 tester stuck on the Duel Studio menu).
+        /// </summary>
+        private static Type FindVcTypeByName(string typeName)
+        {
+            if (string.IsNullOrEmpty(typeName)) return null;
+            string cacheKey = "#type:" + typeName;
+            if (_vcTypeCache.TryGetValue(cacheKey, out var cached))
+                return cached;
+
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    foreach (var type in asm.GetTypes())
+                    {
+                        if (type.Name != typeName) continue;
+                        if (type.GetConstructor(new[] { typeof(IntPtr) }) == null) continue;
+                        _vcTypeCache[cacheKey] = type;
+                        return type;
+                    }
+                }
+                catch { }
+            }
+            _vcTypeCache[cacheKey] = null;
+            return null;
+        }
+
+        /// <summary>
         /// Advances a text-mode screen by simulating a pointer click on the root.
         /// This triggers OnPointerClick on scenario/dialogue screens.
         /// </summary>
@@ -2356,6 +2465,10 @@ namespace DuelLinksAccess
                     var scenarioVc = _screenRoot.GetComponent<Il2CppYgomGame.Scenario.ScenarioPlayViewController>();
                     if (scenarioVc != null)
                     {
+                        // Capture the pre-click scene text so the fallback below
+                        // can tell whether the synthetic click actually advanced.
+                        string preText = ReadScenarioMessageText(_screenRoot);
+
                         var go = scenarioVc.gameObject;
                         var eventData = new UnityEngine.EventSystems.PointerEventData(
                             UnityEngine.EventSystems.EventSystem.current);
@@ -2390,6 +2503,12 @@ namespace DuelLinksAccess
 
                         DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                             $"Advancing ScenarioPlayerPart (ExecuteEvents={handled})");
+                        // Transition / stage-up scenes (e.g. "You completed all
+                        // missions! Stage 3") accept the synthetic click
+                        // (handled=True) but do not advance from it — the same
+                        // limitation as 3D world colliders. Fall back to a real
+                        // hardware click if the scene is unchanged shortly after.
+                        MelonCoroutines.Start(ScenarioAdvanceFallback(preText));
                         return;
                     }
                 }
@@ -2563,6 +2682,41 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// If a synthetic scenario click did not advance the scene within a
+        /// short window (still on the scenario with the same text), fires a
+        /// real hardware mouse click at screen center. Transition / stage-up
+        /// scenes accept the synthetic click (ExecuteEvents=True) but only
+        /// advance on real input — the same limitation as 3D world colliders.
+        /// Debounced so rapid Enter presses don't stack hardware clicks.
+        /// </summary>
+        private System.Collections.IEnumerator ScenarioAdvanceFallback(string preText)
+        {
+            if (Time.unscaledTime < _scenarioFallbackUntil)
+                yield break;
+            _scenarioFallbackUntil = Time.unscaledTime + 1.0f;
+
+            yield return new WaitForSeconds(0.5f);
+
+            GameObject root = null;
+            try { root = GetActiveScreenRoot(); } catch { }
+            if (root == null || !root.name.Contains("Scenario"))
+                yield break;   // advanced away — synthetic click worked
+
+            string nowText = null;
+            try { nowText = ReadScenarioMessageText(root); } catch { }
+            if (nowText != preText)
+                yield break;   // text changed — the scene advanced
+
+            var center = new Vector2(Screen.width / 2f, Screen.height / 2f);
+            bool sent = false;
+            try { sent = Main.ClickViaHardwareMouse(center, "scenario advance"); }
+            catch { }
+            MelonLogger.Msg(
+                "[ScreenBtn] Scenario did not advance on synthetic click — " +
+                $"hardware click sent={sent}");
+        }
+
+        /// <summary>
         /// Simulates a pointer click on a GameObject via ExecuteEvents.
         /// </summary>
         private void ClickGameObject(GameObject target)
@@ -2707,10 +2861,22 @@ namespace DuelLinksAccess
                 if (afterName != topVc.gameObject.name)
                     return true;
 
-                // SendBack didn't navigate — try popVC() on derived type
+                // SendBack didn't navigate — try popVC() on the derived type.
+                // Resolve by the VC's ACTUAL runtime type first (the GO name
+                // may not match the class: "CardCenterMainMenu" is class
+                // CardCenterViewController), falling back to the name guess.
                 string vcGoName = topVc.gameObject.name;
-                var actualType = FindVcType(vcGoName);
-                if (actualType == null) return false;
+                string vcTypeName = null;
+                try { vcTypeName = topVc.GetIl2CppType()?.Name; } catch { }
+                var actualType = FindVcTypeByName(vcTypeName)
+                    ?? FindVcType(vcGoName);
+                if (actualType == null)
+                {
+                    MelonLogger.Msg(
+                        $"[ScreenBtn] GoBack: no VC type for GO '{vcGoName}' " +
+                        $"(runtime type '{vcTypeName}')");
+                    return false;
+                }
 
                 var method = actualType.GetMethod("popVC",
                     BindingFlags.Public | BindingFlags.Instance,
@@ -2721,10 +2887,16 @@ namespace DuelLinksAccess
                 if (ctor == null) return false;
 
                 var castVc = ctor.Invoke(new object[] { topVc.Pointer });
-                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                    $"GoBack fallback: calling {actualType.Name}.popVC()");
                 method.Invoke(castVc, null);
-                return true;
+
+                // Verify the pop actually navigated — tutorial gates can
+                // re-block it, and we need to know from the log whether it took.
+                var postVc = mgr.GetStackTopViewController();
+                bool moved = postVc?.gameObject?.name != vcGoName;
+                MelonLogger.Msg(
+                    $"[ScreenBtn] GoBack fallback: {actualType.Name}.popVC() " +
+                    $"on '{vcGoName}' moved={moved}");
+                return moved;
             }
             catch (Exception ex)
             {

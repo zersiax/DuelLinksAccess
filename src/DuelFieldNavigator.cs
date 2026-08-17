@@ -1695,9 +1695,22 @@ namespace DuelLinksAccess
         /// needing the CardCommand popup UI (position changes, flip summon, etc.).
         /// OnTapLocator + CardCommand popup doesn't register for these on face-down
         /// monsters — the popup never appears, so we bypass it entirely.
-        /// SummonSp on Extra Deck (locate=14) is in the same family: OnTapLocator
-        /// won't open the popup for Extra Deck SummonSp either. Hand-card SummonSp
-        /// (rare; e.g. Cyber Dragon SS from hand) still uses the popup flow.
+        /// Any SummonSp NOT from hand is in the same family: OnTapLocator won't
+        /// open the popup. This covers Extra Deck SummonSp (locate=14) AND the
+        /// Pendulum Summon, which the game offers as SummonSp on a scale card in
+        /// the Spell/Trap zone (2026-07 tutorial log: cmdMask=0x4 at locate=8,
+        /// popup never appears -> "CardCommand not found" -> "Action failed").
+        /// Hand-card SummonSp (rare; e.g. Cyber Dragon SS from hand) still uses
+        /// the popup flow.
+        ///
+        /// A Normal Summon (Summon) command on a card ALREADY on the field —
+        /// e.g. re-Normal-Summoning a face-up Gemini monster, or a second
+        /// Normal Summon granted by a field effect — is the same case: the
+        /// popup never appears when tapping the field locator (2026-07-21 log:
+        /// cmdMask=0x410 [Summon+TurnDef] on a field monster, OnTapLocator then
+        /// "CardCommand not found", "Action failed"). Route it through
+        /// OnDoCardCommand too. A Normal Summon FROM HAND (locate=13) keeps the
+        /// popup flow, which works via HandCards.TapCard.
         /// </summary>
         private static bool IsDirectCommand(Il2CppYgomGame.Duel.Engine.CommandType cmd, int locate)
         {
@@ -1705,7 +1718,9 @@ namespace DuelLinksAccess
                 || cmd == Il2CppYgomGame.Duel.Engine.CommandType.TurnDef
                 || cmd == Il2CppYgomGame.Duel.Engine.CommandType.Reverse
                 || (cmd == Il2CppYgomGame.Duel.Engine.CommandType.SummonSp
-                    && locate == LocateExtra);
+                    && locate != LocateHand)
+                || (cmd == Il2CppYgomGame.Duel.Engine.CommandType.Summon
+                    && locate != LocateHand);
         }
 
         /// <summary>
@@ -2170,23 +2185,40 @@ namespace DuelLinksAccess
                 bool isClosing = false;
                 int selectMax = 0;
                 bool decideActive = false;
+                bool decideExists = false;
+                int listType = -1;
+                int itemCount = 0;
 
                 try { var go = emoList.gameObject; goActive = go != null && go.activeInHierarchy; } catch { }
                 try { isClosing = emoList.isClosing; } catch { }
                 try { selectMax = emoList.selectMaxNum; } catch { }
+                try { listType = (int)emoList.listType; } catch { }
+                try { itemCount = emoList.itemList?.Count ?? 0; } catch { }
                 try
                 {
-                    decideActive = emoList.decideButton?.gameObject?
-                        .activeInHierarchy == true;
+                    var decideBtn = emoList.decideButton;
+                    decideExists = decideBtn != null;
+                    decideActive = decideBtn?.gameObject?.activeInHierarchy == true;
                 }
                 catch { }
 
-                // View-style lists (e.g. Dark Magical Circle's "look at the
-                // top 3 cards of your deck", 2026-07-14 remote log) present
-                // cards with selectMaxNum == 0 and an active Confirm button.
-                // Without entering, arrow keys fall through to field
-                // navigation and the prompt is an inaccessible dead end.
-                bool viewOnly = selectMax <= 0 && decideActive;
+                // View-style lists (e.g. Dark Magical Circle's "reveal the top
+                // 3 cards of your deck") present cards with selectMaxNum == 0
+                // and a Confirm button; the game exposes them as ListType
+                // NoramlList (4). Earlier (2026-07-14, game v10.8) the Confirm
+                // button read activeInHierarchy==true and we gated view-only on
+                // that. The 2026-08-16 repro (game v10.10) shows the SAME reveal
+                // — same RunList 56 p2=5, listType 4, 3 items — with the decide
+                // button reporting inactive, so gating on decideActive alone
+                // locked the player out: arrows fell through to field navigation
+                // and the prompt was a dead end. Classify a visible NoramlList
+                // with items as a genuine reveal regardless of the decide
+                // button's active flag; the confirm path already falls back to
+                // OnDecide() when the button is null/inactive.
+                bool isNormalReveal =
+                    listType == (int)Il2CppYgomGame.Duel.EmotionalList.ListType.NoramlList
+                    && itemCount > 0;
+                bool viewOnly = selectMax <= 0 && (decideActive || isNormalReveal);
 
                 // List inactive — reset handled flag so next activation is detected
                 if (!goActive || isClosing || (selectMax <= 0 && !viewOnly))
@@ -2199,14 +2231,11 @@ namespace DuelLinksAccess
                         && UnityEngine.Time.unscaledTime > _emoSkipLogAt)
                     {
                         _emoSkipLogAt = UnityEngine.Time.unscaledTime + 2f;
-                        int lt = -1;
-                        int itemCount = 0;
-                        try { lt = (int)emoList.listType; } catch { }
-                        try { itemCount = emoList.itemList?.Count ?? 0; } catch { }
                         DebugLogger.Log(LogCategory.Game, "FieldNav",
                             $"EmotionalList visible but not entered: " +
-                            $"listType={lt} selectMax={selectMax} " +
-                            $"decideActive={decideActive} items={itemCount}");
+                            $"listType={listType} selectMax={selectMax} " +
+                            $"decideActive={decideActive} decideExists={decideExists} " +
+                            $"items={itemCount}");
                     }
                     return false;
                 }
@@ -2372,7 +2401,17 @@ namespace DuelLinksAccess
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Return))
             {
-                if (selectMax > 1 && !_emotionalList.ViewOnly)
+                // View-only reveal (e.g. Dark Magical Circle's top-3): the
+                // decide button stays inactive and both onClick/OnDecide no-op
+                // — the only interactive elements are the cards themselves
+                // (2026-08-16 [RevealDump]: only DuelListCard(Clone) buttons are
+                // active). Tap the focused card via OnClickCard, the same call
+                // physical selection uses. The game selects/orders it and either
+                // resolves (list closes → we exit) or waits for the next tap, so
+                // we keep the list open rather than closing it here.
+                if (_emotionalList.ViewOnly)
+                    TapRevealCard();
+                else if (selectMax > 1)
                     ToggleEmotionalListCard();
                 else
                     ConfirmEmotionalList();
@@ -2380,7 +2419,15 @@ namespace DuelLinksAccess
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
-                if (selectMax > 1 || _emotionalList.ViewOnly)
+                // Space = "done". For a reveal the decide button is inert and
+                // OnDecide no-ops (loops) — the game advances via Back/Cancel
+                // (verified 2026-08-17: Escape→OnCancel opened the reorder step,
+                // OnDecide looped). FinishReveal confirms via the decide button
+                // only if it actually went active (an addable card was chosen),
+                // otherwise proceeds with no add via OnCancel.
+                if (_emotionalList.ViewOnly)
+                    FinishReveal();
+                else if (selectMax > 1)
                     ConfirmEmotionalList();
                 return true;
             }
@@ -2496,13 +2543,25 @@ namespace DuelLinksAccess
                 if (cardDbId == 0 && mixedId >= 1000 && mixedId < 100000)
                     cardDbId = mixedId;
 
+                // Privacy gate: a selection list (e.g. a targeting effect like
+                // Raigeki Break) can include the opponent's FACE-DOWN Set cards.
+                // The engine still resolves their real cardId, but a sighted
+                // player only sees a card back — reading the name out is
+                // cheating (2026-07-21 log leaked opponent Set "Polymerization"
+                // / "Hallowed Life Barrier"). Hide opponent face-downs.
+                bool hidden = cardDbId > 0 && IsHiddenOpponentCard(uid, mixedId);
+
                 MelonLoader.MelonLogger.Msg(
                     $"[FieldNav] EmoCard[visual={index}, itemIdx={itemIdx}]: " +
-                    $"mixedId={mixedId} uniqueId={uid} cid={cid} resolved={cardDbId}");
+                    $"mixedId={mixedId} uniqueId={uid} cid={cid} resolved={cardDbId} hidden={hidden}");
 
-                string info = cardDbId > 0
-                    ? (verbose ? CardFormatter.FormatVerbose(cardDbId) : CardFormatter.FormatCompact(cardDbId))
-                    : Loc.Get("duel_unknown_card");
+                string info;
+                if (hidden)
+                    info = Loc.Get("duel_face_down_card");
+                else if (cardDbId > 0)
+                    info = verbose ? CardFormatter.FormatVerbose(cardDbId) : CardFormatter.FormatCompact(cardDbId);
+                else
+                    info = Loc.Get("duel_unknown_card");
 
                 ScreenReader.Say(Loc.Get("duel_card_select_item",
                     index + 1, _emotionalList.Count, info));
@@ -2563,6 +2622,38 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Privacy gate for selection-list reads: true when the card backing an
+        /// EmotionalList item is a FACE-DOWN card owned by the opponent, whose
+        /// name must NOT be revealed. The engine resolves the real cardId even
+        /// for a Set card (rendered face-down, cardId on the hidden cardModel),
+        /// so a targeting list — e.g. Raigeki Break selecting a card on the
+        /// field to destroy — would otherwise read out the opponent's Set
+        /// Spell/Trap by name, which a sighted player can't see (2026-07-21
+        /// log). The player's OWN Set cards are not hidden — they already know
+        /// them. Face detection mirrors DuelState (isMonsterVisible /
+        /// isStatusVisible), erring toward hiding when the flags are unclear.
+        /// </summary>
+        private static bool IsHiddenOpponentCard(int uid, int mixedId)
+        {
+            try
+            {
+                var root = uid > 0 ? FindCardRootByUniqueId(uid) : null;
+                if (root == null && mixedId > 0) root = FindCardRootByUniqueId(mixedId);
+                if (root == null) return false;
+
+                int team = -1;
+                try { team = root.toLocator?.cardPlace?.team ?? -1; } catch { }
+                if (team < 0) return false;          // unknown owner — leave as-is
+                if (team == PlayerMe) return false;  // own card — user knows it
+
+                bool faceUp = false;
+                try { faceUp = root.isMonsterVisible || root.isStatusVisible; } catch { }
+                return !faceUp;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Maps a visual position in cardList to the corresponding itemList index
         /// using ListCard.Index. cardList is the rendered visual order; itemList
         /// is the underlying data. They are not guaranteed to share an ordering
@@ -2616,6 +2707,116 @@ namespace DuelLinksAccess
             }
         }
 
+        /// <summary>
+        /// Taps the focused card in a view-only reveal list (Dark Magical Circle
+        /// top-3 style) via OnClickCard — the same call physical selection uses.
+        /// The list is left open so the game can drive the outcome (resolve, or
+        /// wait for the next card in an ordering step).
+        /// </summary>
+        private void TapRevealCard()
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList == null)
+                {
+                    _emotionalList.IsActive = false;
+                    return;
+                }
+
+                var cards = emoList.cardList;
+                if (cards == null || _emotionalList.Index < 0
+                    || _emotionalList.Index >= cards.Count)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"Reveal tap: no card at index {_emotionalList.Index} "
+                        + $"(count={cards?.Count ?? 0})");
+                    return;
+                }
+
+                string name = GetEmoCardName(_emotionalList.Index);
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"Reveal tap: OnClickCard(cardList[{_emotionalList.Index}]) '{name}'");
+                emoList.OnClickCard(cards[_emotionalList.Index]);
+
+                // Feedback, but do NOT close/mark-handled: the game keeps the
+                // list open for multi-step ordering and closes it itself when
+                // the effect resolves (ProcessEmotionalListInput's !goActive
+                // guard then exits us).
+                ScreenReader.Say(Loc.Get("duel_card_picked", name));
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"TapRevealCard error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("duel_action_error"));
+            }
+        }
+
+        /// <summary>
+        /// Finishes a view-only reveal (Dark Magical Circle top-3). If the game
+        /// enabled the decide button (an addable card was chosen) it confirms
+        /// the add; otherwise it proceeds with no add via OnCancel — which is
+        /// what actually advances the reveal to the "place the rest in any
+        /// order" step (verified 2026-08-17: OnDecide loops, OnCancel advances).
+        /// </summary>
+        private void FinishReveal()
+        {
+            try
+            {
+                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                if (emoList == null)
+                {
+                    _emotionalList.IsActive = false;
+                    return;
+                }
+
+                bool decideActive = false;
+                try { decideActive = emoList.decideButton?.gameObject?.activeInHierarchy == true; } catch { }
+
+                if (decideActive)
+                {
+                    // A valid card is selected to add — confirm via the (now
+                    // active) decide button.
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        "Reveal finish: decideButton active — confirming add");
+                    ConfirmEmotionalList();
+                    return;
+                }
+
+                // The reveal's decide button is inert; the game advances via
+                // Back/Cancel. OnCancel does NOT decline — it proceeds: if a
+                // card was tapped, the game then asks "Add the designated
+                // card(s) to your hand? Yes/No" (a DuelCommonDialog handled by
+                // DuelHandler); otherwise it goes straight to the "place the
+                // rest in any order" reorder step (verified 2026-08-17 log
+                // 02:08 add-a-card path). Either follow-up announces itself, so
+                // stay silent here.
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    "Reveal finish: decideButton inert — proceeding via OnCancel");
+                try
+                {
+                    if (emoList.cancelable) emoList.OnCancel();
+                    else emoList.OnBack();
+                }
+                catch (Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"Reveal finish OnCancel error: {ex.Message}");
+                }
+
+                _emotionalList.IsActive = false;
+                _emotionalList.MarkHandled(
+                    UnityEngine.Time.unscaledTime, EmoListHandledTimeout);
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "FieldNav",
+                    $"FinishReveal error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("duel_action_error"));
+            }
+        }
+
         private void ConfirmEmotionalList()
         {
             try
@@ -2632,19 +2833,30 @@ namespace DuelLinksAccess
                 // button the same way a physical tap would.
                 if (_emotionalList.ViewOnly)
                 {
+                    bool btnActive = false;
+                    try { btnActive = emoList.decideButton?.gameObject?.activeInHierarchy == true; } catch { }
+                    DebugLogger.Log(LogCategory.Game, "FieldNav",
+                        $"View-only confirm: decideButton={(emoList.decideButton != null)} "
+                        + $"active={btnActive} — calling OnDecide()");
                     try
                     {
-                        var viewDecideBtn = emoList.decideButton;
-                        if (viewDecideBtn != null)
-                            viewDecideBtn.onClick.Invoke();
-                        else
-                            emoList.OnDecide();
+                        // For a pure reveal (e.g. Dark Magical Circle's top-3
+                        // look with no addable Spellcaster) the Confirm button's
+                        // GameObject is inactive, so its onClick has no wired
+                        // listener and Invoke() is a silent no-op — that produced
+                        // a confirm loop (2026-08-16 repro: "View-only confirm …
+                        // onClick.Invoke" → "Confirmed" → list re-opens). Call the
+                        // game's OnDecide() resolver directly (the same call the
+                        // tribute flow uses); it resolves the list independent of
+                        // the button's active/enabled state. onClick.Invoke stays
+                        // as a fallback if OnDecide throws.
+                        emoList.OnDecide();
                     }
                     catch (Exception ex)
                     {
                         DebugLogger.Log(LogCategory.Game, "FieldNav",
-                            $"View-only decide error: {ex.Message} — falling back");
-                        emoList.OnDecide();
+                            $"View-only OnDecide error: {ex.Message} — trying onClick");
+                        try { emoList.decideButton?.onClick.Invoke(); } catch { }
                     }
 
                     ScreenReader.Say(Loc.Get("duel_emo_list_confirmed"));
@@ -2801,7 +3013,9 @@ namespace DuelLinksAccess
                 if (cardDbId == 0 && mixedId >= 1000 && mixedId < 100000) cardDbId = mixedId;
 
                 if (cardDbId > 0)
-                    return CardFormatter.GetName(cardDbId);
+                    return IsHiddenOpponentCard(uid, mixedId)
+                        ? Loc.Get("duel_face_down_card")
+                        : CardFormatter.GetName(cardDbId);
             }
             catch { }
             return Loc.Get("duel_unknown_card");

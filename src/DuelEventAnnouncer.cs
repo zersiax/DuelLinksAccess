@@ -293,13 +293,19 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunDialog:
-                    // p3=0: informational "Check the field?" — suppress entirely.
-                    // The player already hears what happened from other events
-                    // (summon, phase change, etc.) and can inspect the field anytime.
-                    // p3=1: actionable "Activate a card or effect?" chain window.
-                    // Defer to next frame so rapid bursts only speak the last one.
+                    // p3 != 0: actionable dialog (chain window "Activate a card
+                    // or effect?", effect-activated info) — defer + announce.
+                    // p3 == 0: historically assumed to be the informational
+                    // "Check the field?" chain-inspection prompt and suppressed
+                    // to avoid noise. But some p3=0 dialogs are meaningful
+                    // effect-selection prompts — e.g. a card offering a choice
+                    // of which effect to activate (Stratos search vs destroy,
+                    // 2026-07-21 log dropped p1=1/p1=4 p3=0 dialogs). Expose
+                    // those; still suppress the pure field-check boilerplate.
                     if (param3 != 0)
                         DeferDialogText("duel_dialog");
+                    else
+                        HandleInfoDialog();
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunList:
@@ -792,6 +798,47 @@ namespace DuelLinksAccess
                     $"ComposeDialogText error: {ex.Message}");
             }
             _pendingDialogText = Loc.Get(fallbackKey);
+        }
+
+        /// <summary>
+        /// Handles a RunDialog with p3=0. Previously suppressed wholesale as
+        /// the "Check the field?" prompt, which also silently dropped
+        /// effect-selection prompts ("which effect should this card use?").
+        /// Composes the text, logs it always-on so the next log reveals what
+        /// these dialogs actually say, and announces anything that isn't the
+        /// pure field-check boilerplate.
+        /// </summary>
+        private static void HandleInfoDialog()
+        {
+            string text = null;
+            try { text = ComposeDialogText(); }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelDialog",
+                    $"HandleInfoDialog compose error: {ex.Message}");
+            }
+            if (string.IsNullOrEmpty(text)) return;
+
+            MelonLoader.MelonLogger.Msg($"[DuelDialog] p3=0 dialog: {text}");
+
+            if (IsFieldCheckBoilerplate(text)) return;
+
+            // Defer like the p3!=0 path so a rapid burst only speaks the last.
+            _pendingDialogText = text;
+        }
+
+        /// <summary>
+        /// True for the informational chain-inspection prompt ("There is no
+        /// card that can be activated by a chain. Check the field?") — pure
+        /// noise the player doesn't need. Anything else (an effect choice, a
+        /// card prompt) is worth announcing.
+        /// </summary>
+        private static bool IsFieldCheckBoilerplate(string text)
+        {
+            return text.IndexOf("Check the field",
+                       StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("can be activated by a chain",
+                       StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>
