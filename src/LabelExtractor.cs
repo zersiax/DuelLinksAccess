@@ -918,8 +918,38 @@ namespace DuelLinksAccess
             // Build composite label from available fields
             var parts = new List<string>();
 
-            // Primary name: title, name, or label (missions use "label" for text)
-            string[] primaryKeys = { "title", "name", "headline", "label" };
+            // Mission rows (RankMissions) carry BOTH a descriptive `label` (the
+            // objective, e.g. "Summon Warrior-Type monsters 3 time(s).") and a
+            // `name` (the world/character the mission belongs to, e.g. "GX").
+            // The generic key order below would announce just the name and drop
+            // the objective, so resolve missions here: prefer the objective and
+            // use the name only as a qualifying prefix when it isn't already in
+            // the text (progress from extext is appended further down).
+            bool primaryResolved = false;
+            if (dataPath.Contains("RankMissions"))
+            {
+                try
+                {
+                    string label = StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                        .getStringByJsonPath(dataPath + ".label", ""));
+                    if (!string.IsNullOrEmpty(label) && !IsPlaceholderText(label))
+                    {
+                        string name = StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                            .getStringByJsonPath(dataPath + ".name", ""));
+                        if (!string.IsNullOrEmpty(name) && !IsPlaceholderText(name)
+                            && !label.Contains(name))
+                            label = name + ": " + label;
+                        parts.Add(label);
+                        primaryResolved = true;
+                    }
+                }
+                catch { }
+            }
+
+            // Primary name: title, name, label, or text. Login-bonus reward cells
+            // store their item name in `text`, so it is included as a fallback.
+            string[] primaryKeys = { "title", "name", "headline", "label", "text" };
+            if (!primaryResolved)
             foreach (var key in primaryKeys)
             {
                 try

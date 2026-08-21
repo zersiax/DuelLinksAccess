@@ -360,6 +360,10 @@ namespace DuelLinksAccess
                     }
                 }
 
+                // Collapse duplicate Htjson list rows (missions, reward lists)
+                // and give their Info buttons row context before reporting.
+                TidyHtjsonListItems();
+
                 MelonLogger.Msg($"[Dialog] Found {_items.Count} interactive items");
 
                 _dialogRoot = dialogRoot;
@@ -786,12 +790,101 @@ namespace DuelLinksAccess
                         Type = ItemType.Button
                     });
 
-                    MelonLogger.Msg($"[Dialog] Button: \"{label}\" ({go.name}) path={GetGameObjectPath(go)}");
+                    // Per-item log is diagnostic only. Guard it (and the path
+                    // walk it needs) behind debug mode — a long list like the
+                    // World missions tab otherwise pays hundreds of synchronous
+                    // disk writes per scan, which stalls the populate.
+                    if (Main.DebugMode)
+                        MelonLogger.Msg($"[Dialog] Button: \"{label}\" ({go.name}) path={GetGameObjectPath(go)}");
                 }
             }
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[Dialog] FindButtons error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Htjson list rows (missions, reward lists) render each entry as three
+        /// overlapping interactive elements: a TextArea (the readable,
+        /// actionable row — activating it already invokes the sibling
+        /// ButtonSet), its sibling ButtonSet (same label and action), and a
+        /// child "Info" button (the "i" icon that opens details about that
+        /// row's subject). Left as-is this triples the nav stops per row (the
+        /// World missions tab reached ~210 items this way) and leaves every
+        /// Info button announced as a bare, context-free "Info".
+        ///
+        /// This drops each ButtonSet whose TextArea sibling is present (a pure
+        /// duplicate — zero loss, activation still works) and relabels each
+        /// Info button with the row it belongs to, so it stays reachable but
+        /// self-describing ("&lt;mission&gt;, more info"). Standalone ButtonSets
+        /// (no paired TextArea, e.g. an "OK" button) and orphan Info buttons
+        /// are left untouched.
+        /// </summary>
+        private void TidyHtjsonListItems()
+        {
+            try
+            {
+                if (_items.Count == 0) return;
+
+                // Map each kept TextArea row to its label. A ButtonSet under the
+                // same parent is that row's duplicate actuator; an Info button
+                // nested under the TextArea belongs to that same row.
+                var textAreaParents = new HashSet<Transform>();
+                var rowLabelByTextArea = new Dictionary<Transform, string>();
+                foreach (var item in _items)
+                {
+                    if (item.Go == null || item.Type == ItemType.Header) continue;
+                    if (item.Go.name != "TextArea") continue;
+                    var t = item.Go.transform;
+                    var p = t.parent;
+                    if (p != null) textAreaParents.Add(p);
+                    rowLabelByTextArea[t] = item.Label;
+                }
+                if (textAreaParents.Count == 0) return;
+
+                int before = _items.Count;
+                _items.RemoveAll(it =>
+                {
+                    if (it.Go == null || it.Type == ItemType.Header) return false;
+                    if (it.Go.name != "ButtonSet") return false;
+                    var p = it.Go.transform.parent;
+                    return p != null && textAreaParents.Contains(p);
+                });
+
+                int removed = before - _items.Count;
+                if (removed > 0)
+                    MelonLogger.Msg($"[Dialog] Collapsed {removed} duplicate ButtonSet row(s)");
+
+                // Relabel Info buttons with their owning row's text.
+                int relabeled = 0;
+                foreach (var it in _items)
+                {
+                    if (it.Go == null || it.Type == ItemType.Header) continue;
+                    if (it.Go.name != "InfoButton") continue;
+
+                    // Walk up to the ancestor TextArea that owns this Info icon.
+                    string rowLabel = null;
+                    var cur = it.Go.transform.parent;
+                    for (int d = 0; d < 5 && cur != null; d++, cur = cur.parent)
+                    {
+                        if (rowLabelByTextArea.TryGetValue(cur, out var lbl))
+                        {
+                            rowLabel = lbl;
+                            break;
+                        }
+                    }
+                    if (string.IsNullOrEmpty(rowLabel)) continue;
+
+                    it.Label = Loc.Get("dialog_row_info", rowLabel);
+                    relabeled++;
+                }
+                if (relabeled > 0)
+                    MelonLogger.Msg($"[Dialog] Labeled {relabeled} Info button(s) with row context");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] TidyHtjsonListItems error: {ex.Message}");
             }
         }
 

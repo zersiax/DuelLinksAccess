@@ -1851,6 +1851,25 @@ namespace DuelLinksAccess
 
         #region Actions
 
+        // Placeholder labels that mean "real text hasn't resolved yet": a bare
+        // GO name gets cleaned to one of these, and Htjson cells fall back to a
+        // date badge ("Today") or an image-cell name ("card").
+        private static readonly HashSet<string> _weakLabels =
+            new HashSet<string> { "Today", "card", "Button" };
+
+        /// <summary>
+        /// True when a label is a placeholder rather than resolved content —
+        /// a known weak token, or nothing more than the cleaned GameObject name.
+        /// Used to decide whether to re-resolve the label live on navigation.
+        /// </summary>
+        private static bool IsWeakLabel(string label, GameObject go)
+        {
+            if (string.IsNullOrEmpty(label)) return true;
+            if (_weakLabels.Contains(label)) return true;
+            if (go != null && label == LabelExtractor.CleanGoName(go.name)) return true;
+            return false;
+        }
+
         private void AnnounceCurrentItem(bool queued = false)
         {
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
@@ -1863,6 +1882,26 @@ namespace DuelLinksAccess
                 _items.RemoveAt(_focusIndex);
                 if (_focusIndex >= _items.Count) _focusIndex = Math.Max(0, _items.Count - 1);
                 return;
+            }
+
+            // Some Htjson list rows (login-bonus reward cells, promo cards) load
+            // their real text asynchronously after the one-shot scan, leaving a
+            // weak placeholder label ("Today", "card", or a bare GO name). When
+            // the cached label still looks like a placeholder, re-resolve it live
+            // off the current GameObject so a headline that has since loaded is
+            // read instead of the stale placeholder.
+            if (IsWeakLabel(item.Label, item.Go))
+            {
+                try
+                {
+                    string fresh = LabelExtractor.GetLabel(item.Go);
+                    if (!string.IsNullOrEmpty(fresh) && fresh != item.Label
+                        && !IsWeakLabel(fresh, item.Go))
+                    {
+                        item.Label = fresh;
+                    }
+                }
+                catch { }
             }
 
             int pos = _focusIndex + 1;

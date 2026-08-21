@@ -124,6 +124,7 @@ namespace DuelLinksAccess
             _english["dialog_slider"] = "Slider: {0}";
             _english["dialog_no_buttons"] = "No interactive items found. Press Space to re-scan.";
             _english["dialog_click_error"] = "Could not press button";
+            _english["dialog_row_info"] = "{0}, more info";
             _english["dialog_text_mode"] = "Press Enter or Space to continue.";
 
             // ===== AGE VERIFICATION =====
