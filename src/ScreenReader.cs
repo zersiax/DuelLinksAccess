@@ -100,6 +100,9 @@ namespace DuelLinksAccess
         {
             if (string.IsNullOrEmpty(text)) return;
 
+            text = SpeechTextFormatter.CleanSpeechText(text);
+            if (string.IsNullOrEmpty(text)) return;
+
             _lastAnnouncement = text;
             DebugLogger.LogScreenReader(text);
 

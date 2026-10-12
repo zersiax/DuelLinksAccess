@@ -96,6 +96,7 @@ namespace DuelLinksAccess
             public string Label;
             public ItemType Type;
             public Slider SliderComponent; // non-null for sliders
+            public Action CustomAction;
         }
 
         #endregion
@@ -241,6 +242,9 @@ namespace DuelLinksAccess
                 }
             }
 
+            // Real-time monitor for SettingsDialogViewController voice mute & talk toggle
+            MonitorSettingsDialogLiveState();
+
             ProcessInput();
         }
 
@@ -322,6 +326,18 @@ namespace DuelLinksAccess
                 // controls from the VC's own live data
                 ApplyAutoDeckLabels(dialogRoot);
 
+                // Deck menu dialog (Draw test, history, popular, foil, etc.)
+                ApplyDeckMenuLabels(dialogRoot);
+
+                // Download settings dialog (card data, background dl, size, etc.)
+                ApplyDownloadSettingsLabels(dialogRoot);
+
+                // Settings dialog (Talk in duel toggle, voice volume, voice mute, voice data)
+                ApplySettingsDialogLabels(dialogRoot);
+
+                // Skill confirmation dialog in duel (Activate / Cancel buttons and description)
+                ApplySkillDialogLabels(dialogRoot);
+
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
                 // dismiss it or pass through so other handlers can run
                 if (_items.Count == 0 && string.IsNullOrEmpty(dialogText))
@@ -371,7 +387,7 @@ namespace DuelLinksAccess
                 // If dialog has tabs, announce the active tab name
                 string activeTabName = GetActiveTabName(dialogRoot);
                 if (activeTabName != null)
-                    ScreenReader.SayQueued(activeTabName + " tab");
+                    ScreenReader.SayQueued(activeTabName + " 标签页");
 
                 // Debug: dump non-button text elements and datapaths to discover
                 // category headers and mission data structure
@@ -742,12 +758,14 @@ namespace DuelLinksAccess
                     // Skip slider sub-elements (already handled as Slider)
                     if (IsChildOfSlider(go, root)) continue;
 
+                    var selectable = go.GetComponent<Selectable>();
+                    if (selectable is UnityEngine.UI.Scrollbar || goName.Contains("scrollbar")) continue;
+
                     // Must look like a button — has a Selectable, or has "btn"/"button" in name,
                     // or is an Image with text children
                     bool isButton = false;
                     string label = null;
 
-                    var selectable = go.GetComponent<Selectable>();
                     bool nameLooksInteractive = goName.Contains("btn")
                         || goName.Contains("button")
                         || goName.Contains("close")
@@ -768,7 +786,7 @@ namespace DuelLinksAccess
                     if (isButton) label = LabelExtractor.GetLabel(go);
 
                     if (!isButton) continue;
-                    if (string.IsNullOrEmpty(label)) label = go.name;
+                    if (string.IsNullOrEmpty(label)) label = LabelExtractor.CleanGoName(go.name);
 
                     processed.Add(go);
 
@@ -778,7 +796,7 @@ namespace DuelLinksAccess
                         if (IsTabButton(go))
                         {
                             var sel = go.GetComponent<Selectable>();
-                            label += (sel != null && !sel.interactable) ? ", selected tab" : ", tab";
+                            label += (sel != null && !sel.interactable) ? "，已选标签页" : "，标签页";
                         }
                     }
                     catch { }
@@ -902,7 +920,8 @@ namespace DuelLinksAccess
             try
             {
                 var vc = dialogRoot.GetComponent<
-                    Il2CppYgomGame.Menu.CharaFilterDialogViewController>();
+                    Il2CppYgomGame.Menu.CharaFilterDialogViewController>()
+                    ?? dialogRoot.GetComponentInChildren<Il2CppYgomGame.Menu.CharaFilterDialogViewController>(true);
                 if (vc == null) return;
 
                 // Flatten the dialog's chara data in display order.
@@ -1367,6 +1386,301 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Deck menu dialog (DeckMenuDialogViewController): labels the 8 main actions
+        /// (Draw Test, History, Deep Link, Distribute recipes, Contribute recipes,
+        /// Popular cards, Popular skills, Select Foil / SelKira).
+        /// </summary>
+        private void ApplyDeckMenuLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Deck.DeckMenuDialogViewController>();
+                if (vc == null) return;
+
+                RelabelItemByTransform(vc.drawTestButton?.transform, Loc.Get("deck_menu_draw_test"));
+                RelabelItemByTransform(vc.deepLinkButton?.transform, Loc.Get("deck_menu_deep_link"));
+                RelabelItemByTransform(vc.distributeButton?.transform, Loc.Get("deck_menu_distribute"));
+                RelabelItemByTransform(vc.contributeButton?.transform, Loc.Get("deck_menu_contribute"));
+                RelabelItemByTransform(vc.popularCardButton?.transform, Loc.Get("deck_menu_popular_card"));
+                RelabelItemByTransform(vc.popularSkillButton?.transform, Loc.Get("deck_menu_popular_skill"));
+
+                // History toggle
+                if (vc.historyButton != null)
+                {
+                    string histLabel = Loc.Get("deck_menu_history");
+                    string v = vc.historyViewLabel?.text;
+                    if (!string.IsNullOrWhiteSpace(v))
+                        histLabel += $" ({LabelExtractor.StripRichText(v).Trim()})";
+                    RelabelItemByTransform(vc.historyButton.transform, histLabel);
+                }
+
+                // Foil / SelKira button
+                if (vc.selKiraButton != null)
+                {
+                    string curKira = LabelExtractor.StripRichText(vc.selKiraCurrent?.text ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(curKira)) curKira = "普通";
+                    RelabelItemByTransform(vc.selKiraButton.transform, Loc.Get("deck_menu_sel_kira", curKira));
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "Dialog", "DeckMenu labels applied");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyDeckMenuLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Download settings dialog (DownloadSettingsDialogViewController): labels
+        /// the download button (with estimated payload size), cancel button,
+        /// card artwork download toggle, and background download toggle.
+        /// </summary>
+        private void ApplyDownloadSettingsLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Settings.DownloadSettingsDialogViewController>();
+                if (vc == null) return;
+
+                // Download Button (with size if available)
+                string size = LabelExtractor.StripRichText(vc.cardSizeText?.text ?? vc.voiceSizeText?.text ?? "").Trim();
+                string dlLabel = string.IsNullOrWhiteSpace(size)
+                    ? Loc.Get("download_start", "计算中...")
+                    : Loc.Get("download_start", size);
+                RelabelItemByTransform(vc.downloadButton?.transform, dlLabel);
+
+                // Cancel Button
+                RelabelItemByTransform(vc.cancelButton?.transform, Loc.Get("download_cancel"));
+
+                // Card data checkbox
+                if (vc.cardCheckBox != null)
+                {
+                    bool on = vc.cardCheckBox.isOn;
+                    string status = Loc.Get(on ? "accessory_checked" : "accessory_unchecked");
+                    RelabelItemByTransform(vc.cardCheckBox.transform, Loc.Get("download_card_data", status));
+                }
+
+                // Background download checkbox
+                if (vc.bgdlCheckBox != null)
+                {
+                    bool on = vc.bgdlCheckBox.isOn;
+                    string status = Loc.Get(on ? "accessory_checked" : "accessory_unchecked");
+                    RelabelItemByTransform(vc.bgdlCheckBox.transform, Loc.Get("download_bg_data", status));
+                }
+
+                // Voice setting / language field
+                if (vc.voiceField != null)
+                {
+                    string voiceLang = LabelExtractor.StripRichText(vc.voiceText?.text ?? "").Trim();
+                    string voiceSize = LabelExtractor.StripRichText(vc.voiceSizeText?.text ?? "").Trim();
+                    string vLabel;
+                    if (vc.voiceOff || string.Equals(voiceLang, "OFF", StringComparison.OrdinalIgnoreCase))
+                    {
+                        vLabel = Loc.Get("download_voice_off");
+                    }
+                    else
+                    {
+                        string sizePart = !string.IsNullOrWhiteSpace(voiceSize) ? $"（需下载: {voiceSize}）" : "";
+                        vLabel = Loc.Get("download_voice_setting", voiceLang, sizePart);
+                    }
+                    RelabelItemByTransform(vc.voiceField.transform, vLabel);
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "Dialog", "DownloadSettings labels applied");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyDownloadSettingsLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// General settings dialog (SettingsDialogViewController): labels
+        /// duel talk toggle (character voice lines during battle), voice volume slider,
+        /// voice mute button, and voice data download jump button.
+        /// </summary>
+        private void ApplySettingsDialogLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Settings.SettingsDialogViewController>();
+                if (vc == null) return;
+
+                if (vc.talkToggle != null)
+                {
+                    bool on = vc.talkToggle.isOn;
+                    string status = Loc.Get(on ? "accessory_checked" : "accessory_unchecked");
+                    RelabelItemByTransform(vc.talkToggle.transform, Loc.Get("settings_talk_toggle", status));
+                }
+
+                if (vc.voiceSlider != null)
+                {
+                    int val = (int)(vc.voiceSlider.value * 100);
+                    RelabelItemByTransform(vc.voiceSlider.transform, Loc.Get("settings_voice_slider", val));
+                }
+
+                if (vc.voiceButton != null)
+                {
+                    bool isMute = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceMute();
+                    RelabelItemByTransform(vc.voiceButton.transform, Loc.Get("settings_voice_mute", isMute ? "已静音" : "正常"));
+                }
+
+                if (vc.voiceDataButton != null)
+                {
+                    RelabelItemByTransform(vc.voiceDataButton.transform, Loc.Get("settings_voice_data_btn"));
+                }
+
+                if (vc.voiceField != null)
+                {
+                    string vText = LabelExtractor.StripRichText(vc.voiceText?.text ?? "").Trim();
+                    RelabelItemByTransform(vc.voiceField.transform, Loc.Get("settings_voice_lang", vText));
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "Dialog", "SettingsDialog labels applied");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplySettingsDialogLabels error: {ex.Message}");
+            }
+        }
+
+        private bool _lastSettingsVoiceMute;
+        private bool _lastSettingsTalk;
+        private bool _settingsStateInitialized;
+
+        private void MonitorSettingsDialogLiveState()
+        {
+            if (_dialogRoot == null) return;
+            var vc = _dialogRoot.GetComponent<Il2CppYgomGame.Settings.SettingsDialogViewController>();
+            if (vc == null)
+            {
+                _settingsStateInitialized = false;
+                return;
+            }
+
+            try
+            {
+                bool currentMute = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceMute();
+                bool currentTalk = vc.talkToggle != null ? vc.talkToggle.isOn : Il2CppYgomGame.Settings.SettingsUtil.GetTalk();
+
+                if (!_settingsStateInitialized)
+                {
+                    _lastSettingsVoiceMute = currentMute;
+                    _lastSettingsTalk = currentTalk;
+                    _settingsStateInitialized = true;
+                    return;
+                }
+
+                if (currentMute != _lastSettingsVoiceMute)
+                {
+                    _lastSettingsVoiceMute = currentMute;
+                    ApplySettingsDialogLabels(_dialogRoot);
+                    string status = Loc.Get("settings_voice_mute", currentMute ? "已静音" : "正常");
+                    MelonLogger.Msg($"[Dialog] Settings voice mute live change: {status}");
+                    ScreenReader.Say(status);
+                }
+
+                if (currentTalk != _lastSettingsTalk)
+                {
+                    _lastSettingsTalk = currentTalk;
+                    ApplySettingsDialogLabels(_dialogRoot);
+                    string status = Loc.Get(currentTalk ? "accessory_checked" : "accessory_unchecked");
+                    string msg = Loc.Get("settings_talk_toggle", status);
+                    MelonLogger.Msg($"[Dialog] Settings talk toggle live change: {msg}");
+                    ScreenReader.Say(msg);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Reads and labels SkillDialogViewController in duel (skill confirmation modal).
+        /// Announces skill name, description, and provides activate/cancel buttons.
+        /// </summary>
+        private void ApplySkillDialogLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Duel.SkillDialogViewController>()
+                    ?? FindVcInStack<Il2CppYgomGame.Duel.SkillDialogViewController>("dialog");
+                if (vc == null) return;
+
+                string sName = "";
+                string sText = "";
+                try { sName = LabelExtractor.StripRichText(vc.skillName?.text ?? "").Trim(); } catch { }
+                try { sText = LabelExtractor.StripRichText(vc.skillText?.text ?? "").Trim(); } catch { }
+
+                bool foundActivate = false;
+                bool foundClose = false;
+
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    var it = _items[i];
+                    string goName = it.Go != null ? it.Go.name.ToLower() : "";
+                    if (goName.Contains("act") || goName.Contains("ok") || goName.Contains("decide") || goName.Contains("skill"))
+                    {
+                        it.Label = Loc.Get("duel_skill_btn_activate");
+                        var origAction = it.CustomAction;
+                        it.CustomAction = () => {
+                            if (origAction != null) origAction();
+                            else vc.Activate();
+                        };
+                        foundActivate = true;
+                    }
+                    else if (goName.Contains("close") || goName.Contains("cancel") || goName.Contains("back"))
+                    {
+                        it.Label = Loc.Get("duel_skill_btn_close");
+                        var origAction = it.CustomAction;
+                        it.CustomAction = () => {
+                            if (origAction != null) origAction();
+                            else vc.Close();
+                        };
+                        foundClose = true;
+                    }
+                }
+
+                if (!foundActivate)
+                {
+                    _items.Insert(0, new DialogItem
+                    {
+                        Label = Loc.Get("duel_skill_btn_activate"),
+                        CustomAction = () => vc.Activate()
+                    });
+                }
+                if (!foundClose)
+                {
+                    _items.Add(new DialogItem
+                    {
+                        Label = Loc.Get("duel_skill_btn_close"),
+                        CustomAction = () => vc.Close()
+                    });
+                }
+
+                string prompt = string.IsNullOrEmpty(sName)
+                    ? "技能确认。按回车或K发动，按Escape取消。"
+                    : $"技能：{sName}。{sText}。按回车或K发动，按Escape取消。";
+
+                _lastDialogText = prompt;
+                ScreenReader.Say(prompt);
+                DebugLogger.Log(LogCategory.Handler, "Dialog", $"SkillDialog labels applied: {sName}");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplySkillDialogLabels error: {ex.Message}");
+            }
+        }
+
+        private void RelabelItemByTransform(Transform target, string newLabel)
+        {
+            if (target == null || string.IsNullOrEmpty(newLabel)) return;
+            var item = _items.Find(it => it.Go != null && IsSameOrRelated(it.Go.transform, target));
+            if (item != null)
+            {
+                item.Label = newLabel;
+            }
+        }
+
+        /// <summary>
         /// Resolves an accessory id to a label, wrapping it in the given
         /// category prefix (e.g. "Card sleeve: {0}") only when name
         /// resolution fell back to the raw id — resolved names already
@@ -1500,8 +1814,10 @@ namespace DuelLinksAccess
 
                     // This is the non-interactable (selected) tab
                     string label = item.Label;
-                    // Strip the ", selected tab" suffix we may have added
-                    if (label.EndsWith(", selected tab"))
+                    // Strip the ", selected tab" or "，已选标签页" suffix we may have added
+                    if (label.EndsWith("，已选标签页"))
+                        label = label.Substring(0, label.Length - "，已选标签页".Length);
+                    else if (label.EndsWith(", selected tab"))
                         label = label.Substring(0, label.Length - ", selected tab".Length);
                     return label;
                 }
@@ -1785,7 +2101,7 @@ namespace DuelLinksAccess
             string msg;
             if (item.Type == ItemType.Header)
             {
-                msg = $"{item.Label} heading, {pos} of {total}";
+                msg = $"{item.Label} 标题，第 {pos} 项，共 {total} 项";
             }
             else if (item.Type == ItemType.Slider && item.SliderComponent != null)
             {
@@ -1810,20 +2126,37 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
-            if (item.Type != ItemType.Slider || item.SliderComponent == null)
+            if (item.Type == ItemType.Slider && item.SliderComponent != null)
+            {
+                var slider = item.SliderComponent;
+                float step = slider.wholeNumbers ? 1f : (slider.maxValue - slider.minValue) / 20f;
+                float newValue = Mathf.Clamp(
+                    slider.value + direction * step,
+                    slider.minValue,
+                    slider.maxValue);
+
+                slider.value = newValue;
+
+                int val = Mathf.RoundToInt(newValue);
+                ScreenReader.Say(val.ToString());
                 return;
+            }
 
-            var slider = item.SliderComponent;
-            float step = slider.wholeNumbers ? 1f : (slider.maxValue - slider.minValue) / 20f;
-            float newValue = Mathf.Clamp(
-                slider.value + direction * step,
-                slider.minValue,
-                slider.maxValue);
-
-            slider.value = newValue;
-
-            int val = Mathf.RoundToInt(newValue);
-            ScreenReader.Say(val.ToString());
+            // Also support adjusting target deck size in AutoDeckDialog
+            try
+            {
+                var topRoot = GetTopVcRoot("dialog");
+                var autoVc = topRoot?.GetComponent<Il2CppYgomGame.Deck.AutoDeckDialogViewController>();
+                if (autoVc != null && IsSameOrRelated(item.Go?.transform, autoVc.deckNumText?.transform))
+                {
+                    int nextNum = Mathf.Clamp(autoVc.curDeckNum + direction, autoVc.deckNumMin, autoVc.deckNumMax);
+                    autoVc.setDeckNum(nextNum);
+                    item.Label = Loc.Get("deck_auto_size", nextNum.ToString(), autoVc.deckNumMin, autoVc.deckNumMax);
+                    ScreenReader.Say(item.Label);
+                    return;
+                }
+            }
+            catch { }
         }
 
         private void ActivateCurrentItem()
@@ -1831,6 +2164,21 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+
+            if (item.CustomAction != null)
+            {
+                try
+                {
+                    item.CustomAction();
+                    ScreenReader.Say(item.Label);
+                    _postActivationRescanDelay = 1.0f;
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Msg($"[Dialog] CustomAction error: {ex.Message}");
+                }
+            }
 
             if (!LabelExtractor.IsAlive(item.Go))
             {
@@ -1883,26 +2231,50 @@ namespace DuelLinksAccess
                 if (TryActivateSpecialDialog(item))
                     return;
 
+                // Special case: FilterSettingItem (card filter dialog options: SR, UR, Monster, Trap, etc.)
+                var fsi = item.Go.GetComponent<Il2CppYgomGame.Deck.FilterSettingItem>()
+                    ?? item.Go.GetComponentInParent<Il2CppYgomGame.Deck.FilterSettingItem>()
+                    ?? item.Go.GetComponentInChildren<Il2CppYgomGame.Deck.FilterSettingItem>();
+                if (fsi != null)
+                {
+                    bool newState = !fsi.IsSelected;
+                    fsi.ItemClicked(newState);
+                    string stateText = newState ? "已开启" : "已关闭";
+                    ScreenReader.Say($"{item.Label} {stateText}");
+                    MelonLogger.Msg($"[Dialog] FilterSettingItem toggled: {item.Label} -> {newState}");
+                    _tabRescanDelay = 0.5f;
+                    return;
+                }
+
                 var eventData = new UnityEngine.EventSystems.PointerEventData(
                     UnityEngine.EventSystems.EventSystem.current);
 
-                // Strategy 1: Htjson ButtonWidget — fire full click cycle on its YgomButton
                 bool activated = false;
-                var buttonWidget = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>();
-                if (buttonWidget != null)
+
+                // Target gameobject for click: either item.Go or its YgomButton
+                GameObject clickTargetGo = item.Go;
+                var buttonWidget = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>()
+                    ?? item.Go.GetComponentInChildren<Il2CppYgomSystem.Htjson.ButtonWidget>();
+                if (buttonWidget != null && buttonWidget.button != null && buttonWidget.button.gameObject != null)
+                {
+                    clickTargetGo = buttonWidget.button.gameObject;
+                }
+
+                // Strategy 1: Htjson ButtonWidget (native pointer event cycle)
+                if (!activated && buttonWidget != null)
                 {
                     var ygomBtn = buttonWidget.button;
                     if (ygomBtn != null && ygomBtn.gameObject != null
                         && IsControlInteractable(ygomBtn.gameObject))
                     {
-                        MelonLogger.Msg($"[Dialog] Htjson ButtonWidget, clicking YgomButton on {ygomBtn.gameObject.name}");
+                        MelonLogger.Msg($"[Dialog] Htjson ButtonWidget fallback, clicking on {ygomBtn.gameObject.name}");
                         var btnGo = ygomBtn.gameObject;
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
-                            btnGo, eventData,
-                            UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
-                            btnGo, eventData,
-                            UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                        if (Main.TryGetUiScreenPos(btnGo, out Vector2 pos))
+                        {
+                            eventData.position = pos;
+                            eventData.pressPosition = pos;
+                        }
+                        eventData.button = UnityEngine.EventSystems.PointerEventData.InputButton.Left;
                         UnityEngine.EventSystems.ExecuteEvents.Execute(
                             btnGo, eventData,
                             UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
@@ -1994,21 +2366,51 @@ namespace DuelLinksAccess
                     UnityEngine.EventSystems.ExecuteEvents.Execute(
                         item.Go, eventData,
                         UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+
+                    // Strategy 4b: Toggle component fallback
+                    var toggleComp = item.Go.GetComponent<Toggle>()
+                        ?? item.Go.GetComponentInParent<Toggle>()
+                        ?? item.Go.GetComponentInChildren<Toggle>();
+                    if (toggleComp != null && toggleComp.interactable)
+                    {
+                        toggleComp.isOn = !toggleComp.isOn;
+                        MelonLogger.Msg($"[Dialog] Toggled Toggle component: {item.Label} -> {toggleComp.isOn}");
+                        activated = true;
+                    }
+
+                    // Strategy 5: Hardware mouse coordinate click fallback.
+                    // For dialogs blocked by overlays (e.g. InputScreenCover) or native raycasters
+                    // where synthetic pointer events fail, simulate genuine Win32 hardware mouse click
+                    // directly at the UI element's screen center (ONLY if within viewport!).
+                    if (item.Go != null && Main.TryGetUiScreenPos(item.Go, out Vector2 clickPos))
+                    {
+                        if (clickPos.x >= 0 && clickPos.x <= Screen.width && clickPos.y >= 0 && clickPos.y <= Screen.height)
+                        {
+                            MelonLogger.Msg($"[Dialog] Simulating hardware mouse click fallback at ({clickPos.x:F0}, {clickPos.y:F0}) for {item.Label}");
+                            Main.ClickViaHardwareMouse(clickPos, "Dialog-Btn-HardwareFallback");
+                        }
+                    }
                 }
 
                 ScreenReader.Say(item.Label);
 
-                // Schedule a post-activation rescan to detect stacked dialogs
-                // (e.g. clicking "Privacy Notice" opens a new dialog on top)
-                _postActivationRescanDelay = 1.5f;
-
-                // Detect tab button activation — schedule content rescan.
-                // Tab switching doesn't change the VC instance, so the
-                // post-activation stacked-dialog check won't trigger.
-                if (IsTabButton(item.Go))
+                // If in Settings dialog, immediately re-apply labels so state updates without re-entering
+                if (_dialogRoot != null && _dialogRoot.GetComponent<Il2CppYgomGame.Settings.SettingsDialogViewController>() != null)
                 {
-                    MelonLogger.Msg($"[Dialog] Tab button activated, scheduling content rescan");
-                    _tabRescanDelay = 1.0f;
+                    ApplySettingsDialogLabels(_dialogRoot);
+                }
+
+                // Schedule a post-activation rescan to detect stacked dialogs
+                // (e.g. clicking "Privacy Notice" or "Filter" opens a new dialog on top)
+                _postActivationRescanDelay = 0.5f;
+
+                // Detect tab button activation or filter/toggle activation — schedule content rescan.
+                // Tab/filter switching doesn't change the VC instance, so content rescan updates items.
+                if (IsTabButton(item.Go)
+                    || (item.Label != null && (item.Label.Contains("筛选") || item.Label.Contains("Filter") || item.Label.Contains("关闭") || item.Label.Contains("开启"))))
+                {
+                    MelonLogger.Msg($"[Dialog] Tab/Filter button activated, scheduling content rescan");
+                    _tabRescanDelay = 0.5f;
                 }
             }
             catch (Exception ex)
@@ -2023,6 +2425,67 @@ namespace DuelLinksAccess
             if (go == null) return null;
             return go.GetComponent<Selectable>()
                 ?? go.GetComponentInParent<Selectable>();
+        }
+
+        /// <summary>
+        /// Heuristic evaluation for negative/cancellation actions across English, Japanese, and Chinese.
+        /// Zero hardcoding of exact locale strings; matches by semantic intent and GO name tokens.
+        /// </summary>
+        private static bool IsNegativeAction(string label, GameObject go)
+        {
+            if (string.IsNullOrEmpty(label)) label = "";
+            string upper = label.Trim().ToUpperInvariant();
+            string goName = go != null ? go.name.ToLowerInvariant() : "";
+
+            if (upper == "NO" || upper == "CANCEL" || upper == "CLOSE" || upper == "BACK"
+                || upper == "DISMISS" || upper == "REJECT" || upper == "DECLINE"
+                || upper == "いいえ" || upper == "キャンセル" || upper == "閉じる" || upper == "戻る"
+                || upper.Contains("取消") || upper.Contains("关闭") || upper.Contains("返回")
+                || upper.Contains("放弃") || upper.Contains("拒绝") || upper == "否" || upper == "不")
+            {
+                return true;
+            }
+
+            if (goName.Contains("cancel") || goName.Contains("close") || goName.Contains("btn_no")
+                || goName.Contains("btn0") || goName.Contains("back"))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Heuristic evaluation for affirmative/confirmation/trade actions across English, Japanese, and Chinese.
+        /// Matches by semantic intent and GO name tokens.
+        /// </summary>
+        private static bool IsAffirmativeAction(string label, GameObject go)
+        {
+            if (string.IsNullOrEmpty(label)) label = "";
+            string upper = label.Trim().ToUpperInvariant();
+            string goName = go != null ? go.name.ToLowerInvariant() : "";
+
+            if (upper == "TRADE" || upper == "YES" || upper == "OK" || upper == "EXCHANGE"
+                || upper == "CONFIRM" || upper == "BUY" || upper == "ACCEPT" || upper == "AGREE"
+                || upper == "SUBMIT" || upper == "PROCEED" || upper == "APPLY"
+                || upper == "はい" || upper == "交換" || upper == "決定" || upper == "購入"
+                || upper == "同意" || upper == "OK" || upper == "確認"
+                || upper.Contains("交易") || upper.Contains("确定") || upper.Contains("确认")
+                || upper.Contains("交换") || upper.Contains("兑换") || upper.Contains("购买")
+                || upper.Contains("同意") || upper.Contains("接受") || upper.Contains("提交")
+                || upper.Contains("继续") || upper.Contains("应用") || upper == "是" || upper == "好")
+            {
+                return true;
+            }
+
+            if (goName.Contains("trade") || goName.Contains("exchange") || goName.Contains("yes")
+                || goName.Contains("ok") || goName.Contains("confirm") || goName.Contains("btn_yes")
+                || goName.Contains("btn1") || goName.Contains("submit") || goName.Contains("buy"))
+            {
+                return true;
+            }
+
+            return false;
         }
 
         private static bool IsControlInteractable(GameObject go)
@@ -2041,48 +2504,331 @@ namespace DuelLinksAccess
         {
             try
             {
-                // Privacy Notice: "I've confirmed" has no click handlers.
+                // Privacy Notice: "I've confirmed" / "我已确认" has no click handlers.
                 // Must call PolicySettingsDialogViewController.OnConfirm() directly.
-                if (item.Label == "I've confirmed")
+                var policyVc = FindVcInStack<
+                    Il2CppYgomGame.Settings.PolicySettingsDialogViewController>("dialog");
+                if (policyVc != null)
                 {
-                    // Walk the dialog manager VC stack to find PolicySettingsDialogVC.
-                    // FindObjectOfType fails for this IL2CPP type.
-                    var policyVc = FindVcInStack<
-                        Il2CppYgomGame.Settings.PolicySettingsDialogViewController>("dialog");
-                    if (policyVc != null)
+                    if (IsAffirmativeAction(item.Label, item.Go) || item.Label == "I've confirmed" || item.Label.Contains("确认") || item.Label.Contains("同意"))
                     {
-                        MelonLogger.Msg("[Dialog] Calling PolicySettingsDialogVC.OnConfirm()");
+                        MelonLogger.Msg($"[Dialog] Calling PolicySettingsDialogVC.OnConfirm() for '{item.Label}'");
                         policyVc.OnConfirm();
                         ScreenReader.Say(item.Label);
                         return true;
                     }
-                    MelonLogger.Msg("[Dialog] PolicySettingsDialogVC not found in stack, falling back to click");
                 }
 
-                // ConfirmDialogViewController (ticket exchange, card trader, etc.)
-                // Both "btn" GOs share the same onClick handler, so Button.onClick.Invoke()
-                // always triggers YES/TRADE. We need OnClickedNo() / OnClickedYes() directly.
+                // ConfirmDialogViewController (ticket exchange, card trader, item exchange, etc.)
+                // Pure soft-code direct invocation: invokes clickYesAction(exchangeNum) / clickNoAction
+                // and native OnClickedYes/No directly. Eliminates hardware mouse offset misclicks.
                 var confirmVc = FindVcInStack<
                     Il2CppYgomGame.Menu.ConfirmDialogViewController>("dialog");
                 if (confirmVc != null)
                 {
-                    // Determine which button by label
-                    string label = item.Label?.ToUpperInvariant() ?? "";
-                    if (label == "NO" || label == "CANCEL" || label == "CLOSE"
-                        || label == "いいえ" || label == "キャンセル")
+                    // Helper to trigger genuine game UI button audio and events
+                    Action<GameObject, string> triggerNativeButtonClick = (targetGo, logTag) =>
                     {
-                        MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedNo()");
-                        confirmVc.OnClickedNo();
+                        if (targetGo == null) return;
+                        try
+                        {
+                            var ygomBtn = targetGo.GetComponentInParent<Il2CppYgomSystem.UI.YgomButton>()
+                                ?? targetGo.GetComponentInChildren<Il2CppYgomSystem.UI.YgomButton>();
+                            if (ygomBtn != null)
+                            {
+                                try { Il2CppYgomSystem.UI.YgomButton.PlaySE(ygomBtn.seType); } catch { }
+                                var evData = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
+                                try { ygomBtn.OnPointerClick(evData); } catch { }
+                            }
+
+                            var evDataGen = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(targetGo, evDataGen, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(targetGo, evDataGen, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(targetGo, evDataGen, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+
+                            if (Main.TryGetUiScreenPos(targetGo, out Vector2 cPos))
+                            {
+                                MelonLogger.Msg($"[Dialog] Simulating hardware mouse click for {logTag} at ({cPos.x:F0}, {cPos.y:F0})");
+                                Main.ClickViaHardwareMouse(cPos, "ConfirmDialog-HardwareClick");
+                            }
+                        }
+                        catch (Exception exEv)
+                        {
+                            MelonLogger.Msg($"[Dialog] triggerNativeButtonClick error: {exEv.Message}");
+                        }
+                    };
+
+                    if (IsNegativeAction(item.Label, item.Go))
+                    {
+                        MelonLogger.Msg($"[Dialog] ConfirmDialog: negative action recognized for '{item.Label}', invoking clickNoAction/OnClickedNo");
+                        try
+                        {
+                            if (confirmVc.clickNoAction != null)
+                            {
+                                MelonLogger.Msg("[Dialog] ConfirmDialog: invoking clickNoAction directly");
+                                confirmVc.clickNoAction.Invoke();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Msg($"[Dialog] ConfirmDialog clickNoAction error: {ex.Message}");
+                        }
+
+                        try { confirmVc.OnClickedNo(); }
+                        catch (Exception ex) { MelonLogger.Msg($"[Dialog] ConfirmDialog OnClickedNo error: {ex.Message}"); }
+
+                        var btn = item.Go?.GetComponentInParent<Button>();
+                        if (btn != null && btn.interactable)
+                        {
+                            try { btn.onClick?.Invoke(); } catch { }
+                        }
+
+                        triggerNativeButtonClick(item.Go, "No-Button");
+
                         ScreenReader.Say(item.Label);
                         return true;
                     }
-                    else if (label == "TRADE" || label == "YES" || label == "OK"
-                        || label == "EXCHANGE" || label == "CONFIRM"
-                        || label == "はい" || label == "交換")
+                    else if (IsAffirmativeAction(item.Label, item.Go))
                     {
-                        MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedYes()");
-                        confirmVc.OnClickedYes();
+                        MelonLogger.Msg($"[Dialog] ConfirmDialog: affirmative action recognized for '{item.Label}', invoking clickYesAction/OnClickedYes");
+                        
+                        int num = 1;
+                        try
+                        {
+                            num = confirmVc.exchangeNum > 0 ? confirmVc.exchangeNum : 1;
+                            if (confirmVc.clickYesAction != null)
+                            {
+                                MelonLogger.Msg($"[Dialog] ConfirmDialog: invoking clickYesAction({num}) directly");
+                                confirmVc.clickYesAction.Invoke(num);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Msg($"[Dialog] ConfirmDialog clickYesAction error: {ex.Message}");
+                        }
+
+                        try { confirmVc.OnClickedYes(); }
+                        catch (Exception ex) { MelonLogger.Msg($"[Dialog] ConfirmDialog OnClickedYes error: {ex.Message}"); }
+
+                        var btn = item.Go?.GetComponentInParent<Button>();
+                        if (btn != null && btn.interactable)
+                        {
+                            try { btn.onClick?.Invoke(); } catch { }
+                        }
+
+                        triggerNativeButtonClick(item.Go, "Yes-Button");
+
                         ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    else
+                    {
+                        // Fallback by hierarchy when text is ambiguous or unlabelled
+                        var buttons = confirmVc.GetComponentsInChildren<Button>(true);
+                        if (buttons != null && buttons.Length >= 2)
+                        {
+                            if (item.Go == buttons[0].gameObject || (item.Go != null && item.Go.transform.IsChildOf(buttons[0].transform)))
+                            {
+                                MelonLogger.Msg($"[Dialog] ConfirmDialog: ambiguous '{item.Label}', mapped to button[0] -> OnClickedNo()");
+                                try { confirmVc.clickNoAction?.Invoke(); } catch { }
+                                try { confirmVc.OnClickedNo(); } catch { }
+                                try { buttons[0].onClick?.Invoke(); } catch { }
+                                triggerNativeButtonClick(buttons[0].gameObject, "Ambiguous-No");
+                                ScreenReader.Say(item.Label);
+                                return true;
+                            }
+                            else if (item.Go == buttons[1].gameObject || (item.Go != null && item.Go.transform.IsChildOf(buttons[1].transform)))
+                            {
+                                MelonLogger.Msg($"[Dialog] ConfirmDialog: ambiguous '{item.Label}', mapped to button[1] -> OnClickedYes()");
+                                int num = 1;
+                                try { num = confirmVc.exchangeNum > 0 ? confirmVc.exchangeNum : 1; } catch { }
+                                try { confirmVc.clickYesAction?.Invoke(num); } catch { }
+                                try { confirmVc.OnClickedYes(); } catch { }
+                                try { buttons[1].onClick?.Invoke(); } catch { }
+                                triggerNativeButtonClick(buttons[1].gameObject, "Ambiguous-Yes");
+                                ScreenReader.Say(item.Label);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                // Auto Deck Build dialog (AutoDeckDialogViewController)
+                var autoVc = FindVcInStack<Il2CppYgomGame.Deck.AutoDeckDialogViewController>("dialog");
+                if (autoVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, autoVc.allButton?.transform))
+                    {
+                        autoVc.allButton.isOn = true;
+                        autoVc.setDefaultAllOrRest();
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.restButton?.transform))
+                    {
+                        autoVc.restButton.isOn = true;
+                        autoVc.setDefaultAllOrRest();
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.noCardButton?.transform))
+                    {
+                        autoVc.noCardButton.isOn = !autoVc.noCardButton.isOn;
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.skillButton?.transform))
+                    {
+                        autoVc.skillButton.isOn = !autoVc.skillButton.isOn;
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.accordionTitle?.transform) || IsSameOrRelated(tf, autoVc.accButtonImage?.transform))
+                    {
+                        autoVc.AccClicked();
+                        ScreenReader.Say(autoVc.accOpened ? Loc.Get("deck_auto_expanded", Loc.Get("deck_auto_advanced")) : Loc.Get("deck_auto_collapsed", Loc.Get("deck_auto_advanced")));
+                        _scanned = false;
+                        _scanDelay = 0.25f;
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.deckNumText?.transform))
+                    {
+                        autoVc.DeckNumClicked();
+                        _scanned = false;
+                        _scanDelay = 0.3f;
+                        return true;
+                    }
+                }
+
+                // Deck Menu dialog (DeckMenuDialogViewController)
+                var deckMenuVc = FindVcInStack<Il2CppYgomGame.Deck.DeckMenuDialogViewController>("dialog");
+                if (deckMenuVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, deckMenuVc.drawTestButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_draw_test"));
+                        deckMenuVc.DrawTestClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.historyButton?.transform))
+                    {
+                        bool nextState = !deckMenuVc.historyCurrent;
+                        deckMenuVc.HistoryViewClicked(nextState);
+                        ApplyDeckMenuLabels(deckMenuVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.deepLinkButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_deep_link"));
+                        deckMenuVc.DeepLinkClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.distributeButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_distribute"));
+                        deckMenuVc.DistributeClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.contributeButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_contribute"));
+                        deckMenuVc.ContributeClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.popularCardButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_popular_card"));
+                        deckMenuVc.PopularCardClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.popularSkillButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_popular_skill"));
+                        deckMenuVc.PopularSkillClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.selKiraButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_sel_kira", ""));
+                        deckMenuVc.SelKiraClicked();
+                        return true;
+                    }
+                }
+
+                // Download Settings dialog (DownloadSettingsDialogViewController)
+                var dlVc = FindVcInStack<Il2CppYgomGame.Settings.DownloadSettingsDialogViewController>("dialog");
+                if (dlVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, dlVc.downloadButton?.transform))
+                    {
+                        ScreenReader.Say("开始下载");
+                        dlVc.OnOkButton();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.cancelButton?.transform))
+                    {
+                        ScreenReader.Say("已取消下载");
+                        dlVc.OnBack(item.Go);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.cardCheckBox?.transform))
+                    {
+                        bool next = !dlVc.cardCheckBox.isOn;
+                        dlVc.cardCheckBox.isOn = next;
+                        dlVc.OnChangedCardCheck(next);
+                        ApplyDownloadSettingsLabels(dlVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.bgdlCheckBox?.transform))
+                    {
+                        bool next = !dlVc.bgdlCheckBox.isOn;
+                        dlVc.bgdlCheckBox.isOn = next;
+                        dlVc.OnChangedBgdlCheck(next);
+                        ApplyDownloadSettingsLabels(dlVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.voiceField?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("download_voice_select_prompt"));
+                        dlVc.OnVoice();
+                        return true;
+                    }
+                }
+
+                // General settings dialog (SettingsDialogViewController)
+                var setVc = FindVcInStack<Il2CppYgomGame.Settings.SettingsDialogViewController>("dialog");
+                if (setVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, setVc.talkToggle?.transform))
+                    {
+                        bool next = !setVc.talkToggle.isOn;
+                        setVc.talkToggle.isOn = next;
+                        setVc.OnChangeTalkValue(setVc.talkToggle);
+                        ApplySettingsDialogLabels(setVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, setVc.voiceButton?.transform))
+                    {
+                        setVc.OnVoiceMute();
+                        ApplySettingsDialogLabels(setVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, setVc.voiceDataButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("settings_voice_data_btn"));
+                        setVc.OnVoiceData();
                         return true;
                     }
                 }

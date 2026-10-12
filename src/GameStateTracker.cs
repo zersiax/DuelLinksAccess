@@ -184,7 +184,7 @@ namespace DuelLinksAccess
                 var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
                 if (namedManager == null)
                 {
-                    ScreenReader.Say("No managers available");
+                    ScreenReader.Say("无可用界面管理器");
                     return;
                 }
 
@@ -411,6 +411,18 @@ namespace DuelLinksAccess
 
             DebugLogger.Log(LogCategory.State, "GameState",
                 $"Screen: {oldScreen} -> {newScreen}");
+
+            // If leaving duel to any non-duel/non-dialog screen (Home, Shop, Deck, etc.),
+            // ensure any lingering InDuel/DuelEnded flags are immediately cleared.
+            if (newScreen != GameScreen.Duel && newScreen != GameScreen.Dialog)
+            {
+                if (DuelEventAnnouncer.InDuel || DuelEventAnnouncer.DuelEnded)
+                {
+                    DebugLogger.Log(LogCategory.State, "GameState",
+                        $"Leaving duel to {newScreen}: resetting DuelState.");
+                    DuelEventAnnouncer.Reset();
+                }
+            }
 
             // Announce screen change to user
             // Skip empty strings (e.g. Duel — handled by DuelEventAnnouncer)

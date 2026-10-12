@@ -89,6 +89,9 @@ Automatic draw sends the game's normal draw command. Draw-related effects and ac
 - `G`: read gem balance
 - `B`: switch between the curated destination list and generic browse-all mode
 
+> **Note on Stage Missions**: To inspect and complete stage missions, locate the stage mission entry using `Up` / `Down`, press `Enter`, then use the `Right` arrow to browse specific tasks.  
+> **（提示：完成关卡任务需要光标找到关卡任务后，先按回车，再按右光标键才有用。）**
+
 Use browse-all mode when a new event or game update adds a control that the curated list does not know yet. Generic items may have weak labels because the game often stores text in sprites.
 
 ## Troubleshooting

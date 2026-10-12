@@ -11,8 +11,8 @@ namespace DuelLinksAccess
 
         public static string FormatCombatStats(int attack, int defense, int link)
         {
-            if (link > 0) return $"ATK {attack}";
-            return $"ATK {attack} DEF {defense}";
+            if (link > 0) return $"攻击力 {attack}";
+            return $"攻击力 {attack} 守备力 {defense}";
         }
     }
 }

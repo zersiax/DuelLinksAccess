@@ -15,7 +15,13 @@ namespace DuelLinksAccess
     {
         #region Types
 
-        private enum Zone { MainDeck, ExtraDeck, Collection }
+        private enum Zone { MainDeck, ExtraDeck, Collection, Toolbar }
+
+        private class ToolbarItem
+        {
+            public string Name;
+            public Action Action;
+        }
 
         #endregion
 
@@ -31,6 +37,10 @@ namespace DuelLinksAccess
         private readonly List<int> _mainDeckMrks = new();
         private readonly List<int> _extraDeckMrks = new();
         private readonly List<int> _collectionMrks = new();
+
+        // Toolbar buttons and focus
+        private readonly List<ToolbarItem> _toolbarButtons = new();
+        private int _toolbarIndex;
 
         // Cooldown to prevent rapid-fire operations
         private float _operationCooldown;
@@ -248,6 +258,7 @@ namespace DuelLinksAccess
             _mainDeckMrks.Clear();
             _extraDeckMrks.Clear();
             _collectionMrks.Clear();
+            _toolbarButtons.Clear();
 
             DebugLogger.Log(LogCategory.Handler, "DeckEdit", "Deactivated");
         }
@@ -396,7 +407,114 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // Left / Right — navigate cards
+            // Ctrl+S — save deck. MUST be checked before bare S, otherwise
+            // TryConsumeKeyDown(KeyCode.S) for the skill announcement consumes
+            // the key first and the Ctrl+S handler never sees it.
+            bool ctrlHeld = Input.GetKey(KeyCode.LeftControl)
+                || Input.GetKey(KeyCode.RightControl);
+            if (ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                SaveDeck();
+                return;
+            }
+
+            // Ctrl+F — open card search
+            if (ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.F))
+            {
+                OpenSearch();
+                return;
+            }
+
+            // F — open card filter
+            if (!ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.F))
+            {
+                OpenFilter();
+                return;
+            }
+
+            // Global hotkeys (available from ANY zone, including Toolbar)
+            if (!ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                AnnounceCurrentSkill();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.K))
+            {
+                OpenSkillSelection();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.U))
+            {
+                SetUseDeck();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.A))
+            {
+                OpenAccessories();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.B))
+            {
+                OpenAutoBuild();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                AnnounceCurrentSkill();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.I))
+            {
+                AnnounceDeckStats();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
+                || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
+            {
+                GoBack();
+                return;
+            }
+
+            // Toolbar Zone input navigation
+            if (_currentZone == Zone.Toolbar)
+            {
+                if (InputManager.TryConsumeKeyDown(KeyCode.LeftArrow)
+                    || InputManager.TryConsumeKeyDown(KeyCode.UpArrow))
+                {
+                    NavigateToolbar(-1);
+                    return;
+                }
+                if (InputManager.TryConsumeKeyDown(KeyCode.RightArrow)
+                    || InputManager.TryConsumeKeyDown(KeyCode.DownArrow))
+                {
+                    NavigateToolbar(1);
+                    return;
+                }
+                if (InputManager.TryConsumeKeyDown(KeyCode.Home))
+                {
+                    _toolbarIndex = 0;
+                    AnnounceCurrentToolbarItem();
+                    return;
+                }
+                if (InputManager.TryConsumeKeyDown(KeyCode.End))
+                {
+                    _toolbarIndex = Math.Max(0, _toolbarButtons.Count - 1);
+                    AnnounceCurrentToolbarItem();
+                    return;
+                }
+                if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                    || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
+                {
+                    if (_toolbarIndex >= 0 && _toolbarIndex < _toolbarButtons.Count)
+                    {
+                        _toolbarButtons[_toolbarIndex].Action?.Invoke();
+                    }
+                    return;
+                }
+                return;
+            }
+
+            // Card list navigation (MainDeck, ExtraDeck, Collection)
             if (InputManager.TryConsumeKeyDown(KeyCode.LeftArrow))
             {
                 NavigateBy(-1);
@@ -467,71 +585,6 @@ namespace DuelLinksAccess
                 AnnounceCurrentCard(verbose: true);
                 return;
             }
-
-            // I — deck stats
-            if (InputManager.TryConsumeKeyDown(KeyCode.I))
-            {
-                AnnounceDeckStats();
-                return;
-            }
-
-            // Ctrl+S — save deck. MUST be checked before bare S, otherwise
-            // TryConsumeKeyDown(KeyCode.S) for the skill announcement consumes
-            // the key first and the Ctrl+S handler never sees it.
-            bool ctrlHeld = Input.GetKey(KeyCode.LeftControl)
-                || Input.GetKey(KeyCode.RightControl);
-            if (ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
-            {
-                SaveDeck();
-                return;
-            }
-
-            // S — announce current skill (only when Ctrl is NOT held)
-            if (!ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
-            {
-                AnnounceCurrentSkill();
-                return;
-            }
-
-            // K — open skill selection
-            if (InputManager.TryConsumeKeyDown(KeyCode.K))
-            {
-                OpenSkillSelection();
-                return;
-            }
-
-            // U — set the currently-open deck as the active/main deck.
-            // Routes through DeckEdit2ViewController.confirmSet() (the same
-            // entry point the in-editor "Use this deck" button calls) so the
-            // game's normal confirmation dialog fires; DialogHandler picks
-            // that up and the user confirms with Enter as usual.
-            if (InputManager.TryConsumeKeyDown(KeyCode.U))
-            {
-                SetUseDeck();
-                return;
-            }
-
-            // A — open deck accessories (card sleeve, game mat, ace card)
-            if (InputManager.TryConsumeKeyDown(KeyCode.A))
-            {
-                OpenAccessories();
-                return;
-            }
-
-            // B — open auto deck build
-            if (InputManager.TryConsumeKeyDown(KeyCode.B))
-            {
-                OpenAutoBuild();
-                return;
-            }
-
-            // Escape — go back
-            if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
-                || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
-            {
-                GoBack();
-                return;
-            }
         }
 
         #endregion
@@ -544,7 +597,8 @@ namespace DuelLinksAccess
             {
                 Zone.MainDeck => Zone.ExtraDeck,
                 Zone.ExtraDeck => Zone.Collection,
-                Zone.Collection => Zone.MainDeck,
+                Zone.Collection => Zone.Toolbar,
+                Zone.Toolbar => Zone.MainDeck,
                 _ => Zone.MainDeck
             };
             OnZoneChanged();
@@ -554,9 +608,10 @@ namespace DuelLinksAccess
         {
             _currentZone = _currentZone switch
             {
-                Zone.MainDeck => Zone.Collection,
+                Zone.MainDeck => Zone.Toolbar,
                 Zone.ExtraDeck => Zone.MainDeck,
                 Zone.Collection => Zone.ExtraDeck,
+                Zone.Toolbar => Zone.Collection,
                 _ => Zone.MainDeck
             };
             OnZoneChanged();
@@ -564,6 +619,16 @@ namespace DuelLinksAccess
 
         private void OnZoneChanged()
         {
+            if (_currentZone == Zone.Toolbar)
+            {
+                RefreshToolbarButtons();
+                _toolbarIndex = 0;
+                ScreenReader.Say(Loc.Get("deck_zone_toolbar", _toolbarButtons.Count));
+                if (_toolbarButtons.Count > 0)
+                    AnnounceCurrentToolbarItem(queued: true);
+                return;
+            }
+
             // Refresh the relevant list to catch any changes
             if (_currentZone == Zone.Collection)
                 RefreshCollectionList();
@@ -977,6 +1042,311 @@ namespace DuelLinksAccess
             }
         }
 
+        private void OpenRecipe()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+                _vc.recipeClicked(0, null);
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", "recipeClicked() invoked");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"OpenRecipe error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        private void OpenDeckMenu()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+                _vc.deckMenuClicked();
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", "deckMenuClicked() invoked");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"OpenDeckMenu error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        private void OpenFilter()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+
+                MelonLogger.Msg("[DeckEdit] OpenFilter invoked");
+
+                if (_vc.filterAndSort == null)
+                {
+                    try { _vc.createFilter(); } catch { }
+                }
+
+                var fs = _vc.filterAndSort;
+                if (fs == null)
+                {
+                    fs = _vc.gameObject?.GetComponentInChildren<FilterAndSort>(true);
+                }
+
+                if (fs != null)
+                {
+                    fs.FilterSettingClicked(true);
+                    ScreenReader.Say("已打开卡片详细筛选");
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenFilter: FilterSettingClicked(true) invoked successfully");
+                }
+                else
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenFilter: filterAndSort component is null");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[DeckEdit] OpenFilter error: {ex.Message}");
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"OpenFilter error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        private void OpenSearch()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+
+                MelonLogger.Msg("[DeckEdit] OpenSearch invoked");
+
+                if (_vc.filterAndSort == null)
+                {
+                    try { _vc.createFilter(); } catch { }
+                }
+
+                var fs = _vc.filterAndSort;
+                if (fs == null)
+                {
+                    fs = _vc.gameObject?.GetComponentInChildren<FilterAndSort>(true);
+                }
+
+                if (fs != null)
+                {
+                    fs.SearchSettingClicked(true);
+                    ScreenReader.Say("已打开卡片搜索");
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenSearch: SearchSettingClicked(true) invoked successfully");
+                }
+                else
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenSearch: filterAndSort component is null");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[DeckEdit] OpenSearch error: {ex.Message}");
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"OpenSearch error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        private void OpenPasteDialog()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+                _vc.PasteDialogClicked();
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", "PasteDialogClicked() invoked");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"OpenPasteDialog error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        private void CopyDeck()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+                _vc.copyClicked();
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", "copyClicked() invoked");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"CopyDeck error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        private void ClearDeck()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+                _vc.ClearClicked();
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", "ClearClicked() invoked");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"ClearDeck error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        #endregion
+
+        #region Toolbar Operations
+
+        private void RefreshToolbarButtons()
+        {
+            _toolbarButtons.Clear();
+
+            // 1. Auto Build
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_auto_build"),
+                Action = OpenAutoBuild
+            });
+
+            // 2. Recipe
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_recipe"),
+                Action = OpenRecipe
+            });
+
+            // 3. Skill
+            string skillName = _vc?.deckHeader?.skillName?.text;
+            string skillLabel = string.IsNullOrEmpty(skillName)
+                ? Loc.Get("deck_no_skill")
+                : Loc.Get("deck_btn_skill", skillName);
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = skillLabel,
+                Action = OpenSkillSelection
+            });
+
+            // 4. Accessories
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_accessories"),
+                Action = OpenAccessories
+            });
+
+            // 5. Use Deck (set as active)
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_use_deck"),
+                Action = SetUseDeck
+            });
+
+            // 6. Save Deck
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_save"),
+                Action = SaveDeck
+            });
+
+            // 7. Deck Menu
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_menu"),
+                Action = OpenDeckMenu
+            });
+
+            // 8. Filter Setting
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_filter"),
+                Action = OpenFilter
+            });
+
+            // 9. Card Search
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_search"),
+                Action = OpenSearch
+            });
+
+            // 9. Paste Deck Code
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_paste"),
+                Action = OpenPasteDialog
+            });
+
+            // 10. Copy Deck Code
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_copy"),
+                Action = CopyDeck
+            });
+
+            // 11. Clear Deck
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_clear"),
+                Action = ClearDeck
+            });
+
+            // 12. Deck Stats
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_stats"),
+                Action = AnnounceDeckStats
+            });
+        }
+
+        private void NavigateToolbar(int delta)
+        {
+            if (_toolbarButtons.Count == 0) return;
+            _toolbarIndex = (_toolbarIndex + delta + _toolbarButtons.Count) % _toolbarButtons.Count;
+            AnnounceCurrentToolbarItem();
+        }
+
+        private void AnnounceCurrentToolbarItem(bool queued = false)
+        {
+            if (_toolbarButtons.Count == 0) return;
+            if (_toolbarIndex < 0 || _toolbarIndex >= _toolbarButtons.Count) _toolbarIndex = 0;
+
+            var item = _toolbarButtons[_toolbarIndex];
+            string announcement = Loc.Get("deck_toolbar_item", item.Name, _toolbarIndex + 1, _toolbarButtons.Count);
+            if (queued)
+                ScreenReader.SayQueued(announcement);
+            else
+                ScreenReader.Say(announcement);
+        }
+
         #endregion
 
         #region Announcements
@@ -1069,6 +1439,7 @@ namespace DuelLinksAccess
                 Zone.MainDeck => Loc.Get("deck_zone_main_name"),
                 Zone.ExtraDeck => Loc.Get("deck_zone_extra_name"),
                 Zone.Collection => Loc.Get("deck_zone_collection_name"),
+                Zone.Toolbar => Loc.Get("deck_zone_toolbar_name"),
                 _ => "Unknown"
             };
         }

@@ -26,15 +26,24 @@ namespace DuelLinksAccess
         {
             if (string.IsNullOrEmpty(name)) return GameScreen.Other;
 
-            GameScreen screen = ClassifyName(name);
-            if (screen == GameScreen.Other && fromDialogManager)
-                return GameScreen.Dialog;
-            if (screen == GameScreen.Dialog
-                && name == "TutorialArrowPart" && !fromDialogManager)
+            // Anything hosted by DialogManager is a modal dialog on top of the screen
+            if (fromDialogManager)
             {
-                return GameScreen.Other;
+                if (name == "TutorialArrowPart")
+                    return GameScreen.Dialog;
+                return GameScreen.Dialog;
             }
-            return screen;
+
+            // Names indicating dialogs or prompts take precedence over screen keywords
+            if (name.Contains("Dialog") || name.Contains("Confirm")
+                || name.Contains("AgeVerification") || name.Contains("Tutorial"))
+            {
+                if (name == "TutorialArrowPart")
+                    return GameScreen.Other;
+                return GameScreen.Dialog;
+            }
+
+            return ClassifyName(name);
         }
 
         private static GameScreen ClassifyName(string name)
@@ -47,8 +56,6 @@ namespace DuelLinksAccess
                 return GameScreen.Duel;
             if (name.Contains("CardDetail"))
                 return GameScreen.CardDetail;
-            if (name.Contains("Deck"))
-                return GameScreen.Deck;
             if (name.Contains("Shop"))
                 return GameScreen.Shop;
             if (name.Contains("Gate"))
@@ -59,11 +66,8 @@ namespace DuelLinksAccess
                 return GameScreen.Notices;
             if (name.Contains("School") || name.Contains("DuelQuest"))
                 return GameScreen.DuelTrials;
-            if (name.Contains("Dialog") || name.Contains("Confirm")
-                || name.Contains("AgeVerification") || name.Contains("Tutorial"))
-            {
-                return GameScreen.Dialog;
-            }
+            if (name.Contains("Deck"))
+                return GameScreen.Deck;
             return GameScreen.Other;
         }
     }

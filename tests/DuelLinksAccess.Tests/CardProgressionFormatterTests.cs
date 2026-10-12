@@ -9,7 +9,7 @@ public sealed class CardProgressionFormatterTests
     {
         string result = CardProgressionFormatter.Format(7, 0, 0);
 
-        Assert.Equal("Level 7", result);
+        Assert.Equal("等级 7", result);
     }
 
     [Fact]
@@ -17,7 +17,7 @@ public sealed class CardProgressionFormatterTests
     {
         string result = CardProgressionFormatter.Format(0, 4, 0);
 
-        Assert.Equal("Rank 4", result);
+        Assert.Equal("阶级 4", result);
     }
 
     [Fact]
@@ -25,7 +25,7 @@ public sealed class CardProgressionFormatterTests
     {
         string result = CardProgressionFormatter.Format(0, 0, 3);
 
-        Assert.Equal("Link 3", result);
+        Assert.Equal("连接标记 3", result);
     }
 
     [Fact]
@@ -34,7 +34,7 @@ public sealed class CardProgressionFormatterTests
         string result = CardProgressionFormatter.FormatCombatStats(
             2500, 0, 3);
 
-        Assert.Equal("ATK 2500", result);
+        Assert.Equal("攻击力 2500", result);
     }
 
     [Fact]
@@ -43,6 +43,6 @@ public sealed class CardProgressionFormatterTests
         string result = CardProgressionFormatter.FormatCombatStats(
             2500, 2100, 0);
 
-        Assert.Equal("ATK 2500 DEF 2100", result);
+        Assert.Equal("攻击力 2500 守备力 2100", result);
     }
 }

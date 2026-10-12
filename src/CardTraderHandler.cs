@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using UnityEngine;
+using MelonLoader;
 using Il2CppYgomGame.Single;
 using Il2CppYgomGame.Utility;
 
@@ -68,12 +69,6 @@ namespace DuelLinksAccess
         // wrong one. The carousel snap can drift for a few frames, so we watch
         // for the match instead of confirming after a fixed delay.
         private bool _tradePollActive;
-        private float _tradePollTimer;
-        private const float TradePollTimeout = 1.0f;
-        private CardTraderInfoBase _tradeIntendedItem;
-        private int _tradeIntendedId;
-        private string _tradeIntendedName = "";
-        private bool _tradePollLoggedFirst;
 
         #endregion
 
@@ -260,6 +255,19 @@ namespace DuelLinksAccess
             DebugLogger.Log(LogCategory.Handler, "CardTrader",
                 $"Scan {_scanAttempts}: mode={mode}, {_items.Count} items");
 
+            if (_items.Count > 0)
+            {
+                MelonLogger.Msg($"[CardTrader] ====== Total {_items.Count} Items Scanned ======");
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    var it = _items[i];
+                    string ui = GetCellUiText(i) ?? "";
+                    string fn = GetItemName(it);
+                    MelonLogger.Msg($"  Item[{i + 1}]: Type={it.itemType}, rareId={it.rareId}, itemId={it.itemId}, gId={it.gId}, UI='{ui}', Name='{fn}'");
+                }
+                MelonLogger.Msg($"[CardTrader] ==============================================");
+            }
+
             if (_items.Count == 0 && _scanAttempts < 10)
             {
                 _scanDelay = 0.5f;
@@ -286,6 +294,23 @@ namespace DuelLinksAccess
 
             try
             {
+                // If CardTrader2DMgr has infoList populated, use it to ensure 100% 1:1 match with visual carousel
+                var mgrList = _vc.CardTrader2DMgr?.infoList;
+                if (mgrList != null && mgrList.Length > 0)
+                {
+                    for (int i = 0; i < mgrList.Length; i++)
+                    {
+                        var it = mgrList[i];
+                        if (it != null) _items.Add(it);
+                    }
+                    if (_items.Count > 0)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                            $"RefreshItems: Loaded {_items.Count} items directly from CardTrader2DMgr.infoList");
+                        return;
+                    }
+                }
+
                 var filter = _vc.itemInfoFilter;
                 if (filter == null || filter.Count == 0)
                     filter = _vc.itemInfoMaster;
@@ -515,6 +540,44 @@ namespace DuelLinksAccess
 
             if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
+                if (_vc != null)
+                {
+                    try
+                    {
+                        var filterBtn = _vc.filterAllButton;
+                        if (filterBtn != null)
+                        {
+                            var ygomBtn = filterBtn.GetComponent<Il2CppYgomSystem.UI.YgomButton>();
+                            if (ygomBtn != null) { try { Il2CppYgomSystem.UI.YgomButton.PlaySE(ygomBtn.seType); } catch { } }
+                        }
+
+                        _vc.OnClickFilterAll();
+
+                        // Refresh item list immediately with newly filtered data
+                        RefreshItems();
+                        _focusIndex = 0;
+
+                        string filterLabel = _vc.filterAllText?.text?.Trim();
+                        string statusMsg = !string.IsNullOrEmpty(filterLabel)
+                            ? $"已切换筛选：{filterLabel}。"
+                            : "已切换筛选。";
+
+                        if (_items.Count > 0)
+                        {
+                            ScreenReader.Say($"{statusMsg}共 {_items.Count} 项。");
+                            AnnounceCurrentItem(queued: true);
+                        }
+                        else
+                        {
+                            ScreenReader.Say($"{statusMsg}无匹配卡片。");
+                        }
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Handler, "CardTrader", $"OnClickFilterAll error: {ex.Message}");
+                    }
+                }
                 AnnounceCurrentItem();
                 return;
             }
@@ -544,6 +607,14 @@ namespace DuelLinksAccess
             if (_tradePollActive) CancelTradePoll();
 
             _focusIndex = Math.Max(0, Math.Min(_items.Count - 1, _focusIndex + delta));
+
+            // Sync carousel and infoWindow so sighted game screen and live infoWindow reflect the item immediately
+            try
+            {
+                _vc?.CardTrader2DMgr?.SetCurrent(_focusIndex);
+            }
+            catch { }
+
             AnnounceCurrentItem();
         }
 
@@ -611,10 +682,69 @@ namespace DuelLinksAccess
 
                     // Rarity-list header — drills into the R/SR/UR sub-list.
                     case CardTraderInfoBase.Type.List:
-                        _vc.OnClickOpenList();
+                        var listMgr = _vc.CardTrader2DMgr;
+                        if (listMgr != null)
+                        {
+                            try { listMgr.SetCurrent(_focusIndex); }
+                            catch (Exception exListMgr)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                                    $"List SetCurrent error: {exListMgr.Message}");
+                            }
+                        }
+                        try
+                        {
+                            _vc.openListItem = item;
+                            _vc.reqRareId = item.rareId;
+                        }
+                        catch { }
+
+                        try
+                        {
+                            _vc.setConfirmListButton(item.itemType);
+                        }
+                        catch { }
+
+                        // Step 1: Fire OnClickCard to prepare the internal list context
+                        try
+                        {
+                            _vc.OnClickCard(item.itemId, item.rareId);
+                        }
+                        catch { }
+
+                        // Step 2: Open the list via confirmListButton or OnClickOpenList
+                        bool opened = false;
+                        try
+                        {
+                            var confBtn = _vc.confirmListButton;
+                            if (confBtn != null && confBtn.gameObject?.activeInHierarchy == true && confBtn.interactable)
+                            {
+                                confBtn.onClick.Invoke();
+                                opened = true;
+                                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                                    $"  -> Invoked confirmListButton.onClick for rareId={item.rareId}");
+                            }
+                        }
+                        catch { }
+
+                        if (!opened)
+                        {
+                            try
+                            {
+                                _vc.OnClickOpenList();
+                                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                                    $"  -> Called OnClickOpenList for rareId={item.rareId}");
+                            }
+                            catch (Exception exListOpen)
+                            {
+                                DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                                    $"Error opening list: {exListOpen.Message}");
+                            }
+                        }
+
                         _operationCooldown = OperationCooldownTime;
+                        _postTradeVcCheckDelay = 1.0f;
                         ScreenReader.Say(Loc.Get("trader_selected", name));
-                        DebugLogger.Log(LogCategory.Handler, "CardTrader", "  -> OnClickOpenList");
                         return;
 
                     case CardTraderInfoBase.Type.SoldOut:
@@ -649,9 +779,16 @@ namespace DuelLinksAccess
                 // dispatches by the *centered* item's type. The cell's own
                 // Button.onClick is NOT the tap path — invoking it silently
                 // no-ops (2026-08-02 log: invoked onClick, no sub-screen opened).
-                // Since we just centered the carousel with SetCurrent, calling
-                // OnClickCard replays a genuine tap on this cell.
-                if (item.itemId <= 0)
+                bool isSpecialSubScreen = item.itemId <= 0
+                    || type == CardTraderInfoBase.Type.RespectOrb
+                    || type == CardTraderInfoBase.Type.BoxChip
+                    || type == CardTraderInfoBase.Type.ExItem
+                    || type == CardTraderInfoBase.Type.Process
+                    || type == CardTraderInfoBase.Type.Chroniclizer
+                    || type == CardTraderInfoBase.Type.ChangeSkill
+                    || type == CardTraderInfoBase.Type.SkillTicket;
+
+                if (isSpecialSubScreen)
                 {
                     _vc.OnClickCard(item.itemId, item.rareId);
                     _operationCooldown = OperationCooldownTime;
@@ -662,16 +799,61 @@ namespace DuelLinksAccess
                     return;
                 }
 
-                // Begin verifying the carousel actually settled on our item
-                // before opening the trade confirm.
-                _tradePollActive = true;
-                _tradePollTimer = 0f;
-                _tradePollLoggedFirst = false;
-                _tradeIntendedItem = item;
-                _tradeIntendedId = item.itemId;
-                _tradeIntendedName = name;
+                // Verify exchange eligibility via native authoritative check
+                bool canExchange = false;
+                try
+                {
+                    canExchange = CardTraderViewController2.IsCurrentExchange(item);
+                }
+                catch
+                {
+                    canExchange = !item.soldout && item.unlockState && !item.unchangable;
+                }
+
+                if (!canExchange)
+                {
+                    if (item.soldout)
+                        ScreenReader.Say(Loc.Get("trader_sold_out"));
+                    else if (!item.unlockState)
+                        ScreenReader.Say("无法兑换：未解锁");
+                    else if (item.unchangable)
+                        ScreenReader.Say(Loc.Get("trader_cannot_trade"));
+                    else
+                        ScreenReader.Say("无法兑换：金币、宝珠或卡片不足");
+                    return;
+                }
+
+                // Direct native confirm invocation according to official OnClickExchange dispatch:
+                // Card -> OpenCardConfirmDialog
+                // Skill -> OpenSkillConfirmDialog
+                // Other -> OpenExchangeConfirmDialog
                 _operationCooldown = OperationCooldownTime;
+                _postTradeVcCheckDelay = 1.0f;
                 ScreenReader.Say(Loc.Get("trader_trading", name));
+
+                try
+                {
+                    if (type == CardTraderInfoBase.Type.Card)
+                    {
+                        _vc.OpenCardConfirmDialog(item);
+                    }
+                    else if (type == CardTraderInfoBase.Type.Skill)
+                    {
+                        _vc.OpenSkillConfirmDialog();
+                    }
+                    else
+                    {
+                        _vc.OpenExchangeConfirmDialog(item);
+                    }
+                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                        $"Directly opened confirm dialog for {type}: {item.itemId} ({name})");
+                }
+                catch (Exception exOpen)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "CardTrader",
+                        $"Error opening confirm dialog, falling back to OnClickExchange: {exOpen.Message}");
+                    try { _vc.OnClickExchange(); } catch { }
+                }
             }
             catch (Exception ex)
             {
@@ -680,65 +862,15 @@ namespace DuelLinksAccess
             }
         }
 
-        /// <summary>
-        /// Each frame after a purchase selection: watches getCurrentItem until
-        /// the carousel actually centers our intended item, then opens the trade
-        /// confirm. If it never matches within the timeout we abort — the trade
-        /// executes for getCurrentItem, so confirming on a mismatch would trade
-        /// the wrong card.
-        /// </summary>
         private void PollTradeSelection()
         {
-            if (_vc == null) { CancelTradePoll(); return; }
-
-            _tradePollTimer += Time.deltaTime;
-
-            int curId = -1;
-            string curName = "?";
-            try
-            {
-                var cur = _vc.getCurrentItem();
-                if (cur != null) { curId = cur.itemId; curName = GetItemName(cur); }
-            }
-            catch { }
-
-            if (!_tradePollLoggedFirst)
-            {
-                _tradePollLoggedFirst = true;
-                DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                    $"PollTrade start: intended={_tradeIntendedId} ({_tradeIntendedName}), "
-                    + $"currIdx={SafeCurrIdx()}, getCurrentItem={curId} ({curName})");
-            }
-
-            if (curId == _tradeIntendedId)
-            {
-                DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                    $"PollTrade matched after {_tradePollTimer:F2}s — opening confirm");
-                var intendedItem = _tradeIntendedItem;
-                var intendedName = _tradeIntendedName;
-                CancelTradePoll();
-                OpenTradeConfirm(intendedItem, intendedName);
-                return;
-            }
-
-            if (_tradePollTimer >= TradePollTimeout)
-            {
-                DebugLogger.Log(LogCategory.Handler, "CardTrader",
-                    $"PollTrade timed out after {_tradePollTimer:F2}s — intended={_tradeIntendedId}, "
-                    + $"getCurrentItem={curId} ({curName}), currIdx={SafeCurrIdx()}; aborting to avoid wrong trade");
-                ScreenReader.Say(Loc.Get("trader_select_failed", _tradeIntendedName));
-                CancelTradePoll();
-            }
+            // Kept as no-op stub for backwards compatibility
+            _tradePollActive = false;
         }
 
         private void CancelTradePoll()
         {
             _tradePollActive = false;
-            _tradePollTimer = 0f;
-            _tradePollLoggedFirst = false;
-            _tradeIntendedItem = null;
-            _tradeIntendedId = 0;
-            _tradeIntendedName = "";
         }
 
         private int SafeCurrIdx()
@@ -908,8 +1040,85 @@ namespace DuelLinksAccess
 
             try
             {
-                int gold = _items[0].GoldPoss();
-                ScreenReader.Say(Loc.Get("trader_gold", gold));
+                var balances = new List<string>();
+
+                // 1. Gold balance
+                try
+                {
+                    int gold = -1;
+                    if (_items.Count > 0)
+                    {
+                        try { gold = _items[0].GoldPoss(); } catch { }
+                    }
+                    if (gold < 0)
+                    {
+                        try { gold = ItemUtil.GetNum(ItemUtil.ItemIdType.Gold); } catch { }
+                    }
+                    if (gold < 0)
+                    {
+                        try { gold = ItemUtil.GetNum(2); } catch { }
+                    }
+                    if (gold >= 0)
+                    {
+                        balances.Add(Loc.Get("trader_gold", gold));
+                    }
+                }
+                catch { }
+
+                // 2. Current item cost items possession
+                if (_focusIndex >= 0 && _focusIndex < _items.Count)
+                {
+                    var cur = _items[_focusIndex];
+                    var ip = cur.itemParam;
+                    if (ip != null)
+                    {
+                        for (int i = 0; i < ip.Length; i++)
+                        {
+                            var entry = ip[i];
+                            if (entry != null && entry.Length >= 2 && entry[0] > 0)
+                            {
+                                int iid = entry[0];
+                                string iName = "";
+                                try { iName = ItemUtil.GetName(iid) ?? ""; } catch { }
+                                if (string.IsNullOrWhiteSpace(iName)) iName = $"道具 {iid}";
+                                int num = 0;
+                                try { num = ItemUtil.GetNum(iid); } catch { }
+                                string s = $"{iName}: {num}";
+                                if (!balances.Contains(s)) balances.Add(s);
+                            }
+                        }
+                    }
+                }
+
+                // 3. Scan special currency items present in trader list (e.g. BoxChip, RespectOrb)
+                var scannedItemIds = new HashSet<int>();
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    var it = _items[i];
+                    if (it == null) continue;
+                    if (it.itemType == CardTraderInfoBase.Type.BoxChip || it.itemType == CardTraderInfoBase.Type.RespectOrb)
+                    {
+                        if (it.itemId > 0 && scannedItemIds.Add(it.itemId))
+                        {
+                            string name = "";
+                            try { name = ItemUtil.GetName(it.itemId) ?? ""; } catch { }
+                            if (string.IsNullOrWhiteSpace(name)) name = GetItemName(it);
+                            int num = 0;
+                            try { num = ItemUtil.GetNum(it.itemId); } catch { }
+                            string s = $"{name}: {num}";
+                            if (!balances.Contains(s)) balances.Add(s);
+                        }
+                    }
+                }
+
+                if (balances.Count > 0)
+                {
+                    ScreenReader.Say(string.Join(", ", balances));
+                }
+                else
+                {
+                    ScreenReader.Say(Loc.Get("trader_gold_unknown"));
+                }
             }
             catch (Exception ex)
             {
@@ -921,6 +1130,105 @@ namespace DuelLinksAccess
         #endregion
 
         #region Formatting
+
+        private List<string> GetItemCostLabels(CardTraderInfoBase item, bool verbose)
+        {
+            var costs = new List<string>();
+
+            // Strategy 1: Read live UI infoWindow if active and populated
+            try
+            {
+                var iw = _vc?.infoWindow;
+                if (iw != null && iw.gameObject != null && iw.gameObject.activeInHierarchy)
+                {
+                    // Gold icon
+                    var gIcon = iw.m_goldIcon;
+                    if (gIcon != null && gIcon.gameObject != null && gIcon.gameObject.activeInHierarchy)
+                    {
+                        string useText = gIcon.m_ItemUseNumText?.text?.Trim() ?? "";
+                        string possText = gIcon.m_ItemPossNumText?.text?.Trim() ?? "";
+                        if (!string.IsNullOrEmpty(useText) && useText != "0")
+                        {
+                            costs.Add(verbose && !string.IsNullOrEmpty(possText)
+                                ? $"{useText} 金币（持有 {possText}）"
+                                : $"{useText} 金币");
+                        }
+                    }
+
+                    // Item icons (Jewels, Box Chips, Orbs, etc.)
+                    var itemIcons = iw.m_itemIcon;
+                    if (itemIcons != null && itemIcons.Length > 0)
+                    {
+                        for (int k = 0; k < itemIcons.Length; k++)
+                        {
+                            var icon = itemIcons[k];
+                            if (icon == null || icon.gameObject == null || !icon.gameObject.activeInHierarchy) continue;
+                            string name = icon.m_ItemNameText?.text?.Trim() ?? "";
+                            string useText = icon.m_ItemUseNumText?.text?.Trim() ?? "";
+                            string possText = icon.m_ItemPossNumText?.text?.Trim() ?? "";
+                            if (!string.IsNullOrEmpty(useText))
+                            {
+                                string label = string.IsNullOrEmpty(name) ? "" : $"{name} ";
+                                if (verbose && !string.IsNullOrEmpty(possText))
+                                    costs.Add($"{label}×{useText}（持有 {possText}）");
+                                else
+                                    costs.Add($"{label}×{useText}");
+                            }
+                        }
+                    }
+
+                    if (costs.Count > 0)
+                        return costs;
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"Read infoWindow cost error: {ex.Message}");
+            }
+
+            // Strategy 2: Fallback to reading data model
+            try
+            {
+                if (item.goldUse > 0)
+                {
+                    int goldPoss = 0;
+                    try { goldPoss = item.GoldPoss(); } catch { }
+                    costs.Add(verbose
+                        ? Loc.Get("trader_cost_gold_poss", item.goldUse, goldPoss)
+                        : Loc.Get("trader_cost_gold", item.goldUse));
+                }
+
+                var ip = item.itemParam;
+                if (ip != null && ip.Length > 0)
+                {
+                    for (int i = 0; i < ip.Length; i++)
+                    {
+                        var entry = ip[i];
+                        if (entry == null || entry.Length < 2) continue;
+                        int itemId = entry[0];
+                        int itemUse = entry[1];
+                        if (itemId <= 0 || itemUse <= 0) continue;
+
+                        string itemName = "";
+                        try { itemName = ItemUtil.GetName(itemId) ?? ""; } catch { }
+                        if (string.IsNullOrWhiteSpace(itemName)) itemName = $"道具 {itemId}";
+
+                        int itemPoss = 0;
+                        try { itemPoss = ItemUtil.GetNum(itemId); } catch { try { itemPoss = item.ItemPoss(); } catch { } }
+
+                        costs.Add(verbose
+                            ? Loc.Get("trader_cost_item_poss", itemName, itemUse, itemPoss)
+                            : Loc.Get("trader_cost_item", itemName, itemUse));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"itemParam read error: {ex.Message}");
+            }
+
+            return costs;
+        }
 
         private string FormatItem(CardTraderInfoBase item, bool verbose)
         {
@@ -934,24 +1242,42 @@ namespace DuelLinksAccess
             if (IsRushCardItem(item))
                 parts.Add(Loc.Get("card_rush_tag"));
 
-            // Affordability — drives the user's first decision when browsing.
-            // ChangeCard items are the exception: you trade a card you own for
-            // this one, so IsCardShort() always reports a shortage of the
-            // *target* card (which you're trying to obtain). That made every
-            // ChangeCard read "cannot trade" even though the picker opens fine
-            // (2026-08-02 log). The real gate is choosing an eligible card in
-            // the sub-picker, so announce that instead of a bogus verdict.
+            // 官方权威判断当前物品是否可兑换
+            bool canTrade = false;
+            try
+            {
+                canTrade = CardTraderViewController2.IsCurrentExchange(item);
+            }
+            catch
+            {
+                bool goldShort = false, itemShort = false, cardShort = false;
+                try { goldShort = item.IsGoldShort(); } catch { }
+                try { itemShort = item.IsItemShort(); } catch { }
+                try { cardShort = item.IsCardShort() == CardTraderInfoBase.CardShortage.Shortage; } catch { }
+                canTrade = !goldShort && !itemShort && !cardShort && !item.soldout && item.unlockState && !item.unchangable;
+            }
+
+            // 精准状态播报（全面覆盖售罄、未解锁、不可兑换与可兑换）
+            if (item.soldout)
+            {
+                parts.Add(Loc.Get("trader_sold_out"));
+            }
+            else if (!item.unlockState)
+            {
+                parts.Add("未解锁");
+            }
+            else if (item.unchangable)
+            {
+                parts.Add(Loc.Get("trader_cannot_trade"));
+            }
+            else
+            {
+                parts.Add(canTrade ? Loc.Get("trader_can_trade") : Loc.Get("trader_cannot_trade"));
+            }
+
+            // ChangeCard（以卡换卡）详细消耗描述
             if (item.itemType == CardTraderInfoBase.Type.ChangeCard)
             {
-                // A ChangeCard trade spends copies of the cost card (costCardMrk)
-                // you already OWN; the reward is one of destCards. The exchange
-                // screen's grid is literally your owned copies of that cost card
-                // (disasm 2026-08-13), so owning fewer than costCardUse means the
-                // trade can't complete — the screen would show an empty grid.
-                // IsCardShort() reports on the reward card here, not the cost, so
-                // read possession directly. Announcing real affordability is also
-                // how the user finds a ChangeCard offer they can actually finish
-                // (own the cost card), since most cost cards you may not have.
                 int ccNeed = 0, ccOwned = 0, ccMrk = 0;
                 try { ccNeed = item.costCardUse; } catch { }
                 try { ccMrk = item.costCardMrk; } catch { }
@@ -959,71 +1285,23 @@ namespace DuelLinksAccess
                 if (ccMrk > 0 && ccNeed > 0)
                 {
                     string ccName = GetCardName(ccMrk);
-                    parts.Add(ccOwned >= ccNeed
-                        ? Loc.Get("trader_changecard_ok", ccNeed, ccName, ccOwned)
-                        : Loc.Get("trader_changecard_short", ccNeed, ccName, ccOwned));
+                    parts.Add(Loc.Get("trader_cost_card_poss", ccNeed, ccName, ccOwned));
+                }
+                else if (ccNeed > 0)
+                {
+                    parts.Add($"需要任意卡片 {ccNeed} 张");
                 }
                 else
                 {
                     parts.Add(Loc.Get("trader_opens_picker"));
                 }
             }
-            else
+
+            // Price / Currency / Material costs
+            var costLabels = GetItemCostLabels(item, verbose);
+            if (costLabels != null && costLabels.Count > 0)
             {
-                bool goldShort = false, itemShort = false, cardShort = false;
-                try { goldShort = item.IsGoldShort(); } catch { }
-                try { itemShort = item.IsItemShort(); } catch { }
-                try { cardShort = item.IsCardShort() == CardTraderInfoBase.CardShortage.Shortage; } catch { }
-                bool canTrade = !goldShort && !itemShort && !cardShort;
-                parts.Add(canTrade ? Loc.Get("trader_can_trade") : Loc.Get("trader_cannot_trade"));
-            }
-
-            // Gold cost
-            if (item.goldUse > 0)
-            {
-                if (verbose)
-                {
-                    int goldPoss = 0;
-                    try { goldPoss = item.GoldPoss(); } catch { }
-                    parts.Add(Loc.Get("trader_cost_gold_poss", item.goldUse, goldPoss));
-                }
-                else
-                {
-                    parts.Add(Loc.Get("trader_cost_gold", item.goldUse));
-                }
-            }
-
-            // Jewel / extra item costs (itemParam: array of [itemId, itemUse] pairs)
-            try
-            {
-                var ip = item.itemParam;
-                if (ip != null && ip.Length > 0)
-                {
-                    int itemPoss = 0;
-                    try { itemPoss = item.ItemPoss(); } catch { }
-
-                    for (int i = 0; i < ip.Length; i++)
-                    {
-                        var entry = ip[i];
-                        if (entry == null || entry.Length < 2) continue;
-                        int itemId = entry[0];
-                        int itemUse = entry[1];
-                        if (itemId <= 0 || itemUse <= 0) continue;
-
-                        string itemName = "";
-                        try { itemName = ItemUtil.GetName(itemId) ?? ""; } catch { }
-                        if (string.IsNullOrWhiteSpace(itemName)) itemName = $"item {itemId}";
-
-                        if (verbose)
-                            parts.Add(Loc.Get("trader_cost_item_poss", itemName, itemUse, itemPoss));
-                        else
-                            parts.Add(Loc.Get("trader_cost_item", itemName, itemUse));
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"itemParam read error: {ex.Message}");
+                parts.AddRange(costLabels);
             }
 
             // Material card cost
@@ -1077,10 +1355,61 @@ namespace DuelLinksAccess
             return text.Trim();
         }
 
+        private string GetCellUiText(int index)
+        {
+            try
+            {
+                var mgr = _vc?.CardTrader2DMgr;
+                if (mgr?.itemList != null && index >= 0 && index < mgr.itemList.Length)
+                {
+                    var rt = mgr.itemList[index];
+                    if (rt != null)
+                    {
+                        var selBase = rt.GetComponentInChildren<Il2CppYgomGame.Single.CardTraderSelectBase>();
+                        if (selBase != null && selBase.textName != null)
+                        {
+                            string t = selBase.textName.text?.Trim();
+                            if (!string.IsNullOrEmpty(t)) return StripMarkup(t);
+                        }
+
+                        var texts = rt.GetComponentsInChildren<UnityEngine.UI.Text>(true);
+                        if (texts != null)
+                        {
+                            foreach (var txt in texts)
+                            {
+                                if (txt != null && txt.gameObject.activeInHierarchy)
+                                {
+                                    string s = txt.text?.Trim();
+                                    if (!string.IsNullOrEmpty(s) && s.Length > 1 && !int.TryParse(s, out _))
+                                    {
+                                        return StripMarkup(s);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
         private string GetItemName(CardTraderInfoBase item)
         {
+            if (item == null) return Loc.Get("trader_unknown_item");
+
+            // 1. Check native item.name
             if (!string.IsNullOrWhiteSpace(item.name))
                 return StripMarkup(item.name.Trim());
+
+            // 2. Check live 2D carousel UI cell text for non-card items
+            int idx = _items.IndexOf(item);
+            if (idx >= 0 && item.itemType != CardTraderInfoBase.Type.Card)
+            {
+                string uiText = GetCellUiText(idx);
+                if (!string.IsNullOrWhiteSpace(uiText))
+                    return uiText;
+            }
 
             int itemId = item.itemId;
             var type = item.itemType;
@@ -1113,7 +1442,7 @@ namespace DuelLinksAccess
                     return TypeFallbackName(type);
 
                 case CardTraderInfoBase.Type.List:
-                    return Loc.Get("trader_rarity_list", RarityLabel(item.rareId));
+                    return ResolveListTypeName(item);
 
                 case CardTraderInfoBase.Type.Chroniclizer:
                     return Loc.Get("trader_chroniclizer");
@@ -1135,6 +1464,27 @@ namespace DuelLinksAccess
             return Loc.Get("duel_unknown_card");
         }
 
+        private string ResolveListTypeName(CardTraderInfoBase item)
+        {
+            int idx = _items.IndexOf(item);
+            if (idx >= 0)
+            {
+                string ui = GetCellUiText(idx);
+                if (!string.IsNullOrWhiteSpace(ui)) return ui;
+            }
+
+            // 卡片商人主界面中，Type.List 包含了常驻卡片库存全量列表与两种特殊卡片加工：
+            // rareId = 3 -> 升级成镜碎 (Prismatic)
+            // rareId = 2 -> 升级成亮黑字 (Glossy)
+            // rareId = 1 / 其他 -> 常驻卡片库存（包含 UR/SR/R 全量卡片）
+            return item.rareId switch
+            {
+                3 => "特殊加工：升级成镜碎",
+                2 => "特殊加工：升级成亮黑字（面闪）",
+                _ => "常驻卡片库存（包含 UR、SR、R 全部卡片）",
+            };
+        }
+
         private static string TypeFallbackName(CardTraderInfoBase.Type type) => type switch
         {
             CardTraderInfoBase.Type.SkillTicket => Loc.Get("trader_skill_ticket"),
@@ -1143,14 +1493,6 @@ namespace DuelLinksAccess
             CardTraderInfoBase.Type.BoxChip     => Loc.Get("trader_box_chip"),
             CardTraderInfoBase.Type.RespectOrb  => Loc.Get("trader_respect_orb"),
             _                                   => Loc.Get("duel_unknown_card"),
-        };
-
-        private static string RarityLabel(long rareId) => rareId switch
-        {
-            1 => "Rare",
-            2 => "Super Rare",
-            3 => "Ultra Rare",
-            _ => $"Rarity {rareId}",
         };
 
         private static string GetCardName(int mrk)
@@ -1162,7 +1504,7 @@ namespace DuelLinksAccess
                 if (!string.IsNullOrWhiteSpace(name)) return name;
             }
             catch { }
-            return $"Card {mrk}";
+            return $"卡片 {mrk}";
         }
 
         /// <summary>

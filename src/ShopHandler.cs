@@ -28,6 +28,23 @@ namespace DuelLinksAccess
             HomeBg
         }
 
+        private enum ShopItemKind
+        {
+            ContentItem,
+            PurchaseButton,
+            Action
+        }
+
+        private class ShopItemEntry
+        {
+            public ShopItemKind Kind;
+            public MerchViewContentItem ContentItem;
+            public PurchaseButton PurchaseBtn;
+            public string DisplayName;
+            public Action CustomAction;
+            public GameObject GameObject => ContentItem != null ? ContentItem.gameObject : (PurchaseBtn != null ? PurchaseBtn.gameObject : null);
+        }
+
         #endregion
 
         #region Fields
@@ -40,7 +57,7 @@ namespace DuelLinksAccess
         private int _focusIndex;
 
         // Cached item list for current category
-        private readonly List<MerchViewContentItem> _currentItems = new();
+        private readonly List<ShopItemEntry> _currentItems = new();
 
         // Cooldown to prevent rapid-fire activation
         private float _operationCooldown;
@@ -341,6 +358,7 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Refreshes the item list from the current category's MerchView.
+        /// Includes pack purchase buttons, reset button, and other shop controls.
         /// </summary>
         private void RefreshCurrentItems()
         {
@@ -351,14 +369,156 @@ namespace DuelLinksAccess
                 var merchView = GetActiveMerchView();
                 if (merchView == null) return;
 
-                var items = merchView.contentItems;
-                if (items == null) return;
-
-                for (int i = 0; i < items.Count; i++)
+                // 1. If it's a CardMerchView, specifically check its pack purchase buttons and control buttons
+                var cardMerch = merchView.TryCast<CardMerchView>();
+                if (cardMerch != null)
                 {
-                    var item = items[i];
-                    if (item != null && item.gameObject != null && item.gameObject.activeInHierarchy)
-                        _currentItems.Add(item);
+                    // Add boxArt if ready and active
+                    if (cardMerch.boxArt != null && cardMerch.boxArt.gameObject != null && cardMerch.boxArt.gameObject.activeInHierarchy)
+                    {
+                        _currentItems.Add(new ShopItemEntry
+                        {
+                            Kind = ShopItemKind.ContentItem,
+                            ContentItem = cardMerch.boxArt
+                        });
+                    }
+
+                    // Add PurchaseButtons from purchaseButtonsBase
+                    var pbBase = cardMerch.purchaseButtonsBase;
+                    if (pbBase != null && pbBase.buttonsList != null)
+                    {
+                        for (int i = 0; i < pbBase.buttonsList.Count; i++)
+                        {
+                            var go = pbBase.buttonsList[i];
+                            if (go != null && go.activeInHierarchy)
+                            {
+                                var btn = go.GetComponent<PurchaseButton>();
+                                if (btn != null)
+                                {
+                                    _currentItems.Add(new ShopItemEntry
+                                    {
+                                        Kind = ShopItemKind.PurchaseButton,
+                                        PurchaseBtn = btn
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Scan any other PurchaseButton components on cardMerch
+                    var allPb = cardMerch.GetComponentsInChildren<PurchaseButton>(false);
+                    if (allPb != null)
+                    {
+                        for (int i = 0; i < allPb.Length; i++)
+                        {
+                            var btn = allPb[i];
+                            if (btn != null && btn.gameObject != null && btn.gameObject.activeInHierarchy)
+                            {
+                                if (!_currentItems.Exists(e => e.PurchaseBtn == btn))
+                                {
+                                    _currentItems.Add(new ShopItemEntry
+                                    {
+                                        Kind = ShopItemKind.PurchaseButton,
+                                        PurchaseBtn = btn
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // Reset Box button
+                    var resetBtn = cardMerch.resetButton;
+                    if (resetBtn != null && resetBtn.gameObject != null && resetBtn.gameObject.activeInHierarchy)
+                    {
+                        _currentItems.Add(new ShopItemEntry
+                        {
+                            Kind = ShopItemKind.Action,
+                            DisplayName = Loc.Get("shop_reset_box"),
+                            CustomAction = () => cardMerch.OnResetBoxButton()
+                        });
+                    }
+
+                    // Box Chip button
+                    var boxChipBtn = cardMerch.boxChip;
+                    if (boxChipBtn != null && boxChipBtn.gameObject != null && boxChipBtn.gameObject.activeInHierarchy)
+                    {
+                        _currentItems.Add(new ShopItemEntry
+                        {
+                            Kind = ShopItemKind.Action,
+                            DisplayName = Loc.Get("shop_box_chip"),
+                            CustomAction = () => boxChipBtn.onClick?.Invoke()
+                        });
+                    }
+
+                    // Regulation button
+                    var regBtn = cardMerch.regulationButton;
+                    if (regBtn != null && regBtn.gameObject != null && regBtn.gameObject.activeInHierarchy)
+                    {
+                        _currentItems.Add(new ShopItemEntry
+                        {
+                            Kind = ShopItemKind.Action,
+                            DisplayName = Loc.Get("shop_regulation"),
+                            CustomAction = () => regBtn.onClick?.Invoke()
+                        });
+                    }
+
+                    // Errata Help button
+                    var errataBtn = cardMerch.errataHelp;
+                    if (errataBtn != null && errataBtn.gameObject != null && errataBtn.gameObject.activeInHierarchy)
+                    {
+                        _currentItems.Add(new ShopItemEntry
+                        {
+                            Kind = ShopItemKind.Action,
+                            DisplayName = Loc.Get("shop_errata"),
+                            CustomAction = () => errataBtn.onClick?.Invoke()
+                        });
+                    }
+                }
+
+                // 2. Add contentItems from MerchViewBase (for all categories)
+                var items = merchView.contentItems;
+                if (items != null)
+                {
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        var item = items[i];
+                        if (item != null && item.gameObject != null && item.gameObject.activeInHierarchy)
+                        {
+                            // Avoid duplicate if already added
+                            if (!_currentItems.Exists(e => e.ContentItem == item))
+                            {
+                                _currentItems.Add(new ShopItemEntry
+                                {
+                                    Kind = ShopItemKind.ContentItem,
+                                    ContentItem = item
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // 3. For any other merch view, scan for standalone PurchaseButtons
+                if (cardMerch == null)
+                {
+                    var extraPb = merchView.GetComponentsInChildren<PurchaseButton>(false);
+                    if (extraPb != null)
+                    {
+                        for (int i = 0; i < extraPb.Length; i++)
+                        {
+                            var btn = extraPb[i];
+                            if (btn != null && btn.gameObject != null && btn.gameObject.activeInHierarchy)
+                            {
+                                if (!_currentItems.Exists(e => e.PurchaseBtn == btn))
+                                {
+                                    _currentItems.Add(new ShopItemEntry
+                                    {
+                                        Kind = ShopItemKind.PurchaseButton,
+                                        PurchaseBtn = btn
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -428,6 +588,42 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Reads the gold balance from HeaderViewController.goldNumber.
+        /// </summary>
+        private string ReadGoldBalance()
+        {
+            try
+            {
+                var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedMgr == null) return null;
+
+                Il2CppYgomSystem.UI.ViewControllerManager baseMgr;
+                if (!namedMgr.TryGetValue("base", out baseMgr) || baseMgr == null)
+                    return null;
+
+                var topVc = baseMgr.GetStackTopViewController();
+                if (topVc == null) return null;
+
+                var header = topVc.TryCast<HeaderViewController>();
+                if (header == null) return null;
+
+                var goldText = header.goldNumber;
+                if (goldText != null)
+                {
+                    string text = goldText.text;
+                    if (!string.IsNullOrEmpty(text) && text.Trim().Length > 0)
+                        return text.Trim();
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"ReadGoldBalance error: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Reads all available currency balances and formats them.
         /// </summary>
         private string ReadAllBalances()
@@ -441,6 +637,10 @@ namespace DuelLinksAccess
             string crystals = ReadCrystalBalance();
             if (!string.IsNullOrEmpty(crystals))
                 parts.Add(crystals + " " + Loc.Get("shop_crystals"));
+
+            string gold = ReadGoldBalance();
+            if (!string.IsNullOrEmpty(gold))
+                parts.Add(gold + " " + Loc.Get("shop_gold"));
 
             if (parts.Count == 0)
                 return Loc.Get("shop_balance_unknown");
@@ -618,85 +818,48 @@ namespace DuelLinksAccess
         #region Item Activation
 
         /// <summary>
-        /// Activates the current item. Behavior varies by item type:
-        /// ArtItem/ArtItemBox → OnClickInfo() to open pack details.
-        /// BundleLineupItem → OnInformation() if available, else first purchase button.
-        /// StandardItem/Trainer2Item → OnPurchase()/OnClickPurchase().
-        /// Fallback → PurchaseButton.OnTouch() or Button.onClick.
+        /// Activates the current item. Behavior varies by item kind:
+        /// Action → CustomAction.Invoke().
+        /// PurchaseButton → PurchaseButton.OnTouch().
+        /// ContentItem → type-specific OnClickInfo / OnPurchase / etc.
         /// </summary>
         private void ActivateCurrentItem()
         {
             if (_operationCooldown > 0f) return;
             if (_currentItems.Count == 0 || _focusIndex < 0 || _focusIndex >= _currentItems.Count) return;
 
-            var item = _currentItems[_focusIndex];
-            if (item == null) return;
+            var entry = _currentItems[_focusIndex];
+            if (entry == null) return;
 
             try
             {
-                // ArtItem (card packs/boxes) — open detail screen
-                var artItem = item.TryCast<ArtItem>();
-                if (artItem != null)
+                if (entry.Kind == ShopItemKind.Action)
                 {
-                    artItem.OnClickInfo();
-                    DebugLogger.Log(LogCategory.Handler, "Shop",
-                        $"Called OnClickInfo on ArtItem at index {_focusIndex}");
-                    _operationCooldown = OperationCooldownTime;
+                    if (entry.CustomAction != null)
+                    {
+                        entry.CustomAction.Invoke();
+                        DebugLogger.Log(LogCategory.Handler, "Shop",
+                            $"Invoked CustomAction '{entry.DisplayName}' at index {_focusIndex}");
+                        _operationCooldown = OperationCooldownTime;
+                    }
                     return;
                 }
 
-                // BundleLineupItem — open information or first purchase button
-                var bundleItem = item.TryCast<BundleLineupItem>();
-                if (bundleItem != null)
+                if (entry.Kind == ShopItemKind.PurchaseButton)
                 {
-                    bundleItem.OnInformation();
-                    DebugLogger.Log(LogCategory.Handler, "Shop",
-                        $"Called OnInformation on BundleLineupItem at index {_focusIndex}");
-                    _operationCooldown = OperationCooldownTime;
+                    if (entry.PurchaseBtn != null)
+                    {
+                        entry.PurchaseBtn.OnTouch();
+                        DebugLogger.Log(LogCategory.Handler, "Shop",
+                            $"Called OnTouch on PurchaseButton at index {_focusIndex}");
+                        _operationCooldown = OperationCooldownTime;
+                    }
                     return;
                 }
 
-                // Trainer2Item
-                var trainerItem = item.TryCast<Trainer2Item>();
-                if (trainerItem != null)
+                if (entry.Kind == ShopItemKind.ContentItem)
                 {
-                    trainerItem.OnClickPurchase();
-                    DebugLogger.Log(LogCategory.Handler, "Shop",
-                        $"Called OnClickPurchase on Trainer2Item at index {_focusIndex}");
-                    _operationCooldown = OperationCooldownTime;
-                    return;
-                }
-
-                // StandardItem
-                var standardItem = item.TryCast<StandardItem>();
-                if (standardItem != null)
-                {
-                    standardItem.OnPurchase();
-                    DebugLogger.Log(LogCategory.Handler, "Shop",
-                        $"Called OnPurchase on StandardItem at index {_focusIndex}");
-                    _operationCooldown = OperationCooldownTime;
-                    return;
-                }
-
-                // Fallback: find a PurchaseButton in the item's children
-                var purchaseBtn = item.gameObject.GetComponentInChildren<PurchaseButton>();
-                if (purchaseBtn != null)
-                {
-                    purchaseBtn.OnTouch();
-                    DebugLogger.Log(LogCategory.Handler, "Shop",
-                        $"Called OnTouch on PurchaseButton at index {_focusIndex}");
-                    _operationCooldown = OperationCooldownTime;
-                    return;
-                }
-
-                // Last fallback: Unity Button
-                var button = item.gameObject.GetComponentInChildren<Button>();
-                if (button != null)
-                {
-                    button.onClick.Invoke();
-                    DebugLogger.Log(LogCategory.Handler, "Shop",
-                        $"Called onClick on Button at index {_focusIndex}");
-                    _operationCooldown = OperationCooldownTime;
+                    ActivateContentItem(entry.ContentItem);
                     return;
                 }
 
@@ -708,6 +871,79 @@ namespace DuelLinksAccess
                     $"ActivateCurrentItem error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("shop_activate_error"));
             }
+        }
+
+        private void ActivateContentItem(MerchViewContentItem item)
+        {
+            if (item == null) return;
+
+            // ArtItem (card packs/boxes) — open detail screen
+            var artItem = item.TryCast<ArtItem>();
+            if (artItem != null)
+            {
+                artItem.OnClickInfo();
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"Called OnClickInfo on ArtItem at index {_focusIndex}");
+                _operationCooldown = OperationCooldownTime;
+                return;
+            }
+
+            // BundleLineupItem — open information or first purchase button
+            var bundleItem = item.TryCast<BundleLineupItem>();
+            if (bundleItem != null)
+            {
+                bundleItem.OnInformation();
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"Called OnInformation on BundleLineupItem at index {_focusIndex}");
+                _operationCooldown = OperationCooldownTime;
+                return;
+            }
+
+            // Trainer2Item
+            var trainerItem = item.TryCast<Trainer2Item>();
+            if (trainerItem != null)
+            {
+                trainerItem.OnClickPurchase();
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"Called OnClickPurchase on Trainer2Item at index {_focusIndex}");
+                _operationCooldown = OperationCooldownTime;
+                return;
+            }
+
+            // StandardItem
+            var standardItem = item.TryCast<StandardItem>();
+            if (standardItem != null)
+            {
+                standardItem.OnPurchase();
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"Called OnPurchase on StandardItem at index {_focusIndex}");
+                _operationCooldown = OperationCooldownTime;
+                return;
+            }
+
+            // Fallback: find a PurchaseButton in the item's children
+            var purchaseBtn = item.gameObject.GetComponentInChildren<PurchaseButton>();
+            if (purchaseBtn != null)
+            {
+                purchaseBtn.OnTouch();
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"Called OnTouch on PurchaseButton at index {_focusIndex}");
+                _operationCooldown = OperationCooldownTime;
+                return;
+            }
+
+            // Last fallback: Unity Button
+            var button = item.gameObject.GetComponentInChildren<Button>();
+            if (button != null)
+            {
+                button.onClick.Invoke();
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"Called onClick on Button at index {_focusIndex}");
+                _operationCooldown = OperationCooldownTime;
+                return;
+            }
+
+            ScreenReader.Say(Loc.Get("shop_activate_error"));
         }
 
         private void GoBack()
@@ -746,8 +982,8 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _currentItems.Count)
                 _focusIndex = 0;
 
-            var item = _currentItems[_focusIndex];
-            if (item == null)
+            var entry = _currentItems[_focusIndex];
+            if (entry == null)
             {
                 ScreenReader.Say(Loc.Get("shop_no_items"));
                 return;
@@ -755,13 +991,68 @@ namespace DuelLinksAccess
 
             int pos = _focusIndex + 1;
             int total = _currentItems.Count;
-            string itemText = verbose ? FormatItemVerbose(item) : FormatItemCompact(item);
+            string itemText = FormatItemEntry(entry, verbose);
             string announcement = Loc.Get("shop_item_position", pos, total, itemText);
 
             if (queued)
                 ScreenReader.SayQueued(announcement);
             else
                 ScreenReader.Say(announcement);
+        }
+
+        private string FormatItemEntry(ShopItemEntry entry, bool verbose)
+        {
+            if (entry == null) return Loc.Get("shop_unknown_item");
+
+            if (entry.Kind == ShopItemKind.Action)
+                return entry.DisplayName ?? Loc.Get("shop_unknown_item");
+
+            if (entry.Kind == ShopItemKind.PurchaseButton)
+                return FormatPurchaseButton(entry.PurchaseBtn);
+
+            if (entry.Kind == ShopItemKind.ContentItem)
+            {
+                if (entry.ContentItem == null) return Loc.Get("shop_unknown_item");
+                return verbose ? FormatItemVerbose(entry.ContentItem) : FormatItemCompact(entry.ContentItem);
+            }
+
+            return Loc.Get("shop_unknown_item");
+        }
+
+        private string FormatPurchaseButton(PurchaseButton btn)
+        {
+            try
+            {
+                if (btn == null) return Loc.Get("shop_unknown_item");
+                var gemBtn = btn.TryCast<PurchaseButtonGem>();
+                string labelText = btn.Label?.text?.Trim();
+                string priceText = gemBtn?.GemPrice?.text?.Trim();
+
+                string desc;
+                if (!string.IsNullOrEmpty(labelText) && int.TryParse(labelText, out int packCount))
+                    desc = Loc.Get("shop_buy_packs", packCount);
+                else if (!string.IsNullOrEmpty(labelText))
+                    desc = labelText;
+                else
+                    desc = Loc.Get("shop_card_pack");
+
+                if (!string.IsNullOrEmpty(priceText))
+                    desc += "，" + priceText + " " + Loc.Get("shop_gems");
+
+                if (gemBtn != null)
+                {
+                    string limit = gemBtn._limitnum?.text?.Trim();
+                    if (!string.IsNullOrEmpty(limit) && limit != "0")
+                        desc += " (" + Loc.Get("shop_item_limit", limit) + ")";
+                }
+
+                return desc;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Shop", $"FormatPurchaseButton error: {ex.Message}");
+                return Loc.Get("shop_unknown_item");
+            }
         }
 
         /// <summary>
@@ -772,36 +1063,52 @@ namespace DuelLinksAccess
         {
             try
             {
-                if (!item.isReady)
-                    return Loc.Get("shop_item_loading");
+                string result = null;
 
                 // ArtItemBox (check before ArtItem — it's a subclass)
                 var artItemBox = item.TryCast<ArtItemBox>();
                 if (artItemBox != null)
-                    return FormatArtItemBoxCompact(artItemBox);
+                    result = FormatArtItemBoxCompact(artItemBox);
+                else
+                {
+                    // ArtItem (card packs)
+                    var artItem = item.TryCast<ArtItem>();
+                    if (artItem != null)
+                        result = FormatArtItemCompact(artItem);
+                    else
+                    {
+                        // BundleLineupItem
+                        var bundleItem = item.TryCast<BundleLineupItem>();
+                        if (bundleItem != null)
+                            result = FormatBundleItemCompact(bundleItem);
+                        else
+                        {
+                            // Trainer2Item
+                            var trainerItem = item.TryCast<Trainer2Item>();
+                            if (trainerItem != null)
+                                result = FormatTrainerItemCompact(trainerItem);
+                            else
+                            {
+                                // StandardItem
+                                var standardItem = item.TryCast<StandardItem>();
+                                if (standardItem != null)
+                                    result = FormatStandardItemCompact(standardItem);
+                                else
+                                    result = ExtractItemTextFallback(item);
+                            }
+                        }
+                    }
+                }
 
-                // ArtItem (card packs)
-                var artItem = item.TryCast<ArtItem>();
-                if (artItem != null)
-                    return FormatArtItemCompact(artItem);
+                // If valid text was extracted, return it immediately!
+                if (!string.IsNullOrEmpty(result) && result != Loc.Get("shop_unknown_item"))
+                    return result;
 
-                // BundleLineupItem
-                var bundleItem = item.TryCast<BundleLineupItem>();
-                if (bundleItem != null)
-                    return FormatBundleItemCompact(bundleItem);
+                // If no meaningful text was found and item is truly not ready, return loading
+                if (!item.isReady)
+                    return Loc.Get("shop_item_loading");
 
-                // Trainer2Item
-                var trainerItem = item.TryCast<Trainer2Item>();
-                if (trainerItem != null)
-                    return FormatTrainerItemCompact(trainerItem);
-
-                // StandardItem
-                var standardItem = item.TryCast<StandardItem>();
-                if (standardItem != null)
-                    return FormatStandardItemCompact(standardItem);
-
-                // Fallback
-                return ExtractItemTextFallback(item);
+                return !string.IsNullOrEmpty(result) ? result : Loc.Get("shop_unknown_item");
             }
             catch (Exception ex)
             {
@@ -818,30 +1125,45 @@ namespace DuelLinksAccess
         {
             try
             {
-                if (!item.isReady)
-                    return Loc.Get("shop_item_loading");
+                string result = null;
 
                 var artItemBox = item.TryCast<ArtItemBox>();
                 if (artItemBox != null)
-                    return FormatArtItemBoxVerbose(artItemBox);
+                    result = FormatArtItemBoxVerbose(artItemBox);
+                else
+                {
+                    var artItem = item.TryCast<ArtItem>();
+                    if (artItem != null)
+                        result = FormatArtItemVerbose(artItem);
+                    else
+                    {
+                        var bundleItem = item.TryCast<BundleLineupItem>();
+                        if (bundleItem != null)
+                            result = FormatBundleItemVerbose(bundleItem);
+                        else
+                        {
+                            var trainerItem = item.TryCast<Trainer2Item>();
+                            if (trainerItem != null)
+                                result = FormatTrainerItemVerbose(trainerItem);
+                            else
+                            {
+                                var standardItem = item.TryCast<StandardItem>();
+                                if (standardItem != null)
+                                    result = FormatStandardItemVerbose(standardItem);
+                                else
+                                    result = ExtractItemTextFallback(item);
+                            }
+                        }
+                    }
+                }
 
-                var artItem = item.TryCast<ArtItem>();
-                if (artItem != null)
-                    return FormatArtItemVerbose(artItem);
+                if (!string.IsNullOrEmpty(result) && result != Loc.Get("shop_unknown_item"))
+                    return result;
 
-                var bundleItem = item.TryCast<BundleLineupItem>();
-                if (bundleItem != null)
-                    return FormatBundleItemVerbose(bundleItem);
+                if (!item.isReady)
+                    return Loc.Get("shop_item_loading");
 
-                var trainerItem = item.TryCast<Trainer2Item>();
-                if (trainerItem != null)
-                    return FormatTrainerItemVerbose(trainerItem);
-
-                var standardItem = item.TryCast<StandardItem>();
-                if (standardItem != null)
-                    return FormatStandardItemVerbose(standardItem);
-
-                return ExtractItemTextFallback(item);
+                return !string.IsNullOrEmpty(result) ? result : Loc.Get("shop_unknown_item");
             }
             catch (Exception ex)
             {
@@ -1067,11 +1389,169 @@ namespace DuelLinksAccess
 
         #region StandardItem Formatting
 
+        private string GetStandardItemName(StandardItem item)
+        {
+            if (item == null) return null;
+
+            // 1. Try titleLabel Text component
+            string title = SafeReadText(item.titleLabel);
+            if (!string.IsNullOrEmpty(title) && !LabelExtractor.IsGenericBoxCategory(title))
+                return title;
+
+            string specificName = null;
+
+            // 2. Scan child Text components on item.gameObject directly
+            // Instead of just checking the first text (which is often the generic category "主卡盒"),
+            // inspect all child texts to find the actual pack/box name or subtitle.
+            if (item.gameObject != null)
+            {
+                try
+                {
+                    var allTexts = item.gameObject.GetComponentsInChildren<Text>(true);
+                    if (allTexts != null)
+                    {
+                        foreach (var t in allTexts)
+                        {
+                            if (t == null) continue;
+                            string txt = LabelExtractor.StripRichText(t.text)?.Trim();
+                            if (!string.IsNullOrEmpty(txt)
+                                && !LabelExtractor.IsGenericBoxCategory(txt)
+                                && txt != "Sale" && txt != "SALE" && txt != "New" && txt != "NEW"
+                                && !IsAllDigits(txt)
+                                && txt != title)
+                            {
+                                specificName = txt;
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Try ItemData dictionary (check all keys)
+            if (string.IsNullOrEmpty(specificName))
+            {
+                try
+                {
+                    var ds = item.ItemData;
+                    if (ds != null)
+                    {
+                        // Priority keys
+                        foreach (var key in new[] { "name", "box_name", "box_title", "item_name", "title", "caption", "headline", "sub_title", "subtitle", "product_name" })
+                        {
+                            Il2CppSystem.Object val;
+                            if (ds.TryGetValue(key, out val) && val != null)
+                            {
+                                string name = val.ToString();
+                                if (!string.IsNullOrEmpty(name))
+                                {
+                                    string clean = LabelExtractor.StripRichText(name.Trim());
+                                    if (!LabelExtractor.IsGenericBoxCategory(clean)
+                                        && clean != "Sale" && clean != "New" && !IsAllDigits(clean))
+                                    {
+                                        specificName = clean;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // If still not found, check remaining keys
+                        if (string.IsNullOrEmpty(specificName))
+                        {
+                            var enumerator = ds.GetEnumerator();
+                            while (enumerator.MoveNext())
+                            {
+                                var entry = enumerator.Current;
+                                if (entry.Value != null)
+                                {
+                                    string s = LabelExtractor.StripRichText(entry.Value.ToString()?.Trim());
+                                    if (!string.IsNullOrEmpty(s) && s.Length >= 2 && s.Length <= 40
+                                        && !LabelExtractor.IsGenericBoxCategory(s)
+                                        && !s.Contains("{") && !s.Contains("[")
+                                        && s != "Sale" && s != "New" && !IsAllDigits(s))
+                                    {
+                                        specificName = s;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "Shop", $"GetStandardItemName ItemData error: {ex.Message}");
+                }
+            }
+
+            // 4. Try caption component on item
+            if (string.IsNullOrEmpty(specificName))
+            {
+                string cap = SafeReadText(item.caption);
+                if (!string.IsNullOrEmpty(cap) && !LabelExtractor.IsGenericBoxCategory(cap))
+                    specificName = cap;
+            }
+
+            // 5. Try resolving from saleDate or itemImagePath/callUrl
+            string metaInfo = null;
+            string sDate = SafeReadText(item.saleDate);
+            if (!string.IsNullOrEmpty(sDate))
+            {
+                metaInfo = sDate.Replace("发布日期：", "").Replace("发布日期:", "").Trim();
+            }
+            else
+            {
+                // Try parse box number / edition from itemImagePath or callUrl
+                string path = item.itemImagePath ?? item.callUrl ?? "";
+                if (!string.IsNullOrEmpty(path))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(path, @"\b(box|pack|vol)[_/-]?(\d+)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (match.Success)
+                    {
+                        metaInfo = $"第{match.Groups[2].Value}期";
+                    }
+                }
+            }
+
+            // Combine category, specific name, and meta info
+            if (!string.IsNullOrEmpty(specificName))
+            {
+                if (!string.IsNullOrEmpty(title) && LabelExtractor.IsGenericBoxCategory(title) && !specificName.Contains(title))
+                {
+                    return !string.IsNullOrEmpty(metaInfo) && !specificName.Contains(metaInfo)
+                        ? $"{title}：{specificName} ({metaInfo})"
+                        : $"{title}：{specificName}";
+                }
+                return !string.IsNullOrEmpty(metaInfo) && !specificName.Contains(metaInfo)
+                    ? $"{specificName} ({metaInfo})"
+                    : specificName;
+            }
+
+            if (!string.IsNullOrEmpty(metaInfo))
+            {
+                return !string.IsNullOrEmpty(title) ? $"{title} ({metaInfo})" : metaInfo;
+            }
+
+            return title;
+        }
+
+        private static bool IsAllDigits(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (!char.IsDigit(s[i])) return false;
+            }
+            return true;
+        }
+
         private string FormatStandardItemCompact(StandardItem item)
         {
             var parts = new List<string>();
 
-            string title = SafeReadText(item.titleLabel);
+            string title = GetStandardItemName(item);
             if (!string.IsNullOrEmpty(title))
                 parts.Add(title);
 
@@ -1130,7 +1610,26 @@ namespace DuelLinksAccess
                 if (!string.IsNullOrEmpty(priceTag))
                     return priceTag;
 
-                return GetAllPricesFromGameObject(item.purchaseButton) ?? GetAllPricesFromGameObject(item.gameObject);
+                string btnPrice = GetAllPricesFromGameObject(item.purchaseButton)
+                    ?? GetAllPricesFromGameObject(item.gameObject);
+                if (!string.IsNullOrEmpty(btnPrice))
+                    return btnPrice;
+
+                // Check ItemData dictionary
+                var ds = item.ItemData;
+                if (ds != null)
+                {
+                    foreach (var key in new[] { "price", "price_text", "cost", "gem", "gem_price", "rm_price" })
+                    {
+                        Il2CppSystem.Object val;
+                        if (ds.TryGetValue(key, out val) && val != null)
+                        {
+                            string p = val.ToString();
+                            if (!string.IsNullOrEmpty(p))
+                                return LabelExtractor.StripRichText(p.Trim());
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -1304,8 +1803,12 @@ namespace DuelLinksAccess
                 var go = item.gameObject;
                 if (go == null) return Loc.Get("shop_unknown_item");
 
+                string childText = LabelExtractor.GetChildText(go);
+                if (!string.IsNullOrEmpty(childText))
+                    return childText;
+
                 string label = LabelExtractor.GetLabel(go);
-                if (!string.IsNullOrEmpty(label) && label != "Button")
+                if (!string.IsNullOrEmpty(label) && label != "Button" && label != "按钮")
                     return label;
 
                 string childTexts = ExtractChildTexts(go);
@@ -1331,14 +1834,36 @@ namespace DuelLinksAccess
         {
             if (_currentItems.Count == 0 || _focusIndex < 0 || _focusIndex >= _currentItems.Count)
             {
-                ScreenReader.Say("No item to dump.");
+                ScreenReader.Say("无转储项目");
                 return;
             }
 
-            var item = _currentItems[_focusIndex];
+            var entry = _currentItems[_focusIndex];
+            if (entry == null)
+            {
+                ScreenReader.Say("项目为空");
+                return;
+            }
+
+            if (entry.Kind == ShopItemKind.Action)
+            {
+                ScreenReader.Say($"Action: {entry.DisplayName}");
+                return;
+            }
+
+            if (entry.Kind == ShopItemKind.PurchaseButton)
+            {
+                var pb = entry.PurchaseBtn;
+                string pbType = pb?.GetIl2CppType()?.Name ?? "null";
+                string pbLabel = pb?.Label?.text ?? "null";
+                ScreenReader.Say($"PurchaseButton ({pbType}): {pbLabel}");
+                return;
+            }
+
+            var item = entry.ContentItem;
             if (item == null)
             {
-                ScreenReader.Say("Item is null.");
+                ScreenReader.Say("项目为空");
                 return;
             }
 

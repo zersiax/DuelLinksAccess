@@ -728,13 +728,13 @@ namespace DuelLinksAccess
         {
             switch ((raw ?? "").ToUpperInvariant())
             {
-                case "DM": return "Duel Monsters";
+                case "DM": return "决斗怪兽 (初代)";
                 case "GX": return "GX";
                 case "5DS": return "5D's";
                 case "ZEXAL": return "Zexal";
                 case "ARCV": return "Arc-V";
                 case "VRAINS": return "VRAINS";
-                case "DSOD": return "Dark Side of Dimensions";
+                case "DSOD": return "次元的黑暗面";
                 case "SEVENS": return "Sevens";
                 case "GORUSH":
                 case "GORUSH!!":
@@ -1826,7 +1826,7 @@ namespace DuelLinksAccess
         {
             if (cid <= 0) return Loc.Get("home_character_unknown");
             string name = TryResolveCharacterName(cid);
-            return string.IsNullOrWhiteSpace(name) ? $"CID {cid}" : name;
+            return string.IsNullOrWhiteSpace(name) ? $"角色 {cid}" : name;
         }
 
         private static string GetDeckDisplayName(int cid)

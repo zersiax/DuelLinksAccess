@@ -501,7 +501,7 @@ namespace DuelLinksAccess
                 if (!string.IsNullOrWhiteSpace(name)) return name;
             }
             catch { }
-            return $"Card {mrk}";
+            return $"卡片 {mrk}";
         }
 
         /// <summary>

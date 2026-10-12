@@ -24,7 +24,7 @@ namespace DuelLinksAccess
         /// </summary>
         public static string GetLabel(GameObject go)
         {
-            if (go == null) return "Button";
+            if (go == null) return "按钮";
 
             string result;
 
@@ -208,7 +208,7 @@ namespace DuelLinksAccess
         /// </summary>
         public static string CleanGoName(string name)
         {
-            if (string.IsNullOrEmpty(name)) return "Button";
+            if (string.IsNullOrEmpty(name)) return "按钮";
 
             // Remove (Clone) suffix
             if (name.EndsWith("(Clone)"))
@@ -216,7 +216,7 @@ namespace DuelLinksAccess
 
             // Known junk names that should not be announced
             if (_junkNames.Contains(name))
-                return "Button";
+                return "按钮";
 
             // Remove common suffixes to get a meaningful core name
             foreach (var suffix in _nameSuffixes)
@@ -233,7 +233,7 @@ namespace DuelLinksAccess
             name = CamelCaseRegex.Replace(name, " ");
             name = AcronymRegex.Replace(name, " ");
 
-            return name.Trim();
+            return TranslateGoName(name.Trim());
         }
 
         /// <summary>
@@ -308,6 +308,85 @@ namespace DuelLinksAccess
             "vl", "hl", "div", "img"
         };
 
+        private static readonly Dictionary<string, string> _uiTranslations = new(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Back", "返回" },
+            { "Close", "关闭" },
+            { "Next", "下一步" },
+            { "Prev", "上一步" },
+            { "Previous", "上一步" },
+            { "OK", "确定" },
+            { "Cancel", "取消" },
+            { "Confirm", "确认" },
+            { "Button", "按钮" },
+            { "Btn", "按钮" },
+            { "Card Center Banner Mini", "卡片中心精选横幅" },
+            { "Card Center Banner", "卡片中心横幅" },
+            { "Chara Deck", "角色卡组" },
+            { "Deck Select Item", "卡组选择项" },
+            { "Deck Select", "卡组选择" },
+            { "Banner", "活动横幅" },
+            { "Destruction Geas", "冥铭途之祸 (Destruction Geas)" },
+            { "Scrollbar Vertical", "垂直滚动条" },
+            { "Scrollbar Horizontal", "水平滚动条" },
+            { "Scrollbar", "滚动条" },
+            { "Structure", "预组卡组" },
+            { "Deck", "卡组" },
+            { "Chara", "角色" },
+            { "Character", "角色" },
+            { "Filter", "筛选" },
+            { "Sort", "排序" },
+            { "Search", "搜索" },
+            { "Edit", "编辑" },
+            { "Save", "保存" },
+            { "Help", "帮助" },
+            { "Setting", "设置" },
+            { "Settings", "设置" },
+            { "Detail", "详情" },
+            { "Details", "详情" },
+            { "Menu", "菜单" },
+            { "Notice", "公告" },
+            { "Mission", "任务" },
+            { "Present", "礼物" },
+            { "Gift", "礼物" },
+            { "Shop", "商店" },
+            { "Exchange", "交换" },
+            { "Buy", "购买" },
+            { "Purchase", "购买" },
+            { "Item", "道具" },
+            { "Duel", "决斗" },
+            { "Gate", "传送门" },
+            { "Box", "卡盒" },
+            { "Pack", "卡包" },
+            { "Stage", "关卡" },
+            { "World", "世界" },
+            { "Area", "区域" },
+            { "Tab", "标签页" },
+            { "Icon", "图标" },
+            { "Reset", "重置" },
+            { "Select", "选择" }
+        };
+
+        private static string TranslateGoName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "按钮";
+
+            if (_uiTranslations.TryGetValue(name, out string translated))
+                return translated;
+
+            // Handle trailing numbers, e.g. "Chara Deck0", "Deck Select Item2", "Banner1"
+            var m = Regex.Match(name, @"^(.*?)\s*(\d+)$");
+            if (m.Success)
+            {
+                string stem = m.Groups[1].Value.Trim();
+                string digits = m.Groups[2].Value;
+                if (_uiTranslations.TryGetValue(stem, out string stemTrans))
+                    return $"{stemTrans} {digits}";
+            }
+
+            return name;
+        }
+
         #endregion
 
         #region Extraction Strategies
@@ -350,11 +429,11 @@ namespace DuelLinksAccess
                 catch { }
 
                 if (isLocked)
-                    return name + ", locked";
+                    return name + "，未解锁";
                 else if (isSet)
-                    return isNew ? name + ", currently set, new" : name + ", currently set";
+                    return isNew ? name + "，当前装备，新获得" : name + "，当前装备";
                 else if (isNew)
-                    return name + ", new";
+                    return name + "，新获得";
                 else
                     return name;
             }
@@ -519,7 +598,7 @@ namespace DuelLinksAccess
                     }
 
                     // Numbered fallback
-                    return $"Entry {entryIndex + 1}";
+                    return $"条目 {entryIndex + 1}";
                 }
             }
             catch { }
@@ -658,7 +737,8 @@ namespace DuelLinksAccess
                                     if (dict.TryGetValue(key, out val) && val != null)
                                     {
                                         string text = val.ToString();
-                                        if (IsValidLabel(text) && !IsPlaceholderText(text))
+                                        if (IsValidLabel(text) && !IsPlaceholderText(text)
+                                            && !IsGenericBoxCategory(text))
                                         {
                                             DebugLogger.Log(LogCategory.Handler, "LabelEx",
                                                 $"HtjsonNode replaceParam[{key}]=\"{text}\" on {go.name}");
@@ -678,6 +758,17 @@ namespace DuelLinksAccess
                                     string iidStr = iidVal.ToString();
                                     if (int.TryParse(iidStr, out int iid) && iid > 0)
                                     {
+                                        // 1. Try ItemUtil.GetName first (items, orbs, keys, tickets, boosts)
+                                        string itemName = null;
+                                        try { itemName = Il2CppYgomGame.Utility.ItemUtil.GetName(iid); } catch { }
+                                        if (IsValidLabel(itemName))
+                                        {
+                                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                                $"Item name from %%iid%%={iid}: \"{itemName}\" on {go.name}");
+                                            return itemName;
+                                        }
+
+                                        // 2. Try CardFormatter.GetName (cards)
                                         string cardName = CardFormatter.GetName(iid);
                                         if (IsValidLabel(cardName) && cardName != Loc.Get("duel_unknown_card"))
                                         {
@@ -704,7 +795,7 @@ namespace DuelLinksAccess
                                     string dataPath = dpVal.ToString();
                                     if (!string.IsNullOrEmpty(dataPath))
                                     {
-                                        string found = TryClientWorkName(dataPath, go.name);
+                                        string found = TryClientWorkName(dataPath, go.name, go);
                                         if (found != null) return found;
 
                                         // Fallback: try product path lookup for items with empty titles
@@ -714,7 +805,7 @@ namespace DuelLinksAccess
                                             && dict.TryGetValue("%dataname%", out dnVal) && dnVal != null)
                                         {
                                             string productPath = ppVal.ToString() + "." + dnVal.ToString();
-                                            found = TryClientWorkName(productPath, go.name);
+                                            found = TryClientWorkName(productPath, go.name, go);
                                             if (found != null) return found;
                                         }
                                     }
@@ -853,64 +944,73 @@ namespace DuelLinksAccess
         /// Checks if a string is placeholder text (e.g., Japanese "ああああ" placeholders).
         /// </summary>
         /// <summary>
+        /// Checks if a string represents a generic box or pack category
+        /// rather than a specific box/product title.
+        /// </summary>
+        public static bool IsGenericBoxCategory(string s) => ShopBoxPolicy.IsGenericBoxCategory(s);
+
+        /// <summary>
         /// Tries to resolve a name from ClientWork data store at the given path.
         /// Checks common name keys (title, name, headline, summary).
         /// In debug mode, dumps the full data dictionary for unknown items.
         /// </summary>
-        private static string TryClientWorkName(string dataPath, string goName)
+        private static string TryClientWorkName(string dataPath, string goName, GameObject go = null)
         {
             // Debug: dump keys when in debug mode (helps discover new data fields)
-            if (Main.DebugMode)
+            Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object> dataDict = null;
+            try
+            {
+                var obj = Il2CppYgomSystem.Utility.ClientWork.getByJsonPath(dataPath);
+                if (obj != null)
+                {
+                    dataDict = obj.TryCast<Il2CppSystem.Collections.Generic
+                        .Dictionary<string, Il2CppSystem.Object>>();
+                }
+            }
+            catch { }
+
+            if (Main.DebugMode && dataDict != null)
             {
                 try
                 {
-                    var obj = Il2CppYgomSystem.Utility.ClientWork.getByJsonPath(dataPath);
-                    if (obj != null)
+                    var keyList = new List<string>();
+                    var enumerator = dataDict.GetEnumerator();
+                    while (enumerator.MoveNext())
                     {
-                        var dataDict = obj.TryCast<Il2CppSystem.Collections.Generic
-                            .Dictionary<string, Il2CppSystem.Object>>();
-                        if (dataDict != null)
+                        var entry = enumerator.Current;
+                        string k = entry.Key;
+                        var valObj = entry.Value;
+                        string v = valObj?.ToString() ?? "null";
+
+                        // Recursively dump sub-dictionaries (footer, icon)
+                        if (v.Contains("Dictionary"))
                         {
-                            var keyList = new List<string>();
-                            var enumerator = dataDict.GetEnumerator();
-                            while (enumerator.MoveNext())
+                            try
                             {
-                                var entry = enumerator.Current;
-                                string k = entry.Key;
-                                var valObj = entry.Value;
-                                string v = valObj?.ToString() ?? "null";
-
-                                // Recursively dump sub-dictionaries (footer, icon)
-                                if (v.Contains("Dictionary"))
+                                var subDict = valObj?.TryCast<Il2CppSystem.Collections.Generic
+                                    .Dictionary<string, Il2CppSystem.Object>>();
+                                if (subDict != null)
                                 {
-                                    try
+                                    var subKeys = new List<string>();
+                                    var subEnum = subDict.GetEnumerator();
+                                    while (subEnum.MoveNext())
                                     {
-                                        var subDict = valObj?.TryCast<Il2CppSystem.Collections.Generic
-                                            .Dictionary<string, Il2CppSystem.Object>>();
-                                        if (subDict != null)
-                                        {
-                                            var subKeys = new List<string>();
-                                            var subEnum = subDict.GetEnumerator();
-                                            while (subEnum.MoveNext())
-                                            {
-                                                var se = subEnum.Current;
-                                                string sv = se.Value?.ToString() ?? "null";
-                                                if (sv.Length > 150) sv = sv.Substring(0, 150) + "...";
-                                                subKeys.Add($"{se.Key}={sv}");
-                                            }
-                                            v = "{" + string.Join(", ", subKeys) + "}";
-                                        }
+                                        var se = subEnum.Current;
+                                        string sv = se.Value?.ToString() ?? "null";
+                                        if (sv.Length > 150) sv = sv.Substring(0, 150) + "...";
+                                        subKeys.Add($"{se.Key}={sv}");
                                     }
-                                    catch { }
+                                    v = "{" + string.Join(", ", subKeys) + "}";
                                 }
-
-                                if (v.Length > 200) v = v.Substring(0, 200) + "...";
-                                keyList.Add($"{k}={v}");
                             }
-                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
-                                $"[CW-DUMP] {dataPath}: [{string.Join(", ", keyList)}]");
+                            catch { }
                         }
+
+                        if (v.Length > 200) v = v.Substring(0, 200) + "...";
+                        keyList.Add($"{k}={v}");
                     }
+                    DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                        $"[CW-DUMP] {dataPath}: [{string.Join(", ", keyList)}]");
                 }
                 catch { }
             }
@@ -946,23 +1046,232 @@ namespace DuelLinksAccess
                 catch { }
             }
 
-            // Primary name: title, name, label, or text. Login-bonus reward cells
-            // store their item name in `text`, so it is included as a fallback.
-            string[] primaryKeys = { "title", "name", "headline", "label", "text" };
+            // Primary name: check title, name, headline, label, text, sub_title, caption, etc.
+            string foundCategory = null;
+            string foundSpecificName = null;
+
             if (!primaryResolved)
-            foreach (var key in primaryKeys)
             {
+                // 0. Check iid/item_id directly from ClientWork to resolve item/card name
                 try
                 {
-                    string value = Il2CppYgomSystem.Utility.ClientWork
-                        .getStringByJsonPath(dataPath + "." + key, "");
-                    if (!string.IsNullOrEmpty(value) && !IsPlaceholderText(value))
+                    int cwIid = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(dataPath + ".iid", 0);
+                    if (cwIid <= 0) cwIid = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(dataPath + ".item_id", 0);
+                    if (cwIid <= 0 && dataDict != null)
                     {
-                        parts.Add(StripRichText(value));
-                        break;
+                        Il2CppSystem.Object o;
+                        if ((dataDict.TryGetValue("iid", out o) || dataDict.TryGetValue("item_id", out o)) && o != null)
+                            int.TryParse(o.ToString(), out cwIid);
+                    }
+                    if (cwIid > 0)
+                    {
+                        string iName = null;
+                        try { iName = Il2CppYgomGame.Utility.ItemUtil.GetName(cwIid); } catch { }
+                        if (IsValidLabel(iName))
+                        {
+                            foundSpecificName = iName;
+                        }
+                        else
+                        {
+                            string cName = CardFormatter.GetName(cwIid);
+                            if (IsValidLabel(cName) && cName != Loc.Get("duel_unknown_card"))
+                                foundSpecificName = cName;
+                        }
                     }
                 }
                 catch { }
+
+                // 1. Check title first to see if it provides a category or name
+                try
+                {
+                    string tVal = StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                        .getStringByJsonPath(dataPath + ".title", ""));
+                    if (!string.IsNullOrEmpty(tVal) && !IsPlaceholderText(tVal))
+                    {
+                        if (IsGenericBoxCategory(tVal))
+                            foundCategory = tVal;
+                        else if (string.IsNullOrEmpty(foundSpecificName))
+                            foundSpecificName = tVal;
+                    }
+                }
+                catch { }
+
+                // 2. Candidate keys for the actual item/box name
+                string[] candidateKeys = {
+                    "name", "headline", "sub_title", "subtitle", "caption",
+                    "box_name", "box_title", "pack_name", "package_name",
+                    "item_name", "product_name", "title", "label", "text",
+                    "footer.summary", "footer.title", "detail.name", "detail.title",
+                    "banner.name", "banner.title", "box.name", "box.title", "item.name"
+                };
+
+                foreach (var key in candidateKeys)
+                {
+                    if (!string.IsNullOrEmpty(foundSpecificName)) break;
+                    if (key == "title" && foundCategory != null) continue;
+
+                    try
+                    {
+                        string val = StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                            .getStringByJsonPath(dataPath + "." + key, ""));
+                        if (!string.IsNullOrEmpty(val) && !IsPlaceholderText(val))
+                        {
+                            if (IsGenericBoxCategory(val))
+                            {
+                                if (string.IsNullOrEmpty(foundCategory))
+                                    foundCategory = val;
+                            }
+                            else if (val != foundCategory)
+                            {
+                                foundSpecificName = val;
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 3. Fallback: query dataDict keys directly if available
+                if (string.IsNullOrEmpty(foundSpecificName) && dataDict != null)
+                {
+                    try
+                    {
+                        foreach (var key in candidateKeys)
+                        {
+                            Il2CppSystem.Object valObj;
+                            if (dataDict.TryGetValue(key, out valObj) && valObj != null)
+                            {
+                                string s = StripRichText(valObj.ToString());
+                                if (!string.IsNullOrEmpty(s) && !IsPlaceholderText(s) && !IsGenericBoxCategory(s))
+                                {
+                                    foundSpecificName = s;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 4. Volume / edition / box number if available
+                string boxNum = null;
+                if (dataDict != null)
+                {
+                    try
+                    {
+                        foreach (var numKey in new[] { "vol", "box_no", "volume", "series_no", "box_num", "pack_id", "edition" })
+                        {
+                            Il2CppSystem.Object numObj;
+                            if (dataDict.TryGetValue(numKey, out numObj) && numObj != null)
+                            {
+                                string nStr = numObj.ToString()?.Trim();
+                                if (!string.IsNullOrEmpty(nStr) && nStr != "0")
+                                {
+                                    boxNum = nStr;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 5. Fallback: inspect child YgomTextAccessor and Text components of go
+                if (string.IsNullOrEmpty(foundSpecificName) && go != null)
+                {
+                    try
+                    {
+                        // Check YgomTextAccessor first
+                        var childYtas = go.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
+                        if (childYtas != null)
+                        {
+                            foreach (var yta in childYtas)
+                            {
+                                if (yta == null) continue;
+                                string txt = StripRichText(yta.text)?.Trim();
+                                if (IsValidLabel(txt) && !IsPlaceholderText(txt) && !IsGenericBoxCategory(txt)
+                                    && txt != "Sale" && txt != "New" && txt != "NEW" && txt != "SALE"
+                                    && !txt.All(char.IsDigit))
+                                {
+                                    foundSpecificName = txt;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Check Unity Text
+                        if (string.IsNullOrEmpty(foundSpecificName))
+                        {
+                            var childTexts = go.GetComponentsInChildren<Text>(true);
+                            if (childTexts != null)
+                            {
+                                foreach (var ct in childTexts)
+                                {
+                                    if (ct == null) continue;
+                                    string txt = StripRichText(ct.text)?.Trim();
+                                    if (IsValidLabel(txt) && !IsPlaceholderText(txt) && !IsGenericBoxCategory(txt)
+                                        && txt != "Sale" && txt != "New" && txt != "NEW" && txt != "SALE"
+                                        && !txt.All(char.IsDigit))
+                                    {
+                                        foundSpecificName = txt;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Sniff box/pack edition from Image / RawImage sprite or texture name
+                        if (string.IsNullOrEmpty(boxNum))
+                        {
+                            var imgs = go.GetComponentsInChildren<Image>(true);
+                            if (imgs != null)
+                            {
+                                foreach (var img in imgs)
+                                {
+                                    if (img?.sprite != null)
+                                    {
+                                        var m = Regex.Match(img.sprite.name, @"(?i)(?:vol|box)[_.-]?(\d+)");
+                                        if (m.Success) { boxNum = m.Groups[1].Value; break; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 6. Combine category and specific name
+                if (!string.IsNullOrEmpty(foundSpecificName))
+                {
+                    if (!string.IsNullOrEmpty(foundCategory))
+                    {
+                        if (foundCategory.StartsWith("发布日期：") || foundCategory.StartsWith("发布日期:"))
+                            parts.Add($"{foundSpecificName} ({foundCategory})");
+                        else if (!foundSpecificName.Contains(foundCategory))
+                            parts.Add($"{foundCategory}：{foundSpecificName}");
+                        else
+                            parts.Add(foundSpecificName);
+                    }
+                    else
+                    {
+                        parts.Add(foundSpecificName);
+                    }
+                    primaryResolved = true;
+                }
+                else if (!string.IsNullOrEmpty(foundCategory))
+                {
+                    if (string.IsNullOrEmpty(boxNum) && go != null)
+                    {
+                        var mGo = Regex.Match(go.name, @"(?i)(?:item|box|pack|banner|cell)[_.-]?(\d+)");
+                        if (mGo.Success) boxNum = mGo.Groups[1].Value;
+                    }
+
+                    if (!string.IsNullOrEmpty(boxNum) && !foundCategory.Contains(boxNum))
+                        parts.Add($"{foundCategory} 第{boxNum}期");
+                    else
+                        parts.Add(foundCategory);
+                    primaryResolved = true;
+                }
             }
 
             // Description: footer.summary or summary — adds context like "Destruction Is Inevitable"
@@ -976,7 +1285,7 @@ namespace DuelLinksAccess
                     if (!string.IsNullOrEmpty(value) && !IsPlaceholderText(value))
                     {
                         string cleaned = StripRichText(value);
-                        if (!parts.Contains(cleaned))
+                        if (!parts.Contains(cleaned) && cleaned != foundSpecificName && cleaned != foundCategory)
                             parts.Add(cleaned);
                         break;
                     }
@@ -1006,6 +1315,22 @@ namespace DuelLinksAccess
                     string progress = StripRichText(extext);
                     if (!string.IsNullOrEmpty(progress))
                         parts.Add(progress);
+                }
+            }
+            catch { }
+
+            // Price / cost if available directly in clientwork data
+            try
+            {
+                string priceVal = Il2CppYgomSystem.Utility.ClientWork
+                    .getStringByJsonPath(dataPath + ".price", "");
+                if (string.IsNullOrEmpty(priceVal))
+                    priceVal = Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(dataPath + ".price_text", "");
+                if (!string.IsNullOrEmpty(priceVal) && !parts.Contains(priceVal))
+                {
+                    string cleanedPrice = StripRichText(priceVal).Trim();
+                    if (!string.IsNullOrEmpty(cleanedPrice) && !cleanedPrice.StartsWith("0"))
+                        parts.Add($"价格：{cleanedPrice}");
                 }
             }
             catch { }
